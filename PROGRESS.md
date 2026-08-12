@@ -60,8 +60,12 @@ _(none yet — first ADRs still in flight; update this list as ADRs move to Acce
 
 ## Open questions for the human
 
-- Repo is private under the `Kemet232` GitHub account — say if you want it
-  moved to an org or made public later.
+- Repo is public under the `Kemet232` GitHub account (no LICENSE file yet,
+  so it's all-rights-reserved by default in the meantime).
+- Open-source model (spec section 42: what's open — protocol, crypto, client
+  core, SDKs — vs. closed/hosted — marketplace backend, abuse infra,
+  recommendations) hasn't been decided. Needs its own ADR before adding a
+  LICENSE file or accepting outside contributions.
 
 ## Session hygiene
 

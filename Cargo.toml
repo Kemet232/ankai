@@ -7,8 +7,11 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-license = "AGPL-3.0-only"
 repository = "https://github.com/Kemet232/ankai"
+# license: intentionally unset. Open-source model (what's open vs.
+# closed/hosted) is a real product decision, not yet made — see
+# PROGRESS.md open items. No LICENSE file means default all-rights-
+# reserved in the interim, which is the safe default while undecided.
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
