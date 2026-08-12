@@ -63,6 +63,15 @@ _(none yet — first ADRs still in flight; update this list as ADRs move to Acce
 - Repo is private under the `Kemet232` GitHub account — say if you want it
   moved to an org or made public later.
 
+## Session hygiene
+
+Commit + push after every meaningful chunk of work, and keep this file's
+"Current phase" table and "Immediate next steps" current as you go — don't
+batch updates for the end. If a session is running long (context filling up,
+lots of accumulated tool output), checkpoint proactively: finish or cleanly
+abandon the in-flight edit, update this file, commit/push, and stop rather
+than risk getting cut off mid-change with uncommitted state.
+
 ## How to resume seamlessly (read this if you're a future/fresh session)
 
 1. `cd ~/Projects/ankai && git log --oneline -20` — see what actually landed.

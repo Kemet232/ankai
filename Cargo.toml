@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Kemet232/ankai"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
