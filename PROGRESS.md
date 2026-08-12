@@ -31,32 +31,49 @@ parties, theme assets) goes peer-to-peer wherever safe.
 |---|---|---|
 | Repo scaffold | done | this repo |
 | ADR process | done | `docs/adr/0001-*.md` |
-| Native UI stack decision | researching | `docs/adr/0002-native-ui-stack.md` |
-| P2P networking stack decision | researching | `docs/adr/0003-p2p-networking-stack.md` |
+| Native UI stack decision | **Accepted: Slint** (fallback: Qt/QML via cxx-qt) | `docs/adr/0002-native-ui-stack.md` |
+| P2P networking stack decision | **Accepted: iroh (QUIC) + WebRTC** | `docs/adr/0003-p2p-networking-stack.md` |
 | E2EE stack decision | researching | `docs/adr/0004-e2ee-stack.md` |
-| Emulation/licensing approach | researching | `docs/adr/0005-emulation-integration.md` |
-| Threat model | not started | `docs/threat-model.md` |
-| Design tokens (Liquid Y2K) | not started | `docs/design/tokens.md` |
-| Rust workspace skeleton | not started | `core/`, `client/` |
+| Emulation integration | **Accepted: shell out to RetroArch/standalone emulators, no bundling** | `docs/adr/0005-emulation-integration.md` |
+| Media playback engine | **Accepted: libmpv + wasmtime-sandboxed providers** | `docs/adr/0006-media-playback-engine.md` |
+| Open-source model (what's open vs. closed) | not started, blocks LICENSE file | new ADR, see task list |
+| Threat model | done (v0, will grow as ADRs land) | `docs/threat-model.md` |
+| Design tokens (Liquid Y2K) | done (v0) | `docs/design/tokens.md` |
+| Rust workspace skeleton | `core` crate scaffolded + builds; `client` crate not started (now unblocked — Slint picked) | `core/`, `client/` |
 | CI | not started | `.github/workflows/` |
 
 ## Immediate next steps (in order)
 
-1. Get `gh` authenticated (user action — see below), create GitHub repo, push.
-2. Read back the 4 ADR drafts once research agents finish; accept or revise them as
-   ADR status `Accepted`, commit.
-3. Write `docs/threat-model.md` (STRIDE-style pass over identity, messaging, P2P,
-   marketplace).
-4. Start Rust workspace: `core` crate (identity, crypto, db, protocol types) +
-   `client` crate (native shell using whatever ADR-0002 picks).
-5. Stand up minimal CI (fmt, clippy, test) in `.github/workflows/ci.yml`.
-6. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
+1. Accept ADR-0004 (E2EE stack) once its research agent finishes — still in flight.
+2. Write the open-source-model ADR (what's open vs. closed/hosted, spec section 42)
+   — factor in ADR-0004's licensing findings (e.g. libsignal is AGPL) before
+   picking; this blocks adding a LICENSE file to the now-public repo.
+3. Start the `client` crate (Slint, per ADR-0002) in the Cargo workspace: window,
+   nav skeleton. Run the two spikes ADR-0002 flags (glass/blur rendering,
+   accessibility validation) early, before deep UI investment.
+4. Stand up CI (`fmt`, `clippy`, `test`) in `.github/workflows/ci.yml` once the
+   `client` crate exists (a Rust CI for a workspace with no real code yet is not
+   useful).
+5. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
    per the phase list — see any ADR or ask the user for the full phase breakdown
    if it's not already summarized in this file by then.
 
 ## Decisions locked so far
 
-_(none yet — first ADRs still in flight; update this list as ADRs move to Accepted)_
+- **UI toolkit**: Slint (Rust API, royalty-free license), Skia backend for full
+  effects / software backend for Potato mode. Fallback if the blur/glass spike
+  fails: Qt/QML via cxx-qt. See `docs/adr/0002`.
+- **P2P/networking**: iroh (QUIC-native) for messaging/signalling/files/netplay/
+  spectating; WebRTC (`webrtc-rs`/`str0m`) for voice/video/screenshare. See
+  `docs/adr/0003`.
+- **Emulation**: never bundle/link emulator code — shell out to separately
+  installed RetroArch (libretro cores) and standalone per-system emulators as
+  external processes; ANKAI provides the social/matchmaking/netplay-signalling
+  layer only. See `docs/adr/0005`.
+- **Media playback**: embed libmpv (dynamically linked LGPL) for all video
+  playback/hardware decode/subtitles; third-party "provider" plugins run as
+  sandboxed WASM components (wasmtime, WASI 0.2) with explicit per-provider
+  capability grants. See `docs/adr/0006`.
 
 ## Open questions for the human
 

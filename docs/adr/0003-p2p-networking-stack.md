@@ -1,6 +1,6 @@
 # 3. P2P networking stack
 
-Status: Proposed
+Status: Accepted
 
 Date: 2026-08-13
 
