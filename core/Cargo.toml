@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+# MLS/RFC 9420 engine + RustCrypto-backed provider, per docs/adr/0004-e2ee-stack.md.
+openmls = "0.8.1"
+openmls_rust_crypto = "0.5.1"
