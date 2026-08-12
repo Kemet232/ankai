@@ -21,7 +21,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 ## Repo
 
 - Local: `~/Projects/ankai`
-- GitHub: _not yet created — pending `gh auth login`_ (see below)
+- GitHub: https://github.com/Kemet232/ankai (public)
 
 ## Current phase
 
@@ -60,10 +60,8 @@ _(none yet — first ADRs still in flight; update this list as ADRs move to Acce
 
 ## Open questions for the human
 
-- GitHub repo visibility: **defaulting to private** (proprietary pre-launch
-  product) unless told otherwise.
-- GitHub account/org to create the repo under: defaulting to the authenticated
-  `gh` user's personal account.
+- Repo is private under the `Kemet232` GitHub account — say if you want it
+  moved to an org or made public later.
 
 ## How to resume seamlessly (read this if you're a future/fresh session)
 
