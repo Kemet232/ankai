@@ -36,7 +36,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | E2EE stack decision | **Accepted: MLS via OpenMLS (unified 1:1+group)** | `docs/adr/0004-e2ee-stack.md` |
 | Emulation integration | **Accepted: shell out to RetroArch/standalone emulators, no bundling** | `docs/adr/0005-emulation-integration.md` |
 | Media playback engine | **Accepted: libmpv + wasmtime-sandboxed providers** | `docs/adr/0006-media-playback-engine.md` |
-| Open-source model (what's open vs. closed) | not started, blocks LICENSE file | new ADR, see task list |
+| Open-source model (what's open vs. closed) | **Accepted: Apache-2.0** for core/client/protocol/SDKs; marketplace backend, abuse infra, recommendation internals stay closed | `docs/adr/0007-open-source-model.md`, `LICENSE` |
 | Threat model | done (v0, will grow as ADRs land) | `docs/threat-model.md` |
 | Design tokens (Liquid Y2K) | done (v0) | `docs/design/tokens.md` |
 | Rust workspace skeleton | `core` crate scaffolded + builds; `client` crate not started (now unblocked — Slint picked) | `core/`, `client/` |
@@ -97,12 +97,13 @@ create false confidence that this gate has been cleared.
 
 ## Open questions for the human
 
-- Repo is public under the `Kemet232` GitHub account (no LICENSE file yet,
-  so it's all-rights-reserved by default in the meantime).
-- Open-source model (spec section 42: what's open — protocol, crypto, client
-  core, SDKs — vs. closed/hosted — marketplace backend, abuse infra,
-  recommendations) hasn't been decided. Needs its own ADR before adding a
-  LICENSE file or accepting outside contributions.
+- Repo is public under the `Kemet232` GitHub account, now Apache-2.0
+  licensed (`core`, `client`, protocol, SDKs) per `docs/adr/0007`. Marketplace
+  backend, abuse infra, and recommendation-engine internals stay closed —
+  say if you disagree with that split.
+- Whether/when to formally open the repo to outside PRs is still undecided
+  (public+licensed just means readable/usable, not "accepting contributions"
+  — see README).
 
 ## Session hygiene
 

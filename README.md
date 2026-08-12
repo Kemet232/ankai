@@ -39,6 +39,15 @@ docs/
 - ANKAI does not distribute ROMs or copyrighted BIOS files.
 - Creators keep 90% of marketplace sales.
 
+## License
+
+Apache-2.0 (see `LICENSE`) for `core`, `client`, the protocol, and the
+Theme/Provider SDKs — chosen so ANKAI's E2EE integration and client code
+stay independently auditable, and so third-party clients/plugins can build
+against the SDKs freely. ANKAI's central marketplace backend, abuse
+infrastructure, and recommendation-engine internals are closed. Rationale
+in [`docs/adr/0007-open-source-model.md`](./docs/adr/0007-open-source-model.md).
+
 ## Contributing
 
 Not yet open for external contribution — pre-alpha, architecture in flux.
