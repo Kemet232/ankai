@@ -33,7 +33,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | ADR process | done | `docs/adr/0001-*.md` |
 | Native UI stack decision | **Accepted: Slint** (fallback: Qt/QML via cxx-qt) | `docs/adr/0002-native-ui-stack.md` |
 | P2P networking stack decision | **Accepted: iroh (QUIC) + WebRTC** | `docs/adr/0003-p2p-networking-stack.md` |
-| E2EE stack decision | researching | `docs/adr/0004-e2ee-stack.md` |
+| E2EE stack decision | **Accepted: MLS via OpenMLS (unified 1:1+group)** | `docs/adr/0004-e2ee-stack.md` |
 | Emulation integration | **Accepted: shell out to RetroArch/standalone emulators, no bundling** | `docs/adr/0005-emulation-integration.md` |
 | Media playback engine | **Accepted: libmpv + wasmtime-sandboxed providers** | `docs/adr/0006-media-playback-engine.md` |
 | Open-source model (what's open vs. closed) | not started, blocks LICENSE file | new ADR, see task list |
@@ -44,19 +44,29 @@ parties, theme assets) goes peer-to-peer wherever safe.
 
 ## Immediate next steps (in order)
 
-1. Accept ADR-0004 (E2EE stack) once its research agent finishes — still in flight.
-2. Write the open-source-model ADR (what's open vs. closed/hosted, spec section 42)
-   — factor in ADR-0004's licensing findings (e.g. libsignal is AGPL) before
-   picking; this blocks adding a LICENSE file to the now-public repo.
-3. Start the `client` crate (Slint, per ADR-0002) in the Cargo workspace: window,
+All 5 research ADRs (0002-0006) are Accepted — architecture is unblocked.
+
+1. Write the open-source-model ADR (what's open vs. closed/hosted, spec section
+   42) — factor in ADR-0004's finding that every recommended crypto dependency
+   is permissively licensed, so this is a pure business decision, not forced by
+   any library choice. Blocks adding a LICENSE file to the now-public repo.
+2. Start the `client` crate (Slint, per ADR-0002) in the Cargo workspace: window,
    nav skeleton. Run the two spikes ADR-0002 flags (glass/blur rendering,
    accessibility validation) early, before deep UI investment.
-4. Stand up CI (`fmt`, `clippy`, `test`) in `.github/workflows/ci.yml` once the
-   `client` crate exists (a Rust CI for a workspace with no real code yet is not
-   useful).
+3. Start wiring `ankai-core`'s `identity` module toward MLS/OpenMLS shapes per
+   ADR-0004 (KeyPackages, device-as-MLS-client model) — still just types/
+   scaffolding, not a security-reviewed implementation.
+4. Stand up CI (`fmt`, `clippy`, `test`, and a dependency-license scan per
+   ADR-0004's consequences) in `.github/workflows/ci.yml` once the `client`
+   crate exists.
 5. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
    per the phase list — see any ADR or ask the user for the full phase breakdown
    if it's not already summarized in this file by then.
+
+Remember: the E2EE integration itself (not the underlying libraries) requires
+an independent professional security audit before shipping to real users —
+see ADR-0004's "Required before shipping" gate. Don't let scaffolding progress
+create false confidence that this gate has been cleared.
 
 ## Decisions locked so far
 
@@ -74,6 +84,16 @@ parties, theme assets) goes peer-to-peer wherever safe.
   playback/hardware decode/subtitles; third-party "provider" plugins run as
   sandboxed WASM components (wasmtime, WASI 0.2) with explicit per-provider
   capability grants. See `docs/adr/0006`.
+- **E2EE**: unify on MLS (RFC 9420) via OpenMLS for both 1:1 DMs (as 2-member
+  groups) and group/community channels — not a separate Signal-Protocol-style
+  double ratchet for 1:1. Voice/video E2EE via SFrame keyed from MLS's
+  `exporter_secret`; local DB encrypted via SQLCipher; recovery via a client-
+  side-encrypted recovery-key backup (server never sees plaintext or keys).
+  `libsignal`/RingRTC explicitly rejected (AGPL, conflicts with closed
+  marketplace backend); vodozemac rejected for now (disputed unpatched
+  high-severity disclosure, Feb 2026, not a license issue). Independent
+  security audit of ANKAI's own integration work is a hard gate before
+  shipping to real users. See `docs/adr/0004`.
 
 ## Open questions for the human
 

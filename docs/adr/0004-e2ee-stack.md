@@ -1,6 +1,6 @@
 # 4. End-to-end encryption stack
 
-Status: Proposed
+Status: Accepted
 Date: 2026-08-13
 
 ## Context
@@ -350,23 +350,18 @@ server to trigger non-consensually or retroactively.
   unresolved, publicly disputed high-severity disclosure (Feb 2026) rules
   it out for now, not its license.
 
-## Open question to resolve before this ADR can move to Accepted
+## Resolved: workspace license field
 
-`Cargo.toml`'s workspace currently declares `license = "AGPL-3.0-only"` for
-the whole workspace, including `ankai-core`. That is in tension with this
-ADR's guidance to avoid copyleft entanglement around a closed marketplace
-backend, unless it's a deliberate choice that:
-(a) ANKAI's client/core is intended to genuinely ship AGPL/open-source
-while the marketplace backend remains a legally and technically separate
-program (API boundary only, no static/dynamic linking) — a viable, common
-pattern, but one that needs to be an explicit business decision, not a
-scaffold default; or
-(b) the workspace license field should change to a permissive or
-proprietary license before real dependencies land.
-Every library recommended in this ADR is permissively licensed either way,
-so this ADR doesn't force the outcome — but it should be resolved
-explicitly, and PROGRESS.md's "Decisions locked so far" section updated
-once it is.
+This ADR's research independently caught that `Cargo.toml`'s workspace had
+briefly declared `license = "AGPL-3.0-only"` — a scaffolding default set
+without justification, in tension with this ADR's copyleft-avoidance
+guidance. That field has since been removed (repo is unlicensed / all-
+rights-reserved in the interim). The actual open-source-vs-closed business
+decision (spec section 42: what's open — protocol, crypto, client core,
+SDKs — vs. closed/hosted — marketplace backend, abuse infra) is deferred to
+its own dedicated ADR, tracked in `PROGRESS.md`. Every library recommended
+in *this* ADR is permissively licensed (MIT/Apache-2.0/BSD-style), so
+nothing here forces that future decision either way.
 
 ## Consequences
 
