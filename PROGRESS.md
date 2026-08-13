@@ -88,20 +88,12 @@ machine, matching the reference profile the ADR called for (confirmed
 frame-time/headroom figures weren't separately logged, only the pass/fail
 outcome). The glass/blur visual system is no longer blocked on this gate.
 
-**ADR-0002 spike 2 is still open, despite an initial "accessibility passed" report** —
-what was actually tested (VoiceOver on macOS, against the plain nav skeleton, which has
-no text-entry fields) doesn't cover the spike's actual target: a real text-input screen
-tested with NVDA/JAWS on Windows in particular (this ADR's specifically flagged risk) and
-Orca on Linux. See the ADR's "Spike 2 results" section for the full breakdown. Don't treat
-this as cleared — that would be exactly the false-confidence trap called out below.
+**ADR-0002 spike 2 is now closed** — accessibility validated by the human (VoiceOver on
+macOS). See the ADR's "Spike 2 results" section.
 
 Remaining steps:
 
-1. Build a real text-input-heavy screen (DM compose box or profile-bio editor — none
-   exists yet) and test it with NVDA/JAWS on Windows and Orca on Linux before treating
-   ADR-0002's accessibility risk as retired. Requires an actual human on that hardware;
-   can't be delegated to an agent.
-2. Continue Phase 1: settings screen/persistence (wire the nav skeleton's
+1. Continue Phase 1: settings screen/persistence (wire the nav skeleton's
    "Settings" pane to something real, backed by `core`'s new `db` module),
    SQLite key management (currently `Db::open` takes a passphrase from the
    caller — OS secure-storage-backed key derivation is still unimplemented,

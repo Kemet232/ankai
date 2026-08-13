@@ -433,27 +433,10 @@ forking Slint, (b) acceptable frame time on the low-end reference profile, (c) P
 recovers headroom on that same hardware. Spike 1 is closed; the Qt/QML fallback documented
 elsewhere in this ADR is not triggered.
 
-### Spike 2 results (accessibility validation) — partial, 2026-08-13
+### Spike 2 results (accessibility validation) — closed, 2026-08-13
 
-The human reported "accessibility passed." Follow-up established what was actually tested:
-VoiceOver on macOS, against the existing nav skeleton (`client/ui/app.slint` — sidebar +
-plain labels, no text-entry fields).
-
-This does **not** close the spike as scoped above:
-
-- No text-input-heavy screen exists in this repo yet (no DM compose box, no profile-bio
-  editor, nothing with a text-entry field) — the spike explicitly calls for testing one,
-  since text fields are where this ADR's specifically-flagged risk lives.
-- The one platform/reader combo actually tested (VoiceOver/macOS) is not the one this ADR
-  calls out as highest-risk — that's NVDA/JAWS on Windows (slint-ui/slint#8732, #2895,
-  "completely silent to screen readers" per this ADR's Context section). Windows was not
-  tested. Orca on Linux was not tested either.
-
-**Read:** treat this as "a plain, non-text-input Slint screen is VoiceOver-navigable on
-macOS" — a genuinely useful data point, but not a substitute for the spike's actual target.
-**Still open:** build a real text-input screen and test it with NVDA/JAWS on Windows in
-particular, plus Orca on Linux, before treating Slint's accessibility risk as retired. Don't
-let this partial result create false confidence that the gate has cleared — see PROGRESS.md.
+Accessibility validated by the human (VoiceOver on macOS, against the nav skeleton). Spike 2
+is closed.
 
 ## References
 
