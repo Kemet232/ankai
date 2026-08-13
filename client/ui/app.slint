@@ -1,16 +1,16 @@
 // ANKAI client — real app shell entry point.
 //
 // This is the minimal window + navigation skeleton for Phase 1's native
-// shell (see PROGRESS.md, "Immediate next steps" #2). Per ADR-0002's spike
-// gate (docs/adr/0002-native-ui-stack.md, "Spike / prototype plan"), native
-// shell work must NOT go beyond a window + navigation skeleton until two
-// spikes land: (1) low-end-hardware frame-time profiling and (2) screen-
-// reader accessibility validation — neither is done yet ("Spike 1 results"
-// in that ADR). Keep this plain on purpose: flat panels, solid colors, no
-// blur/translucency/animation/glass effects. Do not add visual polish here;
-// it's explicitly out of scope until that gate clears. A shared design-token
-// module (client/ui/theme.slint) may land separately — wire it in as a fast
-// follow-up once it exists, don't block this skeleton on it.
+// shell (see PROGRESS.md, "Immediate next steps"). Per ADR-0002's spike gate
+// (docs/adr/0002-native-ui-stack.md, "Spike / prototype plan"), both required
+// spikes — (1) low-end-hardware frame-time profiling and (2) screen-reader
+// accessibility validation — are now closed ("Spike 1/2 results" in that
+// ADR). That gate blocked glass/blur/translucency/animation specifically; it
+// never blocked using real design-token *colors* here. This skeleton is
+// wired to client/ui/theme.slint's `Theme` global for all colors, but stays
+// deliberately flat otherwise — no blur/translucency/animation/glass
+// effects. Adding those is a separate, still-undecided step, not something
+// this file's colors being real tokens implies.
 //
 // The throwaway glass/blur + drag-reorder rendering spike from ADR-0002
 // spike 1 lives in spike-glass-blur.slint and is only reachable via a debug
@@ -18,6 +18,7 @@
 // prototype code, not part of this shell.
 
 import { LineEdit, Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
 
@@ -25,7 +26,7 @@ export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
     preferred-height: 640px;
-    background: #14161c; // flat neutral — structural scaffolding, not final theme
+    background: Theme.bg-void;
 
     property <[string]> nav-items: [
         "Profile",
@@ -47,9 +48,9 @@ export component AppWindow inherits Window {
         // ---- Sidebar: persistent nav destinations ----
         Rectangle {
             width: 220px;
-            background: #1c1f27;
+            background: Theme.bg-surface-raised;
             border-width: 1px;
-            border-color: #2c3040;
+            border-color: Theme.silver.with-alpha(0.15);
 
             VerticalLayout {
                 padding: 16px;
@@ -58,7 +59,7 @@ export component AppWindow inherits Window {
 
                 Text {
                     text: "ANKAI";
-                    color: #e6e8ef;
+                    color: Theme.text-primary;
                     font-size: 18px;
                     font-weight: 700;
                 }
@@ -68,7 +69,7 @@ export component AppWindow inherits Window {
                 for item[i] in nav-items: Rectangle {
                     height: 40px;
                     border-radius: 6px;
-                    background: root.selected-index == i ? #2e3446 : transparent;
+                    background: root.selected-index == i ? Theme.accent-violet.with-alpha(0.18) : transparent;
 
                     Text {
                         x: 12px;
@@ -76,7 +77,7 @@ export component AppWindow inherits Window {
                         height: parent.height;
                         vertical-alignment: center;
                         text: item;
-                        color: root.selected-index == i ? #f2f4fa : #a6adc4;
+                        color: root.selected-index == i ? Theme.text-primary : Theme.text-secondary;
                         font-size: 14px;
                         font-weight: root.selected-index == i ? 600 : 400;
                     }
@@ -93,13 +94,13 @@ export component AppWindow inherits Window {
         // ---- Content pane: swapped based on selected nav item ----
         Rectangle {
             horizontal-stretch: 1;
-            background: #0f1116;
+            background: Theme.bg-surface;
 
             if root.selected-index != root.settings-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
-                color: #f2f4fa;
+                color: Theme.text-primary;
                 font-size: 22px;
                 font-weight: 700;
             }
@@ -111,7 +112,7 @@ export component AppWindow inherits Window {
 
                 Text {
                     text: "Settings";
-                    color: #f2f4fa;
+                    color: Theme.text-primary;
                     font-size: 22px;
                     font-weight: 700;
                 }
@@ -122,7 +123,7 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: "Display name";
-                        color: #a6adc4;
+                        color: Theme.text-secondary;
                         font-size: 14px;
                         vertical-alignment: center;
                     }
