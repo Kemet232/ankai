@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 3)
+Last updated: 2026-08-14 (session 4)
 
 ## What ANKAI is
 
@@ -48,6 +48,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | DB key management (OS secure storage) | done — `keychain::device_db_passphrase()` generates a passphrase on first run and stores it via `keyring` (macOS Keychain/Windows Credential Manager/Linux Secret Service); `client`'s `main.rs` now actually opens the real encrypted DB with it instead of never touching `core::db` | `core/src/keychain.rs`, `client/src/main.rs` |
 | Settings screen wired to real persistence | done — nav skeleton's Settings pane has a working "display name" field backed by the `settings` table (load on startup, save via button/Enter) | `client/ui/app.slint`, `client/src/main.rs` |
 | Theme tokens wired into nav skeleton | done — `app.slint`'s hardcoded hex literals replaced with `Theme.*` tokens (see ADR-0002 note below); still deliberately flat, no glass/blur | `client/ui/app.slint` |
+| OpenMLS storage backed by SQLCipher DB | done — `AnkaiMlsProvider` wraps `openmls_rust_crypto`'s `MemoryStorage`, persisting its whole contents as one opaque blob in a new `mls_storage` table (migration 3); whole-blob durability granularity, not per-field — see the module doc comment for the tradeoff and when to revisit it | `core/src/mls_provider.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -105,15 +106,29 @@ separate commits, each verified with full workspace build/test/clippy/fmt
 plus a manual run (and, for the theme swap, a screenshot). Pushed to
 `origin/main`.
 
+**Session 4 (2026-08-14) tackled the first of session 3's three remaining
+steps**: OpenMLS's storage trait is now backed by the SQLCipher DB. Before
+starting, the human was asked (a) which of the three remaining steps to do
+next and (b) which of two designs for the OpenMLS-storage step — a full
+per-field `StorageProvider` reimplementation against SQL rows, or wrapping
+`openmls_rust_crypto`'s already-correct `MemoryStorage` and persisting its
+whole contents as one blob. Both were genuine forks worth a real decision
+(this step is part of the E2EE integration ADR-0004 flags as needing an
+independent audit before shipping), not something to guess at silently.
+Human picked: OpenMLS storage first, blob-wrap approach. See
+`core/src/mls_provider.rs`'s doc comment for the full durability tradeoff —
+flagged there as something to revisit before the audit gate if
+per-operation durability turns out to matter for real group traffic.
+Verified with a real round-trip test (store a `SignatureKeyPair`, flush,
+reload into a fresh provider, confirm it reads back), plus full workspace
+build/test/clippy/fmt. Pushed to `origin/main`.
+
 Remaining steps (not yet started, ordered by rough priority — open to
 reordering, this isn't a locked decision):
 
-1. Back OpenMLS's storage trait with the same SQLCipher-encrypted SQLite
-   file per ADR-0004's "one encrypted file, one key" call, instead of
-   OpenMLS having nowhere real to persist group/ratchet state yet.
-2. Basic P2P scaffolding per ADR-0003 (iroh) — nothing in `core` talks to
+1. Basic P2P scaffolding per ADR-0003 (iroh) — nothing in `core` talks to
    the network yet.
-3. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
+2. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
    into an actual first-run account-creation flow (currently just proves
    the type is reachable, per that line's own comment).
 
