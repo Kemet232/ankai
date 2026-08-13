@@ -1,0 +1,56 @@
+// ANKAI client — shared design tokens (Slint module).
+//
+// Values here are sourced from docs/design/tokens.md ("Liquid Y2K" v0), not
+// invented here. This module exists so screens import shared values instead
+// of re-typing hex literals (see docs/adr/0002-native-ui-stack.md, Spike 1
+// results — this is the follow-up infra work that spike's inline comments
+// called for). Pure data: no new visual effects live here.
+//
+// Note on alpha-blended colors: several usage sites need a base color at a
+// specific opacity (e.g. a border at 20% alpha). Rather than hand-encoding
+// those as separate hex+alpha literals (which would just reintroduce the
+// scattered-literal problem one level down), call sites derive them from the
+// base token via `.with-alpha(...)`. Fractions below are chosen so Slint's
+// float->u8 channel quantization reproduces the exact original byte (e.g.
+// `170.0 / 255.0` rather than a decimal approximation like `0.667`) — this
+// keeps the refactor pixel-identical to the pre-refactor hardcoded literals.
+export global Theme {
+    // ---- Color: base palette (docs/design/tokens.md § Color) ----
+    out property <color> bg-void: #05070F; // color.bg.void
+    out property <color> bg-surface: #0D1122; // color.bg.surface
+    out property <color> bg-surface-raised: #141A33; // color.bg.surface-raised
+    out property <color> accent-cyan: #4CE8F0; // color.accent.cyan
+    out property <color> accent-violet: #8B6CF0; // color.accent.violet
+    out property <color> accent-gold: #E8C468; // color.accent.gold
+    out property <color> silver: #C7CEDB; // color.silver
+    out property <color> text-primary: #F2F4FA; // color.text.primary
+    out property <color> text-secondary: #A6ADC4; // color.text.secondary
+    out property <color> state-online: #4CE87B; // color.state.online
+    out property <color> state-away: #E8C468; // color.state.away (same value as accent.gold)
+    out property <color> state-busy: #F0605C; // color.state.busy
+    out property <color> state-offline: #5A6178; // color.state.offline
+
+    // ---- Glass material (docs/design/tokens.md § Glass material) ----
+    // The spike only implements two of the four documented tiers (Normal-ish
+    // alpha-tint rendering, and Potato's flat opaque fallback) — see
+    // app.slint's inline spike notes. Only those two are extracted here;
+    // Ultra/Low aren't implemented anywhere yet so there's nothing to name.
+    out property <color> glass-tint: #1B2340.with-alpha(0.45); // color.glass.tint @ 45% alpha
+    out property <color> glass-fallback-fill: bg-surface; // Potato tier fallback.fill: flat opaque surface color
+
+    // ---- Spacing (docs/design/tokens.md § Spacing, 4px base unit) ----
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-6: 24px;
+    out property <length> space-8: 32px;
+    out property <length> space-12: 48px;
+    out property <length> space-16: 64px;
+
+    // ---- Motion (docs/design/tokens.md § Motion) ----
+    // Only the values already hardcoded and in use in the spike (the card
+    // reorder animation) are extracted here.
+    out property <duration> motion-duration-standard: 240ms;
+    out property <easing> motion-easing-standard: cubic-bezier(0.16, 1, 0.3, 1);
+}

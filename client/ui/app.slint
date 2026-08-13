@@ -3,6 +3,7 @@
 // docs/design/tokens.md ("Liquid Y2K" v0) — colors and glass material
 // values are copied from there, not invented here.
 
+import { Theme } from "theme.slint";
 import { ModuleCard, ModuleCardItem } from "module-card.slint";
 
 export { ModuleCard }
@@ -11,17 +12,17 @@ export component AppWindow inherits Window {
     title: "ANKAI — glass/blur spike";
     preferred-width: 1000px;
     preferred-height: 680px;
-    background: #05070F; // color.bg.void
+    background: Theme.bg-void;
 
     in-out property <bool> potato-mode: false;
 
     // Mock "module" cards — representing ANKAI profile modules.
     in-out property <[ModuleCard]> modules: [
-        { title: "Top 8", subtitle: "Pinned friends", accent: #4CE8F0, id: 0 },
-        { title: "Now Playing", subtitle: "Backloggd sync", accent: #8B6CF0, id: 1 },
-        { title: "Achievements", subtitle: "12 unlocked this week", accent: #E8C468, id: 2 },
-        { title: "Hangout", subtitle: "Watch party — live", accent: #4CE87B, id: 3 },
-        { title: "Guestbook", subtitle: "3 new notes", accent: #F0605C, id: 4 },
+        { title: "Top 8", subtitle: "Pinned friends", accent: Theme.accent-cyan, id: 0 },
+        { title: "Now Playing", subtitle: "Backloggd sync", accent: Theme.accent-violet, id: 1 },
+        { title: "Achievements", subtitle: "12 unlocked this week", accent: Theme.accent-gold, id: 2 },
+        { title: "Hangout", subtitle: "Watch party — live", accent: Theme.state-online, id: 3 },
+        { title: "Guestbook", subtitle: "3 new notes", accent: Theme.state-busy, id: 4 },
     ];
 
     // ---- drag-reorder state (shared by the fixed overlay TouchArea below) ----
@@ -49,10 +50,10 @@ export component AppWindow inherits Window {
             height: 46px;
             border-radius: 8px;
             background: Math.mod(row + col, 3) == 0
-                ? #4CE8F033
+                ? Theme.accent-cyan.with-alpha(0.2)
                 : Math.mod(row + col, 3) == 1
-                    ? #8B6CF033
-                    : #E8C46833;
+                    ? Theme.accent-violet.with-alpha(0.2)
+                    : Theme.accent-gold.with-alpha(0.2);
         }
     }
 
@@ -62,7 +63,7 @@ export component AppWindow inherits Window {
         y: 0px;
         width: parent.width;
         height: parent.height;
-        background: @linear-gradient(160deg, #05070f66 0%, #0d112299 55%, #05070fcc 100%);
+        background: @linear-gradient(160deg, Theme.bg-void.with-alpha(0.4) 0%, Theme.bg-surface.with-alpha(0.6) 55%, Theme.bg-void.with-alpha(0.8) 100%);
     }
 
     // ---------------------------------------------------------------
@@ -82,14 +83,16 @@ export component AppWindow inherits Window {
         width: 360px;
         height: 200px;
         border-radius: 24px;
-        background: root.potato-mode ? #0D1122 : #1B234073; // glass.tint @ ~45% alpha, Potato = opaque surface
+        background: root.potato-mode ? Theme.glass-fallback-fill : Theme.glass-tint;
         border-width: 1px;
-        border-color: #C7CEDB33;
-        drop-shadow-color: #05070faa;
+        border-color: Theme.silver.with-alpha(0.2);
+        drop-shadow-color: Theme.bg-void.with-alpha(170.0 / 255.0);
         drop-shadow-blur: root.potato-mode ? 0px : 32px;
         drop-shadow-offset-y: 8px;
 
         // Specular highlight strip (static, per tokens.md "Normal" tier).
+        // Pure white gradient — tokens.md doesn't define a "white" token,
+        // so this is left as a literal (see theme.slint header comment).
         Rectangle {
             visible: !root.potato-mode;
             x: 0px;
@@ -106,7 +109,7 @@ export component AppWindow inherits Window {
             alignment: start;
             Text {
                 text: "Glass panel";
-                color: #F2F4FA;
+                color: Theme.text-primary;
                 font-size: 20px;
                 font-weight: 700;
             }
@@ -114,25 +117,25 @@ export component AppWindow inherits Window {
                 text: root.potato-mode
                     ? "Potato mode: flat opaque fallback (tokens.md Potato tier)"
                     : "Normal tier: alpha tint + specular strip + drop-shadow. No live blur-through — see ADR-0002 spike notes.";
-                color: #A6ADC4;
+                color: Theme.text-secondary;
                 font-size: 13px;
                 wrap: word-wrap;
             }
-            Rectangle { height: 8px; }
+            Rectangle { height: Theme.space-2; }
             potato-toggle := Rectangle {
                 height: 32px;
                 width: 190px;
                 border-radius: 16px;
-                background: root.potato-mode ? #4CE8F0 : #141A33cc;
+                background: root.potato-mode ? Theme.accent-cyan : Theme.bg-surface-raised.with-alpha(0.8);
                 border-width: 1px;
-                border-color: #C7CEDB55;
+                border-color: Theme.silver.with-alpha(85.0 / 255.0);
                 Text {
                     x: 0px; y: 0px;
                     width: parent.width; height: parent.height;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     text: root.potato-mode ? "Potato mode: ON" : "Potato mode: OFF";
-                    color: root.potato-mode ? #05070F : #F2F4FA;
+                    color: root.potato-mode ? Theme.bg-void : Theme.text-primary;
                     font-size: 12px;
                     font-weight: 600;
                 }
@@ -161,15 +164,15 @@ export component AppWindow inherits Window {
         width: 480px;
         height: root.modules.length * root.slot-height + 20px;
         border-radius: 20px;
-        background: #0D1122aa;
+        background: Theme.bg-surface.with-alpha(170.0 / 255.0);
         border-width: 1px;
-        border-color: #C7CEDB22;
+        border-color: Theme.silver.with-alpha(34.0 / 255.0);
 
         Text {
             x: 16px;
             y: 10px;
             text: "Profile modules — drag to reorder";
-            color: #A6ADC4;
+            color: Theme.text-secondary;
             font-size: 12px;
         }
 

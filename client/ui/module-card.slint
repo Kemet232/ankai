@@ -1,5 +1,7 @@
 // Mock profile-module card + struct for the drag-reorder spike.
 
+import { Theme } from "theme.slint";
+
 export struct ModuleCard {
     title: string,
     subtitle: string,
@@ -21,21 +23,21 @@ export component ModuleCardItem inherits Rectangle {
     y: is-dragging ? drag-y : slot-index * slot-height;
 
     animate y {
-        duration: is-dragging ? 0ms : 240ms;
-        easing: cubic-bezier(0.16, 1, 0.3, 1);
+        duration: is-dragging ? 0ms : Theme.motion-duration-standard;
+        easing: Theme.motion-easing-standard;
     }
 
     border-radius: 16px;
-    background: is-dragging ? accent.with-alpha(0.30) : #141A33cc;
+    background: is-dragging ? accent.with-alpha(0.30) : Theme.bg-surface-raised.with-alpha(0.8);
     border-width: 1px;
-    border-color: is-dragging ? accent : #C7CEDB33;
-    drop-shadow-color: #05070faa;
+    border-color: is-dragging ? accent : Theme.silver.with-alpha(0.2);
+    drop-shadow-color: Theme.bg-void.with-alpha(170.0 / 255.0);
     drop-shadow-blur: is-dragging ? 24px : 8px;
     drop-shadow-offset-y: is-dragging ? 10px : 3px;
 
     HorizontalLayout {
         padding: 14px;
-        spacing: 12px;
+        spacing: Theme.space-3;
 
         Rectangle {
             width: 6px;
@@ -48,13 +50,13 @@ export component ModuleCardItem inherits Rectangle {
             spacing: 2px;
             Text {
                 text: mod-title;
-                color: #F2F4FA;
+                color: Theme.text-primary;
                 font-size: 15px;
                 font-weight: 600;
             }
             Text {
                 text: mod-subtitle;
-                color: #A6ADC4;
+                color: Theme.text-secondary;
                 font-size: 12px;
             }
         }
@@ -63,7 +65,7 @@ export component ModuleCardItem inherits Rectangle {
 
         Text {
             text: "drag";
-            color: #A6ADC4;
+            color: Theme.text-secondary;
             font-size: 11px;
             vertical-alignment: center;
         }
