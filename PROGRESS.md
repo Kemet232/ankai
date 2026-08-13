@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 4)
+Last updated: 2026-08-14 (session 5)
 
 ## What ANKAI is
 
@@ -49,6 +49,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Settings screen wired to real persistence | done — nav skeleton's Settings pane has a working "display name" field backed by the `settings` table (load on startup, save via button/Enter) | `client/ui/app.slint`, `client/src/main.rs` |
 | Theme tokens wired into nav skeleton | done — `app.slint`'s hardcoded hex literals replaced with `Theme.*` tokens (see ADR-0002 note below); still deliberately flat, no glass/blur | `client/ui/app.slint` |
 | OpenMLS storage backed by SQLCipher DB | done — `AnkaiMlsProvider` wraps `openmls_rust_crypto`'s `MemoryStorage`, persisting its whole contents as one opaque blob in a new `mls_storage` table (migration 3); whole-blob durability granularity, not per-field — see the module doc comment for the tradeoff and when to revisit it | `core/src/mls_provider.rs` |
+| Basic P2P scaffolding (iroh) | done — `P2pNode` wraps a bound iroh `Endpoint` (bind/addr/send/accept_and_echo_once/close), `presets::Minimal` so no discovery/relay service is contacted; deliberately no discovery, privacy-mode gating, relay tiers, or blobs/gossip — see the module doc comment | `core/src/p2p.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -123,12 +124,29 @@ Verified with a real round-trip test (store a `SignatureKeyPair`, flush,
 reload into a fresh provider, confirm it reads back), plus full workspace
 build/test/clippy/fmt. Pushed to `origin/main`.
 
+**Session 5 (2026-08-14) tackled the P2P scaffolding step**: `core/src/p2p.rs`
+now wraps a bound iroh `Endpoint` behind `P2pNode`, using `presets::Minimal`
+specifically so this makes no assumption about, and depends on no
+availability of, any external discovery/relay service — appropriate given
+ADR-0003 itself is still `Proposed` pending its own five spikes (NAT-
+traversal measurement, WebRTC/E2EE-through-SFU, group-call topology, an
+ANKAI Node reference impl, QUIC-datagram netplay), none of which this
+module attempts. Verified with a real round-trip test: two in-process
+nodes exchange a message over a direct local QUIC stream, stable across
+repeated runs (a first attempt raced a caller's `close()` against the
+remote still draining its response stream — fixed by waiting for
+`conn.closed()` on the accept side before returning, matching iroh's own
+example). Full workspace build/test/clippy/fmt clean. One new fact worth
+flagging: adding `iroh` pulls in a few more MPL-2.0/CDLA-Permissive-2.0
+transitive deps (`attohttpc`, `webpki-roots`) that `cargo deny check
+licenses` rejects, stacking on top of the pre-existing openmls/hpke-rs
+MPL-2.0 issue from earlier sessions — not fixed, same ADR-owner licensing
+policy call, not an engineering one. Pushed to `origin/main`.
+
 Remaining steps (not yet started, ordered by rough priority — open to
 reordering, this isn't a locked decision):
 
-1. Basic P2P scaffolding per ADR-0003 (iroh) — nothing in `core` talks to
-   the network yet.
-2. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
+1. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
    into an actual first-run account-creation flow (currently just proves
    the type is reachable, per that line's own comment).
 
