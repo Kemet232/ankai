@@ -20,9 +20,9 @@ pub struct DeviceId(pub String);
 
 /// Stand-in for a device's real `openmls_basic_credential::SignatureKeyPair`
 /// id. Not wired to that crate yet — real key generation happens against a
-/// live `OpenMlsProvider`, and the resulting key belongs in the same
-/// SQLCipher-backed keystore ADR-0004 specifies for MLS group state, not
-/// inline here.
+/// live `OpenMlsProvider` (see `crate::mls_provider::AnkaiMlsProvider`,
+/// which now persists that keystore into the same SQLCipher-encrypted DB
+/// ADR-0004 specifies for MLS group state), not inline here.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SignatureKeyPlaceholder(pub Vec<u8>);
 

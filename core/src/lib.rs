@@ -8,6 +8,7 @@ pub mod db;
 pub mod error;
 pub mod identity;
 pub mod keychain;
+pub mod mls_provider;
 pub mod protocol;
 
 pub use error::Error;

@@ -54,6 +54,17 @@ const MIGRATIONS: &[Migration] = &[
         value TEXT NOT NULL
     );",
     },
+    Migration {
+        version: 3,
+        description: "create mls_storage table",
+        // Single-row table (id is always 0): see crate::mls_provider's doc
+        // comment for why OpenMLS's group/ratchet state is persisted here
+        // as one opaque blob rather than one row per field.
+        sql: "CREATE TABLE IF NOT EXISTS mls_storage (
+        id   INTEGER NOT NULL PRIMARY KEY CHECK (id = 0),
+        data BLOB NOT NULL
+    );",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -179,6 +190,29 @@ impl Db {
         Ok(())
     }
 
+    /// Reads OpenMLS's persisted storage blob (see `crate::mls_provider`),
+    /// or `None` if nothing has been persisted yet.
+    pub fn get_mls_storage_blob(&self) -> Result<Option<Vec<u8>>, Error> {
+        self.conn
+            .query_row("SELECT data FROM mls_storage WHERE id = 0", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| Error::Db(format!("failed to read MLS storage blob: {e}")))
+    }
+
+    /// Overwrites OpenMLS's persisted storage blob.
+    pub fn set_mls_storage_blob(&self, data: &[u8]) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "INSERT INTO mls_storage (id, data) VALUES (0, ?1)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+                rusqlite::params![data],
+            )
+            .map_err(|e| Error::Db(format!("failed to write MLS storage blob: {e}")))?;
+        Ok(())
+    }
+
     /// Direct access to the underlying connection, for callers/modules
     /// (e.g. a future OpenMLS storage-trait backend, per ADR-0004) that
     /// need to run their own statements against this same encrypted file.
@@ -241,7 +275,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.schema_version().unwrap(), 3);
     }
 
     #[test]
@@ -250,20 +284,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 2);
+            assert_eq!(db.schema_version().unwrap(), 3);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 2);
+            assert_eq!(db.schema_version().unwrap(), 3);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 2, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 3, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -301,7 +335,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 2);
+            assert_eq!(db.schema_version().unwrap(), 3);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
