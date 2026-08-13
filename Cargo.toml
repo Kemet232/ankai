@@ -38,3 +38,10 @@ rand = "0.9"
 # Windows Known Folder API / Linux XDG base dirs), used by the client to
 # decide where the encrypted local database file lives.
 directories = "6"
+# Generic P2P data transport (dial-by-public-key QUIC), per
+# docs/adr/0003-p2p-networking-stack.md.
+iroh = "1"
+# Async runtime iroh itself requires. `rt-multi-thread` for real use,
+# `macros` for #[tokio::main]/#[tokio::test], `io-util` for the
+# AsyncRead/AsyncWriteExt trait methods iroh's send/recv streams implement.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }

@@ -6,4 +6,6 @@ pub enum Error {
     Identity(String),
     #[error("keychain error: {0}")]
     Keychain(String),
+    #[error("network error: {0}")]
+    Net(String),
 }

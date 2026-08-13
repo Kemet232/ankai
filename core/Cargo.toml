@@ -22,3 +22,7 @@ rusqlite.workspace = true
 # rationale.
 keyring.workspace = true
 rand.workspace = true
+# Generic P2P data transport, per docs/adr/0003-p2p-networking-stack.md —
+# see root Cargo.toml for the feature-selection rationale.
+iroh.workspace = true
+tokio.workspace = true
