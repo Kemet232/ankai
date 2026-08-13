@@ -1,0 +1,151 @@
+# cargo-deny configuration.
+#
+# Wired into CI (.github/workflows/ci.yml) to satisfy docs/adr/0004-e2ee-stack.md's
+# "Consequences > Required before shipping" item 3: a dependency-license scan that
+# catches any transitively-pulled copyleft dependency (AGPL/GPL/LGPL-with-static-
+# linking-implications) before it ships. ANKAI has explicitly rejected libsignal and
+# RingRTC (both AGPL-3.0-only) as *Cargo dependencies* for exactly this reason — see
+# ADR-0004's "Why not libsignal" section. This file is the enforcement mechanism for
+# that decision going forward, not just a one-time manual check.
+#
+# Regenerate/extend with `cargo deny init` if you need the full annotated template;
+# this is a trimmed, commented version of it.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+# This is an ALLOW-LIST. Any license not explicitly listed below is rejected
+# by default — that includes every copyleft license (GPL-*, AGPL-*, LGPL-*,
+# MPL-2.0, etc.), so there is no separate "deny" list to maintain: omission
+# *is* the denial. This is the intended enforcement mechanism for ADR-0004's
+# hard permissive-licensing filter on crypto/networking dependencies.
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+    "0BSD",
+    "NCSA",
+    "BSL-1.0",
+    "Unlicense",
+    # Slint (docs/adr/0002-native-ui-stack.md) is triple-licensed: GPL-3.0-only
+    # OR this royalty-free ref OR a paid commercial ref. ADR-0002 explicitly
+    # picked the royalty-free tier ("free, proprietary-compatible, no
+    # redistribution tax") — allowing only this specific SPDX ref (not
+    # GPL-3.0-only, not the commercial tier) means cargo-deny satisfies the
+    # crate's license OR-expression via the branch we actually use, while
+    # still rejecting any dependency that is *only* GPL-3.0 with no
+    # alternative branch.
+    "LicenseRef-Slint-Royalty-free-2.0",
+]
+confidence-threshold = 0.8
+
+# NOTE on libmpv / SQLCipher (ADR-0004 / ADR-0006):
+# libmpv is LGPL-2.1+ and SQLCipher Community Edition is BSD-style with an
+# attribution requirement — both copyleft-adjacent. Neither is added to the
+# allow-list above, and neither needs to be:
+#   - libmpv (ADR-0006) is consumed via dynamic linking against a separately
+#     installed system library (like RetroArch in ADR-0005), not vendored or
+#     statically linked into the ANKAI binary. It is not pulled in as a Cargo
+#     dependency at all, so it never appears in `cargo deny`'s crate graph —
+#     LGPL's dynamic-linking carve-out is exactly why this is safe.
+#   - SQLCipher (ADR-0004) is used via `rusqlite`'s `bundled-sqlcipher`
+#     feature, which vendors SQLCipher's C source through a build script. The
+#     `rusqlite` *Rust crate* itself is MIT-licensed and is what shows up in
+#     this scan; SQLCipher's own BSD-style/attribution license governs the
+#     vendored C source, not a Cargo-visible crate license. BSD-style with
+#     attribution is not copyleft (no obligation to release ANKAI's own
+#     source), so this is a non-issue for the closed marketplace backend.
+# If either ever gets wrapped in a Rust crate that declares its own LGPL/GPL
+# license (e.g. a hypothetical `libmpv-rs` bundling libmpv statically), that
+# crate's license would need deliberate review and an explicit exception
+# here — it should not pass silently.
+#
+# KNOWN OPEN FINDING (as of 2026-08-13, left unresolved on purpose): the
+# `hpke-rs` / `hpke-rs-crypto` / `hpke-rs-rust-crypto` crates (MPL-2.0),
+# pulled in transitively via `openmls_rust_crypto` -> `ankai-core`, are
+# CURRENTLY REJECTED by this config and will fail `cargo deny check
+# licenses`. MPL-2.0 is file-level/weak copyleft (much narrower than GPL/
+# AGPL — only MPL-covered files themselves carry disclosure obligations, not
+# the combined work), but ADR-0004 states permissive-only as a "hard filter"
+# for crypto dependencies without carving out weak copyleft, and this is
+# core MLS crypto plumbing, not an incidental utility. Deliberately NOT
+# added to the allow-list here — that's a call for whoever owns ADR-0004 to
+# make explicitly (amend the ADR to permit file-level copyleft for this
+# narrow case, or swap crypto backends), not something CI should paper over
+# by quietly loosening the policy. Newer `hpke-rs` (0.7.0) is still MPL-2.0,
+# so upgrading version alone will not resolve this.
+
+# The workspace's own crates (ankai-core, client, and any future workspace
+# members) may not always have `license.workspace = true` wired up the
+# instant a crate is scaffolded — see PROGRESS.md for the project's own
+# license-field history. This scan exists to catch problems in *dependencies*
+# per ADR-0004's consequences, not to gate on the workspace's own manifest
+# hygiene, so the "unlicensed" diagnostic is downgraded to a no-op via the
+# `-A unlicensed` flag passed in ci.yml, rather than failing CI on it here.
+# A genuinely disallowed license on a real dependency is a different
+# diagnostic ("rejected") and is NOT affected by that flag — it still fails.
+[licenses.private]
+ignore = false
+
+# ---------------------------------------------------------------------------
+# Bans — dependency graph hygiene
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+# Default ("allow"): path deps like `ankai-core = { path = "../core" }` between
+# workspace crates are unversioned by design and would otherwise trip this.
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = false
+
+# ---------------------------------------------------------------------------
+# Advisories — known security vulnerabilities / unmaintained crates
+# ---------------------------------------------------------------------------
+# Only "unmaintained" (staleness) notices are ignored below, each with a
+# reason, all several hops deep in Slint's rendering/font stack (not code
+# ANKAI chose directly) and with no available safe upgrade. Actual
+# "vulnerability" advisories are never ignored here and are left to fail the
+# check — as of 2026-08-13 that includes three real findings in
+# `libcrux-sha3`/`libcrux-secrets` (RUSTSEC-2026-0212, -0207, -0208),
+# transitively via `hpke-rs` -> `openmls_rust_crypto` -> `ankai-core`. Given
+# this is the MLS crypto backend ADR-0004 depends on, this needs a security-
+# aware decision (upgrade path, or confirm the affected code paths — aarch64
+# const-time swap/select, multi-call SHAKE squeeze, AVX2 SHAKE-256 panics —
+# aren't reachable from ANKAI's usage) rather than a blanket ignore.
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained notice, transitive via Slint's image/rav1e stack (pulp -> exr -> image), no maintained drop-in replacement wired up yet; not a vulnerability" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: unmaintained notice, deep transitive dep via openmls_rust_crypto's libcrux/hax-lib chain; not a vulnerability" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained notice, transitive via Slint's usvg/resvg SVG rendering stack; not a vulnerability" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained notice, transitive via Slint's usvg/resvg/fontdb stack; not a vulnerability" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources — where dependencies are allowed to come from
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

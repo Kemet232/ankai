@@ -1,0 +1,90 @@
+name: CI
+
+# Runs against the whole Cargo workspace generically (--workspace / --all
+# everywhere it applies) rather than naming individual crates, so this file
+# does not need to change every time a new workspace member (e.g. `client`,
+# or a future crate) is added or gets new dependencies.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same PR/branch to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # -D warnings: the project is pre-alpha and moving fast, but as of this
+      # writing `cargo clippy --workspace --all-targets` is already clean
+      # with zero warnings, so starting strict costs nothing today and is
+      # much cheaper than letting warnings accumulate across two crates
+      # being actively scaffolded in parallel. If this becomes a real
+      # velocity problem once `client`/`core` have more in-progress code
+      # (e.g. legitimate WIP dead_code during MLS/Slint scaffolding), the
+      # narrowest fix is `#[allow(...)]` at the call site, not loosening
+      # this flag workspace-wide.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  deny:
+    name: License / dependency scan (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Config lives in deny.toml at the repo root. See that file for the
+      # full rationale; in short, per docs/adr/0004-e2ee-stack.md's
+      # "Consequences > Required before shipping" item 3, this exists to
+      # catch any transitively-pulled copyleft dependency (AGPL/GPL/LGPL)
+      # before it ships — libsignal/RingRTC (AGPL) are the concrete examples
+      # that ADR explicitly rejected as dependencies for this reason.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # Override the action's own default (`--all-features`) so the
+          # scanned crate graph matches what actually ships (deny.toml sets
+          # `[graph] all-features = false` for the same reason). --workspace
+          # is normally auto-assumed for a virtual-manifest root like this
+          # one, but it's spelled out here to make the "whole workspace,
+          # always" intent explicit and future-proof.
+          arguments: --workspace
+          # `unlicensed` is intentionally downgraded to a no-op here rather
+          # than in deny.toml: this project's own workspace crates don't
+          # always have `license.workspace = true` wired up the moment a
+          # crate is scaffolded (see PROGRESS.md), and that is a workspace
+          # manifest-hygiene concern, not the dependency-license problem
+          # this scan exists to catch. A real disallowed license on an
+          # actual dependency is a *different* diagnostic ("rejected") and
+          # is NOT affected by this flag — it still fails the build.
+          command-arguments: --allow unlicensed
