@@ -1,231 +1,99 @@
-// ANKAI client — glass/blur + drag-reorder spike (ADR-0002 spike 1).
-// Throwaway prototype code, not production UI. Tokens sourced from
-// docs/design/tokens.md ("Liquid Y2K" v0) — colors and glass material
-// values are copied from there, not invented here.
+// ANKAI client — real app shell entry point.
+//
+// This is the minimal window + navigation skeleton for Phase 1's native
+// shell (see PROGRESS.md, "Immediate next steps" #2). Per ADR-0002's spike
+// gate (docs/adr/0002-native-ui-stack.md, "Spike / prototype plan"), native
+// shell work must NOT go beyond a window + navigation skeleton until two
+// spikes land: (1) low-end-hardware frame-time profiling and (2) screen-
+// reader accessibility validation — neither is done yet ("Spike 1 results"
+// in that ADR). Keep this plain on purpose: flat panels, solid colors, no
+// blur/translucency/animation/glass effects. Do not add visual polish here;
+// it's explicitly out of scope until that gate clears. A shared design-token
+// module (client/ui/theme.slint) may land separately — wire it in as a fast
+// follow-up once it exists, don't block this skeleton on it.
+//
+// The throwaway glass/blur + drag-reorder rendering spike from ADR-0002
+// spike 1 lives in spike-glass-blur.slint and is only reachable via a debug
+// flag from src/main.rs (`--spike` / ANKAI_SPIKE_DEBUG=1) — it is legacy
+// prototype code, not part of this shell.
 
-import { Theme } from "theme.slint";
-import { ModuleCard, ModuleCardItem } from "module-card.slint";
-
-export { ModuleCard }
+import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
+export { SpikeGlassBlurWindow }
 
 export component AppWindow inherits Window {
-    title: "ANKAI — glass/blur spike";
-    preferred-width: 1000px;
-    preferred-height: 680px;
-    background: Theme.bg-void;
+    title: "ANKAI";
+    preferred-width: 960px;
+    preferred-height: 640px;
+    background: #14161c; // flat neutral — structural scaffolding, not final theme
 
-    in-out property <bool> potato-mode: false;
-
-    // Mock "module" cards — representing ANKAI profile modules.
-    in-out property <[ModuleCard]> modules: [
-        { title: "Top 8", subtitle: "Pinned friends", accent: Theme.accent-cyan, id: 0 },
-        { title: "Now Playing", subtitle: "Backloggd sync", accent: Theme.accent-violet, id: 1 },
-        { title: "Achievements", subtitle: "12 unlocked this week", accent: Theme.accent-gold, id: 2 },
-        { title: "Hangout", subtitle: "Watch party — live", accent: Theme.state-online, id: 3 },
-        { title: "Guestbook", subtitle: "3 new notes", accent: Theme.state-busy, id: 4 },
+    property <[string]> nav-items: [
+        "Profile",
+        "Messages",
+        "Communities",
+        "Hangouts",
+        "Settings",
     ];
+    property <int> selected-index: 0;
 
-    // ---- drag-reorder state (shared by the fixed overlay TouchArea below) ----
-    property <int> drag-index: -1;
-    property <length> slot-height: 76px;
-    property <length> drag-slot-origin-y: 0px;
-    property <length> press-anchor-y: 0px;
-    property <length> current-pointer-y: 0px;
-    property <ModuleCard> swap-scratch;
-
-    // ---------------------------------------------------------------
-    // 1. Colorful / patterned background — confetti grid of rotated
-    //    accent-colored squares over the void base color.
-    // ---------------------------------------------------------------
-    for row in 7: Rectangle {
-        x: 0px;
-        y: row * 100px;
-        width: parent.width;
-        height: 100px;
-
-        for col in 9: Rectangle {
-            x: (col * 118px) + (Math.mod(row, 2) == 0 ? 0px : 59px);
-            y: 0px;
-            width: 46px;
-            height: 46px;
-            border-radius: 8px;
-            background: Math.mod(row + col, 3) == 0
-                ? Theme.accent-cyan.with-alpha(0.2)
-                : Math.mod(row + col, 3) == 1
-                    ? Theme.accent-violet.with-alpha(0.2)
-                    : Theme.accent-gold.with-alpha(0.2);
-        }
-    }
-
-    // Soft radial-ish wash to keep the pattern from being too flat.
-    Rectangle {
-        x: 0px;
-        y: 0px;
-        width: parent.width;
-        height: parent.height;
-        background: @linear-gradient(160deg, Theme.bg-void.with-alpha(0.4) 0%, Theme.bg-surface.with-alpha(0.6) 55%, Theme.bg-void.with-alpha(0.8) 100%);
-    }
-
-    // ---------------------------------------------------------------
-    // 2. Glass panel — translucent, tinted, over the pattern.
-    //    NOTE: Slint has no first-class blur-behind / backdrop-filter
-    //    primitive as of 1.17 (open upstream request, see ADR-0002 and
-    //    slint-ui/slint#2066 / #10887). What's implemented here is the
-    //    honest ceiling reachable in pure .slint markup: alpha-blended
-    //    tint (color.glass.tint @ 45%) + a border + a specular gradient
-    //    strip + drop-shadow for elevation — i.e. exactly tokens.md's
-    //    "Low tier" `fallback.fill` glass material, not a true dynamic
-    //    Gaussian blur of the content behind it.
-    // ---------------------------------------------------------------
-    glass := Rectangle {
-        x: 40px;
-        y: 40px;
-        width: 360px;
-        height: 200px;
-        border-radius: 24px;
-        background: root.potato-mode ? Theme.glass-fallback-fill : Theme.glass-tint;
-        border-width: 1px;
-        border-color: Theme.silver.with-alpha(0.2);
-        drop-shadow-color: Theme.bg-void.with-alpha(170.0 / 255.0);
-        drop-shadow-blur: root.potato-mode ? 0px : 32px;
-        drop-shadow-offset-y: 8px;
-
-        // Specular highlight strip (static, per tokens.md "Normal" tier).
-        // Pure white gradient — tokens.md doesn't define a "white" token,
-        // so this is left as a literal (see theme.slint header comment).
+    HorizontalLayout {
+        // ---- Sidebar: persistent nav destinations ----
         Rectangle {
-            visible: !root.potato-mode;
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: 40%;
-            border-radius: 24px;
-            background: @linear-gradient(180deg, #ffffff26 0%, #ffffff00 100%);
-        }
+            width: 220px;
+            background: #1c1f27;
+            border-width: 1px;
+            border-color: #2c3040;
 
-        VerticalLayout {
-            padding: 20px;
-            spacing: 6px;
-            alignment: start;
-            Text {
-                text: "Glass panel";
-                color: Theme.text-primary;
-                font-size: 20px;
-                font-weight: 700;
-            }
-            Text {
-                text: root.potato-mode
-                    ? "Potato mode: flat opaque fallback (tokens.md Potato tier)"
-                    : "Normal tier: alpha tint + specular strip + drop-shadow. No live blur-through — see ADR-0002 spike notes.";
-                color: Theme.text-secondary;
-                font-size: 13px;
-                wrap: word-wrap;
-            }
-            Rectangle { height: Theme.space-2; }
-            potato-toggle := Rectangle {
-                height: 32px;
-                width: 190px;
-                border-radius: 16px;
-                background: root.potato-mode ? Theme.accent-cyan : Theme.bg-surface-raised.with-alpha(0.8);
-                border-width: 1px;
-                border-color: Theme.silver.with-alpha(85.0 / 255.0);
+            VerticalLayout {
+                padding: 16px;
+                spacing: 4px;
+                alignment: start;
+
                 Text {
-                    x: 0px; y: 0px;
-                    width: parent.width; height: parent.height;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    text: root.potato-mode ? "Potato mode: ON" : "Potato mode: OFF";
-                    color: root.potato-mode ? Theme.bg-void : Theme.text-primary;
-                    font-size: 12px;
-                    font-weight: 600;
+                    text: "ANKAI";
+                    color: #e6e8ef;
+                    font-size: 18px;
+                    font-weight: 700;
                 }
-                TouchArea {
-                    clicked => {
-                        root.potato-mode = !root.potato-mode;
+
+                Rectangle { height: 16px; }
+
+                for item[i] in nav-items: Rectangle {
+                    height: 40px;
+                    border-radius: 6px;
+                    background: root.selected-index == i ? #2e3446 : transparent;
+
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: item;
+                        color: root.selected-index == i ? #f2f4fa : #a6adc4;
+                        font-size: 14px;
+                        font-weight: root.selected-index == i ? 600 : 400;
                     }
-                }
-            }
-        }
-    }
 
-    // ---------------------------------------------------------------
-    // 3. Drag-and-drop reorderable module list.
-    //    Mechanism: TouchArea.pressed / pressed-y / mouse-y / moved()
-    //    on a single FIXED overlay (not per-card, to avoid a feedback
-    //    loop between the moving card and its own touch input frame).
-    //    Slint's experimental DragArea/DropArea elements (mentioned in
-    //    ADR-0002) are not in the 1.17 stable API surface, so this
-    //    uses the same TouchArea-based technique as Slint's official
-    //    Kanban card-reordering example.
-    // ---------------------------------------------------------------
-    list-area := Rectangle {
-        x: 460px;
-        y: 40px;
-        width: 480px;
-        height: root.modules.length * root.slot-height + 20px;
-        border-radius: 20px;
-        background: Theme.bg-surface.with-alpha(170.0 / 255.0);
-        border-width: 1px;
-        border-color: Theme.silver.with-alpha(34.0 / 255.0);
-
-        Text {
-            x: 16px;
-            y: 10px;
-            text: "Profile modules — drag to reorder";
-            color: Theme.text-secondary;
-            font-size: 12px;
-        }
-
-        cards := Rectangle {
-            x: 10px;
-            y: 34px;
-            width: parent.width - 20px;
-            height: parent.height - 44px;
-            clip: false;
-
-            for card[i] in root.modules: ModuleCardItem {
-                width: cards.width;
-                mod-title: card.title;
-                mod-subtitle: card.subtitle;
-                accent: card.accent;
-                slot-index: i;
-                slot-height: root.slot-height;
-                is-dragging: root.drag-index == i;
-                drag-y: root.drag-slot-origin-y + (root.current-pointer-y - root.press-anchor-y);
-            }
-
-            overlay := TouchArea {
-                x: 0px;
-                y: 0px;
-                width: parent.width;
-                height: parent.height;
-
-                moved => {
-                    if (root.drag-index >= 0) {
-                        root.current-pointer-y = overlay.mouse-y;
-                        let target-raw = (root.drag-slot-origin-y + (overlay.mouse-y - root.press-anchor-y) + (root.slot-height / 2)) / root.slot-height;
-                        let target = Math.max(0, Math.min(root.modules.length - 1, Math.floor(target-raw)));
-                        if (target != root.drag-index) {
-                            root.swap-scratch = root.modules[root.drag-index];
-                            root.modules[root.drag-index] = root.modules[target];
-                            root.modules[target] = root.swap-scratch;
-                            root.drag-slot-origin-y = target * root.slot-height;
-                            root.press-anchor-y = overlay.mouse-y;
-                            root.drag-index = target;
+                    TouchArea {
+                        clicked => {
+                            root.selected-index = i;
                         }
                     }
                 }
+            }
+        }
 
-                changed pressed => {
-                    if (self.pressed) {
-                        root.drag-index = Math.max(0, Math.min(root.modules.length - 1, Math.floor(self.pressed-y / root.slot-height)));
-                        root.drag-slot-origin-y = root.drag-index * root.slot-height;
-                        root.press-anchor-y = self.pressed-y;
-                        root.current-pointer-y = self.pressed-y;
-                    } else {
-                        root.drag-index = -1;
-                    }
-                }
+        // ---- Content pane: swapped based on selected nav item ----
+        Rectangle {
+            horizontal-stretch: 1;
+            background: #0f1116;
+
+            Text {
+                x: 32px;
+                y: 28px;
+                text: nav-items[root.selected-index];
+                color: #f2f4fa;
+                font-size: 22px;
+                font-weight: 700;
             }
         }
     }
