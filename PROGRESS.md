@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 5)
+Last updated: 2026-08-14 (session 6)
 
 ## What ANKAI is
 
@@ -50,6 +50,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Theme tokens wired into nav skeleton | done — `app.slint`'s hardcoded hex literals replaced with `Theme.*` tokens (see ADR-0002 note below); still deliberately flat, no glass/blur | `client/ui/app.slint` |
 | OpenMLS storage backed by SQLCipher DB | done — `AnkaiMlsProvider` wraps `openmls_rust_crypto`'s `MemoryStorage`, persisting its whole contents as one opaque blob in a new `mls_storage` table (migration 3); whole-blob durability granularity, not per-field — see the module doc comment for the tradeoff and when to revisit it | `core/src/mls_provider.rs` |
 | Basic P2P scaffolding (iroh) | done — `P2pNode` wraps a bound iroh `Endpoint` (bind/addr/send/accept_and_echo_once/close), `presets::Minimal` so no discovery/relay service is contacted; deliberately no discovery, privacy-mode gating, relay tiers, or blobs/gossip — see the module doc comment | `core/src/p2p.rs` |
+| First-run local identity | done — `identity::load_or_create_device` generates a real ED25519 signature keypair + random opaque account/device ids on first run, reloads the same identity on every run after; `AccountId` is still an honest placeholder (not a real account-root identity key — see the module doc comment); Profile pane displays both ids | `core/src/identity.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -143,12 +144,47 @@ licenses` rejects, stacking on top of the pre-existing openmls/hpke-rs
 MPL-2.0 issue from earlier sessions — not fixed, same ADR-owner licensing
 policy call, not an engineering one. Pushed to `origin/main`.
 
-Remaining steps (not yet started, ordered by rough priority — open to
-reordering, this isn't a locked decision):
+**Session 6 (2026-08-14) tackled the last item from session 5's queue**:
+`client/src/main.rs`'s placeholder `AccountId` (which only proved
+`ankai-core` was reachable from `client`) is now a real first-run identity-
+creation flow. `identity::load_or_create_device` generates a random opaque
+account/device id pair plus a real ED25519 `SignatureKeyPair` (via
+`openmls_basic_credential`, persisted into `AnkaiMlsProvider`'s storage) the
+first time a device's DB is opened, and reloads the same identity — proven
+by the *actual private key* still being readable back out of MLS storage,
+not just a stored id string — on every run after. `identity::
+SignatureKeyPlaceholder` is retired in favor of `DeviceSignatureKey`, which
+now wraps a real, storage-backed public key. `AccountId` is still an honest
+placeholder in one specific documented way: it's a random string, not
+derived from a real account-root identity key, because ADR-0004's multi-
+device "Registration" model (an account key that co-signs new devices)
+isn't built, and there's no server-side account service yet either — so
+"creating an account" can currently only mean "generate a local identity
+for this installation." Verified three ways: two new core tests, plus
+manually running the real app twice in a row and confirming the Profile
+pane shows identical account/device IDs both times (screenshotted both
+runs side by side). Full workspace build/test/clippy/fmt clean. Pushed to
+`origin/main`.
 
-1. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
-   into an actual first-run account-creation flow (currently just proves
-   the type is reachable, per that line's own comment).
+Remaining steps: **the queue from sessions 2-5 is now empty** — every item
+originally listed has landed. Two reasonable candidates for what comes
+next, neither started, presented here only as options for whoever picks
+this up (human or a future session) to choose from or override entirely:
+
+1. Generate and store a real MLS `KeyPackage` for the device —
+   `identity::PublishedKeyPackage.key_package` is still `None` (that
+   struct's own doc comment already flagged this as the obvious next
+   layer once a live `OpenMlsProvider` + `Signer` existed, which this
+   session's work now provides). Self-contained: building a `KeyPackage`
+   needs no network/discovery, only *publishing* one would.
+2. Start on real feature data behind one of the UI's other nav panes
+   (Messages/Communities/Hangouts are still placeholder `Text`, unlike
+   Profile/Settings now) — lower crypto risk, more UI/data-model shaped.
+
+Neither is a locked decision — say if you'd rather go a different
+direction entirely (e.g. toward the P2P/ADR-0003 spikes, or toward the
+"thin cloud" identity/discovery service multiple modules above are
+currently stubbed pending).
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
@@ -209,6 +245,9 @@ than risk getting cut off mid-change with uncommitted state.
    rationale, not just the conclusion. Don't re-litigate an Accepted ADR without
    new information.
 4. Check the "Immediate next steps" list above and continue from the first
-   undone item.
+   undone item. If that list presents open candidates rather than an
+   ordered queue (true as of session 6 — the original queue emptied out),
+   ask the human which to pursue rather than picking unilaterally, the same
+   way sessions 4 and 5 did before starting.
 5. If the user just says "continue ANKAI" with no other context, that's enough —
    do not re-ask them to re-explain the product.
