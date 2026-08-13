@@ -19,6 +19,24 @@
 
 slint::include_modules!();
 
+/// Opens (creating if necessary) ANKAI's local encrypted database in this
+/// platform's standard app-data directory, keyed by the device-local
+/// passphrase from `ankai_core::keychain` (OS secure storage, per
+/// ADR-0004). Panics on failure — without a working local DB there's
+/// nothing useful the app can do, so there's no graceful degraded mode to
+/// fall back to here.
+fn open_local_db() -> ankai_core::db::Db {
+    let dirs = directories::ProjectDirs::from("com", "ankai", "ANKAI")
+        .expect("no valid app data directory for this platform/user");
+    std::fs::create_dir_all(dirs.data_dir()).expect("failed to create app data directory");
+
+    let passphrase = ankai_core::keychain::device_db_passphrase()
+        .expect("failed to obtain device DB encryption key from OS secure storage");
+
+    ankai_core::db::Db::open(dirs.data_dir().join("ankai.sqlite"), &passphrase)
+        .expect("failed to open local encrypted database")
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Prefer the Skia renderer for full-effects mode per ADR-0002. If Skia
     // can't be selected (missing at compile time, or backend init fails at
@@ -50,6 +68,22 @@ fn main() -> Result<(), slint::PlatformError> {
         return spike.run();
     }
 
+    let db = std::rc::Rc::new(open_local_db());
+
     let app = AppWindow::new()?;
+
+    let saved_display_name = db
+        .get_setting("display_name")
+        .expect("failed to read display_name setting")
+        .unwrap_or_default();
+    app.set_display_name(saved_display_name.into());
+
+    let db_for_save = db.clone();
+    app.on_save_display_name(move |name| {
+        if let Err(err) = db_for_save.set_setting("display_name", &name) {
+            eprintln!("ankai-client: failed to save display name: {err}");
+        }
+    });
+
     app.run()
 }

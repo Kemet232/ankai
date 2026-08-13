@@ -17,6 +17,8 @@ ankai-core = { path = "../core" }
 # still keeping FemtoVG/software available as the Potato-mode fallback
 # path without a second build.
 slint = { version = "1.17", features = ["renderer-skia"] }
+# Cross-platform app data directory resolution — see root Cargo.toml.
+directories.workspace = true
 
 [build-dependencies]
 slint-build = "1.17"

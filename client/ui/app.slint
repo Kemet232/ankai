@@ -17,6 +17,7 @@
 // flag from src/main.rs (`--spike` / ANKAI_SPIKE_DEBUG=1) — it is legacy
 // prototype code, not part of this shell.
 
+import { LineEdit, Button } from "std-widgets.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
 
@@ -34,6 +35,13 @@ export component AppWindow inherits Window {
         "Settings",
     ];
     property <int> selected-index: 0;
+    property <int> settings-index: 4; // index of "Settings" in nav-items, above
+
+    // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
+    // screen/persistence" step) — main.rs loads the saved value into this
+    // property at startup and saves it back out on save-display-name.
+    in-out property <string> display-name: "";
+    callback save-display-name(string);
 
     HorizontalLayout {
         // ---- Sidebar: persistent nav destinations ----
@@ -87,13 +95,53 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: #0f1116;
 
-            Text {
+            if root.selected-index != root.settings-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
                 color: #f2f4fa;
                 font-size: 22px;
                 font-weight: 700;
+            }
+
+            if root.selected-index == root.settings-index: VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Settings";
+                    color: #f2f4fa;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Text {
+                        text: "Display name";
+                        color: #a6adc4;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+
+                    LineEdit {
+                        width: 240px;
+                        text <=> root.display-name;
+                        accepted => {
+                            root.save-display-name(root.display-name);
+                        }
+                    }
+
+                    Button {
+                        text: "Save";
+                        clicked => {
+                            root.save-display-name(root.display-name);
+                        }
+                    }
+                }
             }
         }
     }
