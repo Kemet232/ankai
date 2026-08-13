@@ -36,6 +36,7 @@ export component AppWindow inherits Window {
         "Settings",
     ];
     property <int> selected-index: 0;
+    property <int> profile-index: 0; // index of "Profile" in nav-items, above
     property <int> settings-index: 4; // index of "Settings" in nav-items, above
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
@@ -43,6 +44,11 @@ export component AppWindow inherits Window {
     // property at startup and saves it back out on save-display-name.
     in-out property <string> display-name: "";
     callback save-display-name(string);
+
+    // This installation's local identity (see ankai_core::identity) — set
+    // once at startup by main.rs, never changes at runtime.
+    in property <string> account-id: "";
+    in property <string> device-id: "";
 
     HorizontalLayout {
         // ---- Sidebar: persistent nav destinations ----
@@ -96,13 +102,58 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
                 color: Theme.text-primary;
                 font-size: 22px;
                 font-weight: 700;
+            }
+
+            if root.selected-index == root.profile-index: VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Profile";
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Account ID";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    Text {
+                        text: root.account-id;
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Device ID";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    Text {
+                        text: root.device-id;
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                    }
+                }
             }
 
             if root.selected-index == root.settings-index: VerticalLayout {

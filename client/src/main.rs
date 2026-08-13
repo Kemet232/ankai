@@ -52,12 +52,6 @@ fn main() -> Result<(), slint::PlatformError> {
         );
     }
 
-    // Touch ankai-core so the client crate's dependency on it is real, not
-    // just declared — this will grow into actual identity/session wiring.
-    // No real key material here, just proving the type is reachable from
-    // `client` in the same workspace with no FFI/bridge layer.
-    let _placeholder_account = ankai_core::identity::AccountId(String::new());
-
     let spike_debug = std::env::args().any(|arg| arg == "--spike")
         || std::env::var("ANKAI_SPIKE_DEBUG").is_ok_and(|v| v == "1");
 
@@ -70,7 +64,22 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let db = std::rc::Rc::new(open_local_db());
 
+    // First-run local identity: generates and persists an account/device
+    // id plus a real device signature keypair the first time this device's
+    // DB is opened, or reloads the same one on every run after that. See
+    // ankai_core::identity's module doc comment for what this is (and
+    // isn't) yet — no server-issued account, no account-root identity key.
+    let mls_provider =
+        ankai_core::mls_provider::AnkaiMlsProvider::load(&db).expect("failed to load MLS storage");
+    let device = ankai_core::identity::load_or_create_device(&db, &mls_provider)
+        .expect("failed to load or create local device identity");
+    mls_provider
+        .flush(&db)
+        .expect("failed to persist MLS storage");
+
     let app = AppWindow::new()?;
+    app.set_account_id(device.account.0.into());
+    app.set_device_id(device.id.0.into());
 
     let saved_display_name = db
         .get_setting("display_name")
