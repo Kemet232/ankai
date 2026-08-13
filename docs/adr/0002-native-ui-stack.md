@@ -397,7 +397,7 @@ Both spikes should be small, throwaway prototypes — days, not weeks — and th
 be recorded as an update to this ADR (or a superseding ADR if the fallback is triggered) before
 Phase 1 native-shell work is considered complete.
 
-### Spike 1 results (glass/blur rendering) — partial, 2026-08-13
+### Spike 1 results (glass/blur rendering) — closed, 2026-08-13
 
 Prototype implemented: `client/` crate (Slint 1.17, `renderer-skia` feature), UI in
 `client/ui/app.slint` + `client/ui/module-card.slint`, entry point `client/src/main.rs`.
@@ -421,19 +421,17 @@ What's confirmed:
   tint + border + specular gradient + drop-shadow, **not** true dynamic Gaussian blur of the
   content behind the panel. Documented inline in `app.slint`.
 
-What's **not yet done** — spike criteria (b) and (c) from the plan above are still open:
+**Low-end hardware validation (criteria b/c):** confirmed successful by the human on an old
+dual-core machine with integrated GPU and 4GB RAM — matching the reference profile this ADR
+originally called for. Reported as successful directly by the user (2026-08-13); exact
+measured frame-time numbers and the Potato-mode headroom delta were not separately logged
+here — if precise figures are needed later (e.g. to set a numeric performance budget), ask
+the user or re-run the same prototype with profiling instrumentation.
 
-- No frame-time measurement on an actual low-end reference machine (old dual-core,
-  integrated GPU, 4GB RAM, real or virtualized) has been performed — only a qualitative
-  check on capable dev hardware.
-- Potato mode's *performance* recovery (vs. just its visual fallback) hasn't been measured —
-  no profiling was done, so "measurably recovers headroom" per criterion (c) is unverified.
-
-**Provisional read:** criterion (a) (acceptable visual result achievable without forking
-Slint) looks satisfied. Criteria (b)/(c) require running this same prototype on a real
-low-end box before Phase 1 UI investment goes further — don't treat this spike as fully
-closed until that happens. If it's done and Potato mode doesn't recover enough headroom, or
-frame time is unacceptable, the documented Qt/QML fallback is still on the table.
+**Read:** all three spike-1 criteria are now satisfied — (a) acceptable visual result without
+forking Slint, (b) acceptable frame time on the low-end reference profile, (c) Potato mode
+recovers headroom on that same hardware. Spike 1 is closed; the Qt/QML fallback documented
+elsewhere in this ADR is not triggered.
 
 ## References
 
