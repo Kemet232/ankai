@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-13
+Last updated: 2026-08-13 (session 2)
 
 ## What ANKAI is
 
@@ -39,38 +39,38 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Open-source model (what's open vs. closed) | **Accepted: Apache-2.0** for core/client/protocol/SDKs; marketplace backend, abuse infra, recommendation internals stay closed | `docs/adr/0007-open-source-model.md`, `LICENSE` |
 | Threat model | done (v0, will grow as ADRs land) | `docs/threat-model.md` |
 | Design tokens (Liquid Y2K) | done (v0) | `docs/design/tokens.md` |
-| Rust workspace skeleton | `core` crate scaffolded + builds; `client` crate not started (now unblocked — Slint picked) | `core/`, `client/` |
-| CI | not started | `.github/workflows/` |
+| Rust workspace skeleton | `core` + `client` crates scaffolded, both build clean (fmt/clippy pass) | `core/`, `client/` |
+| CI | done — fmt/clippy/test + cargo-deny, all generic across the workspace | `.github/workflows/ci.yml`, `deny.toml` |
+| ADR-0002 spike 1 (glass/blur rendering) | prototype built and visually confirmed on dev hardware; low-end-machine frame-time profiling still open | `docs/adr/0002-native-ui-stack.md` ("Spike 1 results") |
 
 ## Immediate next steps (in order)
 
 All 5 research ADRs (0002-0006) are Accepted, plus ADR-0007 (open-source
-model: Apache-2.0, LICENSE added). `ankai-core`'s `identity` module now has
+model: Apache-2.0, LICENSE added). `ankai-core`'s `identity` module has
 MLS/OpenMLS-shaped types (real `openmls` types where safe, honest
 placeholders elsewhere — see `core/src/identity.rs` doc comments), builds
 clean.
 
-**As of the last checkpoint, two background agents were still running and
-had NOT yet been reviewed/committed — if you're resuming cold and don't see
-their commits in `git log`, they may need to be re-launched:**
+The two previously-in-flight background-agent tasks have been reviewed and
+committed (`git log`: "Scaffold client crate..." and "Add CI: fmt/clippy/
+test..."). Reviewed as part of that: `cargo build/clippy --workspace
+--all-targets` clean, `cargo fmt --check` was failing on `client/src/main.rs`
+(fixed before commit), and the app was actually run + visually inspected
+(glass panel, confetti background, drag-reorder list, Potato-mode toggle
+all render correctly) — see ADR-0002's new "Spike 1 results" section for
+exactly what was and wasn't verified.
 
-- **Client crate + Slint blur/glass spike** (task: scaffold `client/` per
-  ADR-0002, build the glass/blur rendering prototype the ADR flags as
-  needed before deep UI investment, append spike-1 results to ADR-0002's
-  spike-plan section). If `client/` exists on disk but isn't committed,
-  check whether it actually builds (`cargo build -p client`) before trusting
-  it — review, fix if needed, then commit.
-- **CI workflow** (task: `.github/workflows/ci.yml` — fmt/clippy/test plus a
-  `cargo-deny` license scan per ADR-0004; `deny.toml` may already exist on
-  disk). If `.github/workflows/ci.yml` isn't committed yet, check it exists
-  and is sane before committing.
+Remaining steps:
 
-Once both are reviewed and committed, remaining steps:
-
-1. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
+1. **ADR-0002 spike 1 is not fully closed** — frame-time profiling on a real
+   low-end reference machine (old dual-core, integrated GPU, 4GB RAM, real
+   or virtualized — pick and document one) hasn't been done, only a
+   qualitative check on capable dev hardware. Do that before sinking more
+   engineering into the glass/blur visual system, per the ADR's own gate.
+2. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
    per the phase list — see any ADR or ask the user for the full phase breakdown
    if it's not already summarized in this file by then.
-2. Keep an eye on ADR-0002's spike-2 (accessibility validation with real
+3. Keep an eye on ADR-0002's spike-2 (accessibility validation with real
    screen readers) — that one requires an actual human, it can't be
    delegated to an agent.
 
