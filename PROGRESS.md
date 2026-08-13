@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-13 (session 2)
+Last updated: 2026-08-13 (session 2, cont'd)
 
 ## What ANKAI is
 
@@ -25,7 +25,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 
 ## Current phase
 
-**Phase 0 — Architecture.** Nothing user-facing built yet. In progress:
+**Phase 0 — Architecture: done.** **Phase 1 — Native shell: started.**
 
 | Track | Status | Owner artifact |
 |---|---|---|
@@ -42,6 +42,14 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Rust workspace skeleton | `core` + `client` crates scaffolded, both build clean (fmt/clippy pass) | `core/`, `client/` |
 | CI | done — fmt/clippy/test + cargo-deny, all generic across the workspace | `.github/workflows/ci.yml`, `deny.toml` |
 | ADR-0002 spike 1 (glass/blur rendering) | prototype built and visually confirmed on dev hardware; low-end-machine frame-time profiling still open | `docs/adr/0002-native-ui-stack.md` ("Spike 1 results") |
+| Theme tokens module | done — `client/ui/theme.slint` (Slint `global Theme`), all of tokens.md's colors/spacing/motion mapped; app.slint/module-card.slint refactored off raw hex | `client/ui/theme.slint` |
+| Window + nav skeleton | done — real `client` binary default output now; deliberately plain (no glass/blur) per ADR-0002's gate | `client/ui/app.slint`, `client/src/main.rs` |
+| Local encrypted DB (SQLite/SQLCipher) | done — `Db::open`/`open_in_memory`, migrations scaffold, wrong-key-fails test | `core/src/db.rs` |
+
+The old glass/blur + drag-reorder spike still exists (now themed via
+`Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
+`cargo run -p client -- --spike` (or `ANKAI_SPIKE_DEBUG=1`) — it is not
+the default UI anymore.
 
 ## Immediate next steps (in order)
 
@@ -51,14 +59,27 @@ MLS/OpenMLS-shaped types (real `openmls` types where safe, honest
 placeholders elsewhere — see `core/src/identity.rs` doc comments), builds
 clean.
 
-The two previously-in-flight background-agent tasks have been reviewed and
-committed (`git log`: "Scaffold client crate..." and "Add CI: fmt/clippy/
-test..."). Reviewed as part of that: `cargo build/clippy --workspace
---all-targets` clean, `cargo fmt --check` was failing on `client/src/main.rs`
-(fixed before commit), and the app was actually run + visually inspected
-(glass panel, confetti background, drag-reorder list, Potato-mode toggle
-all render correctly) — see ADR-0002's new "Spike 1 results" section for
-exactly what was and wasn't verified.
+Session 2 ran three Phase-1 tracks in parallel (isolated git worktrees),
+reviewed and merged all three onto `main`: theme tokens module, window+nav
+skeleton, and the SQLite/SQLCipher `db` module in `core`. The nav-skeleton
+and theme-tokens branches both touched `client/ui/app.slint` (one renamed
+its content to `spike-glass-blur.slint`, the other refactored it in place)
+so merging required manually resolving that conflict — done by taking the
+nav skeleton as the new `app.slint` and reapplying the `Theme.*` refactor to
+`spike-glass-blur.slint` by hand. Post-merge, full workspace
+build/test/clippy/fmt all verified clean, and the running app was visually
+screenshotted to confirm no regression in either the nav shell or the
+(now-legacy) spike.
+
+**Note for future sessions:** during this work, an agent testing the nav
+skeleton attempted synthetic OS-level mouse clicks (no accessibility
+permissions were available for cleaner automation) and one click missed the
+app window and landed on the human's own browser tab. Avoid this class of
+action — prefer code-level verification of simple state-driven UI logic
+(e.g. confirming a `TouchArea.clicked` handler and its binding by reading
+the `.slint` source) over synthetic input on the user's live desktop. A
+project-level `run`/screenshot skill for this repo, if one gets built,
+should account for this.
 
 Remaining steps:
 
@@ -67,12 +88,17 @@ Remaining steps:
    or virtualized — pick and document one) hasn't been done, only a
    qualitative check on capable dev hardware. Do that before sinking more
    engineering into the glass/blur visual system, per the ADR's own gate.
-2. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
-   per the phase list — see any ADR or ask the user for the full phase breakdown
-   if it's not already summarized in this file by then.
-3. Keep an eye on ADR-0002's spike-2 (accessibility validation with real
+2. Keep an eye on ADR-0002's spike-2 (accessibility validation with real
    screen readers) — that one requires an actual human, it can't be
    delegated to an agent.
+3. Continue Phase 1: settings screen/persistence (wire the nav skeleton's
+   "Settings" pane to something real, backed by `core`'s new `db` module),
+   SQLite key management (currently `Db::open` takes a passphrase from the
+   caller — OS secure-storage-backed key derivation is still unimplemented,
+   see `core/src/db.rs` module doc comment), and wiring `Theme` into the nav
+   skeleton (`app.slint` is currently plain/flat on purpose — swap in real
+   tokens once appropriate, it was deliberately left out of both agents'
+   scope so they wouldn't collide).
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
