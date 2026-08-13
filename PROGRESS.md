@@ -44,24 +44,35 @@ parties, theme assets) goes peer-to-peer wherever safe.
 
 ## Immediate next steps (in order)
 
-All 5 research ADRs (0002-0006) are Accepted — architecture is unblocked.
+All 5 research ADRs (0002-0006) are Accepted, plus ADR-0007 (open-source
+model: Apache-2.0, LICENSE added). `ankai-core`'s `identity` module now has
+MLS/OpenMLS-shaped types (real `openmls` types where safe, honest
+placeholders elsewhere — see `core/src/identity.rs` doc comments), builds
+clean.
 
-1. Write the open-source-model ADR (what's open vs. closed/hosted, spec section
-   42) — factor in ADR-0004's finding that every recommended crypto dependency
-   is permissively licensed, so this is a pure business decision, not forced by
-   any library choice. Blocks adding a LICENSE file to the now-public repo.
-2. Start the `client` crate (Slint, per ADR-0002) in the Cargo workspace: window,
-   nav skeleton. Run the two spikes ADR-0002 flags (glass/blur rendering,
-   accessibility validation) early, before deep UI investment.
-3. Start wiring `ankai-core`'s `identity` module toward MLS/OpenMLS shapes per
-   ADR-0004 (KeyPackages, device-as-MLS-client model) — still just types/
-   scaffolding, not a security-reviewed implementation.
-4. Stand up CI (`fmt`, `clippy`, `test`, and a dependency-license scan per
-   ADR-0004's consequences) in `.github/workflows/ci.yml` once the `client`
-   crate exists.
-5. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
+**As of the last checkpoint, two background agents were still running and
+had NOT yet been reviewed/committed — if you're resuming cold and don't see
+their commits in `git log`, they may need to be re-launched:**
+
+- **Client crate + Slint blur/glass spike** (task: scaffold `client/` per
+  ADR-0002, build the glass/blur rendering prototype the ADR flags as
+  needed before deep UI investment, append spike-1 results to ADR-0002's
+  spike-plan section). If `client/` exists on disk but isn't committed,
+  check whether it actually builds (`cargo build -p client`) before trusting
+  it — review, fix if needed, then commit.
+- **CI workflow** (task: `.github/workflows/ci.yml` — fmt/clippy/test plus a
+  `cargo-deny` license scan per ADR-0004; `deny.toml` may already exist on
+  disk). If `.github/workflows/ci.yml` isn't committed yet, check it exists
+  and is sane before committing.
+
+Once both are reviewed and committed, remaining steps:
+
+1. Begin Phase 1 (native shell: window, nav, theme foundation, SQLite, settings)
    per the phase list — see any ADR or ask the user for the full phase breakdown
    if it's not already summarized in this file by then.
+2. Keep an eye on ADR-0002's spike-2 (accessibility validation with real
+   screen readers) — that one requires an actual human, it can't be
+   delegated to an agent.
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
