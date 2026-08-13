@@ -15,3 +15,9 @@ license = "Apache-2.0"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+# SQLCipher-backed encrypted SQLite, per docs/adr/0004-e2ee-stack.md's local
+# encrypted message database decision. `bundled-sqlcipher` vendors SQLCipher's
+# BSD-style-licensed C source through a build script; the `rusqlite` crate
+# itself is MIT (see deny.toml's note on why this doesn't need its own
+# allow-list entry).
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
