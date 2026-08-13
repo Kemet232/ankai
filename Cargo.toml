@@ -21,3 +21,20 @@ thiserror = "1"
 # itself is MIT (see deny.toml's note on why this doesn't need its own
 # allow-list entry).
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
+# OS secure-storage-backed device secrets (macOS Keychain / Windows Credential
+# Manager / Linux Secret Service), per docs/adr/0004-e2ee-stack.md's "Key
+# management" section: the local DB encryption key is a device-local secret,
+# generated on first run, never derived from or escrowed with the server.
+# Default features are exactly the cross-platform set the ADR calls for (no
+# extra feature flags needed): "v1" pulls in the Apple-native keychain store
+# on macOS/iOS, the Windows Credential Manager store on Windows, and the
+# zbus-based Secret Service store on other Unix targets.
+keyring = "4"
+# Device-local secret generation (the DB encryption passphrase above), not
+# used for anything cryptographically load-bearing beyond that yet — MLS's
+# own crypto is provided by openmls_rust_crypto, not this.
+rand = "0.9"
+# Cross-platform app data directory resolution (macOS Standard Directories /
+# Windows Known Folder API / Linux XDG base dirs), used by the client to
+# decide where the encrypted local database file lives.
+directories = "6"

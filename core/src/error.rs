@@ -4,4 +4,6 @@ pub enum Error {
     Db(String),
     #[error("identity error: {0}")]
     Identity(String),
+    #[error("keychain error: {0}")]
+    Keychain(String),
 }

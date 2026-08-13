@@ -7,15 +7,18 @@
 //! MIT — see `deny.toml`'s note on why this doesn't need its own
 //! allow-list entry).
 //!
-//! This module is Phase 1 scaffolding: a minimal typed connection API plus
-//! a `schema_version` bookkeeping table and a tiny migrations runner. No
-//! feature tables yet — those land with actual features later. Deriving or
-//! storing the passphrase itself (OS secure storage, per ADR-0004's "Key
-//! management" section) is out of scope here; callers supply it.
+//! This module is Phase 1 scaffolding: a minimal typed connection API, a
+//! `schema_version` bookkeeping table, a tiny migrations runner, and a
+//! generic `settings` key-value table for simple client preferences. Real
+//! per-feature tables (messages, profiles, communities, ...) still land
+//! later. Deriving or storing the passphrase itself is out of scope here —
+//! see `crate::keychain` for the OS-secure-storage-backed key management
+//! ADR-0004's "Key management" section calls for; callers of this module
+//! just supply whatever passphrase string they got from there.
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Error;
 
@@ -33,15 +36,25 @@ struct Migration {
 ///
 /// Phase 1: just the bookkeeping table itself. Real feature tables land in
 /// later migrations appended here.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    description: "create schema_version table",
-    sql: "CREATE TABLE IF NOT EXISTS schema_version (
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        description: "create schema_version table",
+        sql: "CREATE TABLE IF NOT EXISTS schema_version (
         version     INTEGER NOT NULL PRIMARY KEY,
         applied_at  TEXT NOT NULL DEFAULT (datetime('now')),
         description TEXT NOT NULL
     );",
-}];
+    },
+    Migration {
+        version: 2,
+        description: "create settings table",
+        sql: "CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT NOT NULL PRIMARY KEY,
+        value TEXT NOT NULL
+    );",
+    },
+];
 
 /// A handle to ANKAI's local encrypted SQLite database.
 pub struct Db {
@@ -140,6 +153,32 @@ impl Db {
         current_schema_version(&self.conn)
     }
 
+    /// Reads a single value from the `settings` key-value table, or `None`
+    /// if `key` has never been set.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, Error> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                rusqlite::params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| Error::Db(format!("failed to read setting {key:?}: {e}")))
+    }
+
+    /// Sets a single value in the `settings` key-value table, overwriting
+    /// any existing value for `key`.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map_err(|e| Error::Db(format!("failed to write setting {key:?}: {e}")))?;
+        Ok(())
+    }
+
     /// Direct access to the underlying connection, for callers/modules
     /// (e.g. a future OpenMLS storage-trait backend, per ADR-0004) that
     /// need to run their own statements against this same encrypted file.
@@ -199,10 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_open_applies_migration_one() {
+    fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 1);
+        assert_eq!(db.schema_version().unwrap(), 2);
     }
 
     #[test]
@@ -211,23 +250,49 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 1);
+            assert_eq!(db.schema_version().unwrap(), 2);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
-            // must not re-apply (or double-record) migration 1.
+            // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 1);
+            assert_eq!(db.schema_version().unwrap(), 2);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 1, "migration 1 must be recorded exactly once");
+            assert_eq!(row_count, 2, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
+    }
+
+    #[test]
+    fn setting_round_trips_and_missing_key_is_none() {
+        let db = Db::open_in_memory("correct horse battery staple").unwrap();
+
+        assert_eq!(db.get_setting("display_name").unwrap(), None);
+
+        db.set_setting("display_name", "Ahmed").unwrap();
+        assert_eq!(
+            db.get_setting("display_name").unwrap(),
+            Some("Ahmed".to_string())
+        );
+
+        // Setting an existing key again overwrites, not duplicates.
+        db.set_setting("display_name", "Ahmed El Mahdi").unwrap();
+        assert_eq!(
+            db.get_setting("display_name").unwrap(),
+            Some("Ahmed El Mahdi".to_string())
+        );
+
+        let row_count: i64 = db
+            .connection()
+            .query_row("SELECT count(*) FROM settings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(row_count, 1);
     }
 
     #[test]
@@ -236,7 +301,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 1);
+            assert_eq!(db.schema_version().unwrap(), 2);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");

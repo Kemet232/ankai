@@ -14,3 +14,8 @@ openmls_rust_crypto = "0.5.1"
 # SQLCipher-backed encrypted SQLite for local persistence, per
 # docs/adr/0004-e2ee-stack.md.
 rusqlite.workspace = true
+# OS-secure-storage-backed device DB key, per docs/adr/0004-e2ee-stack.md's
+# "Key management" section — see root Cargo.toml for the feature-selection
+# rationale.
+keyring.workspace = true
+rand.workspace = true

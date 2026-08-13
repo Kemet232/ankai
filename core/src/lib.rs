@@ -7,6 +7,7 @@
 pub mod db;
 pub mod error;
 pub mod identity;
+pub mod keychain;
 pub mod protocol;
 
 pub use error::Error;
