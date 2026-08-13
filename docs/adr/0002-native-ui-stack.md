@@ -397,6 +397,44 @@ Both spikes should be small, throwaway prototypes — days, not weeks — and th
 be recorded as an update to this ADR (or a superseding ADR if the fallback is triggered) before
 Phase 1 native-shell work is considered complete.
 
+### Spike 1 results (glass/blur rendering) — partial, 2026-08-13
+
+Prototype implemented: `client/` crate (Slint 1.17, `renderer-skia` feature), UI in
+`client/ui/app.slint` + `client/ui/module-card.slint`, entry point `client/src/main.rs`.
+Covers all three elements this spike asked for: a translucent glass panel over a
+colorful/patterned moving background, a drag-and-drop reorderable module list (5 mock
+profile-module cards, TouchArea-based reorder — Slint 1.17 has no stable DragArea/DropArea),
+and a Potato-mode toggle that swaps the glass panel to an opaque flat fill and drops the
+shadow blur.
+
+What's confirmed:
+
+- Builds clean on this dev machine: `cargo build/clippy --workspace --all-targets` — zero
+  warnings. `cargo fmt --check` passes.
+- Runs and renders correctly: manually launched (`cargo run -p client`) and visually
+  inspected on this dev machine (Apple Silicon Mac, not the low-end reference target).
+  Glass panel (tint + specular strip + drop-shadow), confetti background, and the
+  reorderable card list all render as designed; Potato-mode toggle visibly swaps the panel
+  to the flat/opaque fill.
+- Confirms the honest ceiling this ADR anticipated: Slint 1.17 has no backdrop-filter /
+  blur-behind primitive (slint-ui/slint#2066, #10887 still open), so this is alpha-blended
+  tint + border + specular gradient + drop-shadow, **not** true dynamic Gaussian blur of the
+  content behind the panel. Documented inline in `app.slint`.
+
+What's **not yet done** — spike criteria (b) and (c) from the plan above are still open:
+
+- No frame-time measurement on an actual low-end reference machine (old dual-core,
+  integrated GPU, 4GB RAM, real or virtualized) has been performed — only a qualitative
+  check on capable dev hardware.
+- Potato mode's *performance* recovery (vs. just its visual fallback) hasn't been measured —
+  no profiling was done, so "measurably recovers headroom" per criterion (c) is unverified.
+
+**Provisional read:** criterion (a) (acceptable visual result achievable without forking
+Slint) looks satisfied. Criteria (b)/(c) require running this same prototype on a real
+low-end box before Phase 1 UI investment goes further — don't treat this spike as fully
+closed until that happens. If it's done and Potato mode doesn't recover enough headroom, or
+frame time is unacceptable, the documented Qt/QML fallback is still on the table.
+
 ## References
 
 - Slint: [FAQ](https://github.com/slint-ui/slint/blob/master/FAQ.md), [1.1 royalty-free license announcement](https://slint.dev/blog/slint-1.1-released), [1.6 release notes](https://slint.dev/blog/slint-1.6-released), [funding/hiring post](https://slint.dev/blog/slint-funding-and-hiring), custom shader request [#10887](https://github.com/slint-ui/slint/issues/10887), macOS blur discussion [#5710](https://github.com/slint-ui/slint/discussions/5710), Windows text-field a11y issues [#8732](https://github.com/slint-ui/slint/issues/8732) / [#2895](https://github.com/slint-ui/slint/issues/2895), a11y perf issue [#3867](https://github.com/slint-ui/slint/issues/3867).

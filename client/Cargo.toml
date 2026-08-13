@@ -1,0 +1,22 @@
+[package]
+name = "client"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "client"
+path = "src/main.rs"
+
+[dependencies]
+ankai-core = { path = "../core" }
+# Rust API per ADR-0002 (docs/adr/0002-native-ui-stack.md), royalty-free
+# license tier. `renderer-skia` is added on top of the default feature set
+# (which already includes renderer-femtovg + renderer-software) so the
+# glass/blur spike can select Skia at runtime via BackendSelector while
+# still keeping FemtoVG/software available as the Potato-mode fallback
+# path without a second build.
+slint = { version = "1.17", features = ["renderer-skia"] }
+
+[build-dependencies]
+slint-build = "1.17"

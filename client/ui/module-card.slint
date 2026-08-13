@@ -1,0 +1,71 @@
+// Mock profile-module card + struct for the drag-reorder spike.
+
+export struct ModuleCard {
+    title: string,
+    subtitle: string,
+    accent: color,
+    id: int,
+}
+
+export component ModuleCardItem inherits Rectangle {
+    in property <string> mod-title;
+    in property <string> mod-subtitle;
+    in property <color> accent;
+    in property <int> slot-index;
+    in property <length> slot-height;
+    in property <bool> is-dragging;
+    in property <length> drag-y;
+
+    height: slot-height - 14px;
+    x: 0px;
+    y: is-dragging ? drag-y : slot-index * slot-height;
+
+    animate y {
+        duration: is-dragging ? 0ms : 240ms;
+        easing: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    border-radius: 16px;
+    background: is-dragging ? accent.with-alpha(0.30) : #141A33cc;
+    border-width: 1px;
+    border-color: is-dragging ? accent : #C7CEDB33;
+    drop-shadow-color: #05070faa;
+    drop-shadow-blur: is-dragging ? 24px : 8px;
+    drop-shadow-offset-y: is-dragging ? 10px : 3px;
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 12px;
+
+        Rectangle {
+            width: 6px;
+            border-radius: 3px;
+            background: accent;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: mod-title;
+                color: #F2F4FA;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            Text {
+                text: mod-subtitle;
+                color: #A6ADC4;
+                font-size: 12px;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        Text {
+            text: "drag";
+            color: #A6ADC4;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
