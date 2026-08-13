@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-13 (session 2, cont'd)
+Last updated: 2026-08-14 (session 3)
 
 ## What ANKAI is
 
@@ -44,7 +44,10 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | ADR-0002 spike 1 (glass/blur rendering) | **closed** — validated on dev hardware and on an old dual-core/integrated-GPU/4GB-RAM machine (user-confirmed) | `docs/adr/0002-native-ui-stack.md` ("Spike 1 results") |
 | Theme tokens module | done — `client/ui/theme.slint` (Slint `global Theme`), all of tokens.md's colors/spacing/motion mapped; app.slint/module-card.slint refactored off raw hex | `client/ui/theme.slint` |
 | Window + nav skeleton | done — real `client` binary default output now; deliberately plain (no glass/blur) per ADR-0002's gate | `client/ui/app.slint`, `client/src/main.rs` |
-| Local encrypted DB (SQLite/SQLCipher) | done — `Db::open`/`open_in_memory`, migrations scaffold, wrong-key-fails test | `core/src/db.rs` |
+| Local encrypted DB (SQLite/SQLCipher) | done — `Db::open`/`open_in_memory`, migrations scaffold, wrong-key-fails test, `settings` key-value table (migration 2) with get/set | `core/src/db.rs` |
+| DB key management (OS secure storage) | done — `keychain::device_db_passphrase()` generates a passphrase on first run and stores it via `keyring` (macOS Keychain/Windows Credential Manager/Linux Secret Service); `client`'s `main.rs` now actually opens the real encrypted DB with it instead of never touching `core::db` | `core/src/keychain.rs`, `client/src/main.rs` |
+| Settings screen wired to real persistence | done — nav skeleton's Settings pane has a working "display name" field backed by the `settings` table (load on startup, save via button/Enter) | `client/ui/app.slint`, `client/src/main.rs` |
+| Theme tokens wired into nav skeleton | done — `app.slint`'s hardcoded hex literals replaced with `Theme.*` tokens (see ADR-0002 note below); still deliberately flat, no glass/blur | `client/ui/app.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -71,15 +74,16 @@ build/test/clippy/fmt all verified clean, and the running app was visually
 screenshotted to confirm no regression in either the nav shell or the
 (now-legacy) spike.
 
-**Note for future sessions:** during this work, an agent testing the nav
+**Note for future sessions:** during session 2, an agent testing the nav
 skeleton attempted synthetic OS-level mouse clicks (no accessibility
 permissions were available for cleaner automation) and one click missed the
 app window and landed on the human's own browser tab. Avoid this class of
 action — prefer code-level verification of simple state-driven UI logic
 (e.g. confirming a `TouchArea.clicked` handler and its binding by reading
-the `.slint` source) over synthetic input on the user's live desktop. A
-project-level `run`/screenshot skill for this repo, if one gets built,
-should account for this.
+the `.slint` source) over synthetic input on the user's live desktop.
+Screenshotting the running app (no clicks) to visually confirm rendering is
+fine and was done again in session 3. A project-level `run`/screenshot skill
+for this repo, if one gets built, should account for this.
 
 **ADR-0002 spike 1 is now closed** — the human validated frame time and
 Potato-mode headroom recovery on an old dual-core/integrated-GPU/4GB-RAM
@@ -91,16 +95,27 @@ outcome). The glass/blur visual system is no longer blocked on this gate.
 **ADR-0002 spike 2 is now closed** — accessibility validated by the human (VoiceOver on
 macOS). See the ADR's "Spike 2 results" section.
 
-Remaining steps:
+**Session 3 (2026-08-14) closed out all three items session 2 had left
+open**: OS-secure-storage-backed DB key management (`core/src/keychain.rs`,
+via the `keyring` crate — macOS Keychain confirmed working end-to-end, no
+prompt/interruption), the Settings pane wired to a real `display_name`
+setting round-tripped through the new `settings` table, and `app.slint`'s
+hardcoded hex literals swapped for `Theme.*` tokens. All three landed as
+separate commits, each verified with full workspace build/test/clippy/fmt
+plus a manual run (and, for the theme swap, a screenshot). Pushed to
+`origin/main`.
 
-1. Continue Phase 1: settings screen/persistence (wire the nav skeleton's
-   "Settings" pane to something real, backed by `core`'s new `db` module),
-   SQLite key management (currently `Db::open` takes a passphrase from the
-   caller — OS secure-storage-backed key derivation is still unimplemented,
-   see `core/src/db.rs` module doc comment), and wiring `Theme` into the nav
-   skeleton (`app.slint` is currently plain/flat on purpose — swap in real
-   tokens once appropriate, it was deliberately left out of both agents'
-   scope so they wouldn't collide).
+Remaining steps (not yet started, ordered by rough priority — open to
+reordering, this isn't a locked decision):
+
+1. Back OpenMLS's storage trait with the same SQLCipher-encrypted SQLite
+   file per ADR-0004's "one encrypted file, one key" call, instead of
+   OpenMLS having nowhere real to persist group/ratchet state yet.
+2. Basic P2P scaffolding per ADR-0003 (iroh) — nothing in `core` talks to
+   the network yet.
+3. Turn `identity`'s placeholder `AccountId` usage in `client/src/main.rs`
+   into an actual first-run account-creation flow (currently just proves
+   the type is reachable, per that line's own comment).
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
