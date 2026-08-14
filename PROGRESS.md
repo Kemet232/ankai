@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 6)
+Last updated: 2026-08-14 (session 7)
 
 ## What ANKAI is
 
@@ -51,6 +51,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | OpenMLS storage backed by SQLCipher DB | done — `AnkaiMlsProvider` wraps `openmls_rust_crypto`'s `MemoryStorage`, persisting its whole contents as one opaque blob in a new `mls_storage` table (migration 3); whole-blob durability granularity, not per-field — see the module doc comment for the tradeoff and when to revisit it | `core/src/mls_provider.rs` |
 | Basic P2P scaffolding (iroh) | done — `P2pNode` wraps a bound iroh `Endpoint` (bind/addr/send/accept_and_echo_once/close), `presets::Minimal` so no discovery/relay service is contacted; deliberately no discovery, privacy-mode gating, relay tiers, or blobs/gossip — see the module doc comment | `core/src/p2p.rs` |
 | First-run local identity | done — `identity::load_or_create_device` generates a real ED25519 signature keypair + random opaque account/device ids on first run, reloads the same identity on every run after; `AccountId` is still an honest placeholder (not a real account-root identity key — see the module doc comment); Profile pane displays both ids | `core/src/identity.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| Real MLS KeyPackage generation | done — `identity::create_key_package` builds a real `KeyPackage` via `KeyPackage::builder().build()`, using the device's stored signature key as signer and a new explicit `CIPHERSUITE` constant; stops at "build and store locally," core-only (no directory service to publish to, so not wired into `client` — asked and confirmed) | `core/src/identity.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -166,23 +167,37 @@ pane shows identical account/device IDs both times (screenshotted both
 runs side by side). Full workspace build/test/clippy/fmt clean. Pushed to
 `origin/main`.
 
-Remaining steps: **the queue from sessions 2-5 is now empty** — every item
-originally listed has landed. Two reasonable candidates for what comes
-next, neither started, presented here only as options for whoever picks
-this up (human or a future session) to choose from or override entirely:
+**Session 7 (2026-08-14) picked candidate 1 above** (asked the human which
+of the two to start; they picked KeyPackage generation over UI feature
+panes, on the reasoning that it's self-contained and just as verifiable as
+the identity work, whereas the UI panes would mostly mean fabricating local
+data with nothing real to back it yet). `identity::create_key_package`
+builds a real `KeyPackage` via `KeyPackage::builder().build()`, using the
+device's already-stored signature key (read back from `AnkaiMlsProvider` as
+the `Signer`) and a new explicit `CIPHERSUITE` constant
+(`MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, RFC 9420's mandatory-to-
+implement suite, paired with `DEVICE_SIGNATURE_SCHEME`). `build()` itself
+persists the key package's private HPKE material into the provider's
+storage as a side effect — same flush-after contract as signature key
+generation. Deliberately stops at "build and store locally": asked whether
+to also wire this into `client` (generate one at startup, show something in
+the Profile pane) and the human agreed to keep it core-only for now, since
+there's no directory service yet to publish to or anything meaningful to
+display. Verified with a real test: build a key package, confirm its
+ciphersuite matches, and confirm its leaf-node credential round-trips back
+to the exact `BasicCredential` the device was created with. Full workspace
+build/test/clippy/fmt clean; no new dependencies. Pushed to `origin/main`.
 
-1. Generate and store a real MLS `KeyPackage` for the device —
-   `identity::PublishedKeyPackage.key_package` is still `None` (that
-   struct's own doc comment already flagged this as the obvious next
-   layer once a live `OpenMlsProvider` + `Signer` existed, which this
-   session's work now provides). Self-contained: building a `KeyPackage`
-   needs no network/discovery, only *publishing* one would.
-2. Start on real feature data behind one of the UI's other nav panes
+Remaining steps: no locked queue. One candidate not yet started (deferred,
+not chosen, in session 7):
+
+1. Start on real feature data behind one of the UI's other nav panes
    (Messages/Communities/Hangouts are still placeholder `Text`, unlike
    Profile/Settings now) — lower crypto risk, more UI/data-model shaped.
 
-Neither is a locked decision — say if you'd rather go a different
-direction entirely (e.g. toward the P2P/ADR-0003 spikes, or toward the
+Not a locked decision — say if you'd rather go a different direction
+entirely (e.g. toward the P2P/ADR-0003 spikes, actually *publishing* a
+KeyPackage once something like a directory service exists, or toward the
 "thin cloud" identity/discovery service multiple modules above are
 currently stubbed pending).
 
