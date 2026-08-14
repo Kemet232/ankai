@@ -94,5 +94,29 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let communities = ankai_core::communities::list(&db).expect("failed to list communities");
+    let community_names: Vec<slint::SharedString> =
+        communities.into_iter().map(|c| c.name.into()).collect();
+    let community_model = std::rc::Rc::new(slint::VecModel::from(community_names));
+    app.set_community_names(slint::ModelRc::from(community_model.clone()));
+
+    let db_for_communities = db.clone();
+    let app_weak = app.as_weak();
+    app.on_create_community(move |name| {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match ankai_core::communities::create(&db_for_communities, name) {
+            Ok(community) => {
+                community_model.push(community.name.into());
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_new_community_name("".into());
+                }
+            }
+            Err(err) => eprintln!("ankai-client: failed to create community: {err}"),
+        }
+    });
+
     app.run()
 }

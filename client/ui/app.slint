@@ -37,6 +37,7 @@ export component AppWindow inherits Window {
     ];
     property <int> selected-index: 0;
     property <int> profile-index: 0; // index of "Profile" in nav-items, above
+    property <int> communities-index: 2; // index of "Communities" in nav-items, above
     property <int> settings-index: 4; // index of "Settings" in nav-items, above
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
@@ -49,6 +50,14 @@ export component AppWindow inherits Window {
     // once at startup by main.rs, never changes at runtime.
     in property <string> account-id: "";
     in property <string> device-id: "";
+
+    // Backed by core::communities (see that module's doc comment for what a
+    // "community" is and isn't yet — local-only, no membership/networking).
+    // main.rs loads the initial list at startup and appends to it on
+    // create-community; there's no delete/rename yet.
+    in-out property <[string]> community-names: [];
+    in-out property <string> new-community-name: "";
+    callback create-community(string);
 
     HorizontalLayout {
         // ---- Sidebar: persistent nav destinations ----
@@ -102,7 +111,7 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index && root.selected-index != root.profile-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
@@ -153,6 +162,46 @@ export component AppWindow inherits Window {
                         color: Theme.text-primary;
                         font-size: 14px;
                     }
+                }
+            }
+
+            if root.selected-index == root.communities-index: VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Communities";
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    LineEdit {
+                        width: 240px;
+                        placeholder-text: "New community name";
+                        text <=> root.new-community-name;
+                        accepted => {
+                            root.create-community(root.new-community-name);
+                        }
+                    }
+
+                    Button {
+                        text: "Create";
+                        clicked => {
+                            root.create-community(root.new-community-name);
+                        }
+                    }
+                }
+
+                for name in root.community-names: Text {
+                    text: "• " + name;
+                    color: Theme.text-secondary;
+                    font-size: 14px;
                 }
             }
 
