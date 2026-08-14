@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 7)
+Last updated: 2026-08-14 (session 8)
 
 ## What ANKAI is
 
@@ -52,6 +52,8 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Basic P2P scaffolding (iroh) | done — `P2pNode` wraps a bound iroh `Endpoint` (bind/addr/send/accept_and_echo_once/close), `presets::Minimal` so no discovery/relay service is contacted; deliberately no discovery, privacy-mode gating, relay tiers, or blobs/gossip — see the module doc comment | `core/src/p2p.rs` |
 | First-run local identity | done — `identity::load_or_create_device` generates a real ED25519 signature keypair + random opaque account/device ids on first run, reloads the same identity on every run after; `AccountId` is still an honest placeholder (not a real account-root identity key — see the module doc comment); Profile pane displays both ids | `core/src/identity.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Real MLS KeyPackage generation | done — `identity::create_key_package` builds a real `KeyPackage` via `KeyPackage::builder().build()`, using the device's stored signature key as signer and a new explicit `CIPHERSUITE` constant; stops at "build and store locally," core-only (no directory service to publish to, so not wired into `client` — asked and confirmed) | `core/src/identity.rs` |
+| Local Communities feature | done — `core::communities` (create/list/get against a new `communities` table, migration 4); Communities nav pane wired end-to-end (name field + Create button, backed by a real callback + list model); explicitly local-only, no membership/networking yet — see the module doc comment | `core/src/communities.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| Shared hex/random-id helper | done — `core::util` consolidates what had become three near-identical "N random bytes → hex string" implementations (`keychain`, `identity`, and communities' id generation) | `core/src/util.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -188,18 +190,49 @@ ciphersuite matches, and confirm its leaf-node credential round-trips back
 to the exact `BasicCredential` the device was created with. Full workspace
 build/test/clippy/fmt clean; no new dependencies. Pushed to `origin/main`.
 
-Remaining steps: no locked queue. One candidate not yet started (deferred,
-not chosen, in session 7):
+**Session 8 (2026-08-14) took the "real feature data behind a nav pane"
+candidate and picked Communities specifically** (not asked which pane —
+Communities was the clear pick since a local-only "create a community you
+own" action is genuinely meaningful on its own, unlike Messages/Hangouts
+which are inherently about other people and would've meant fabricating
+fake conversation/session data with nothing real behind it yet).
+`core::communities` adds create/list/get against a new `communities` table
+(migration 4); the Communities pane got a real name field + Create button,
+backed by main.rs loading the existing list at startup and a
+create-community callback that appends to a live Slint list model — same
+shape as the Settings pane's display-name field, just list-valued. Along
+the way, noticed the "N random bytes → hex string" pattern was about to
+appear a third time (already in `keychain` and `identity`), so
+consolidated it into a new `core::util` module first rather than
+copy-pasting again — a separate, preceding commit, no behavior change.
+Verified with a real core test (create two communities, confirm list order
+and distinct ids, confirm get() round-trips); the client side compiles
+clean and was run/screenshotted, but the create-community *click* path
+itself wasn't click-tested on the live desktop, same bar the Settings
+Save button was already held to (see this file's synthetic-click note
+above). Full workspace build/test/clippy/fmt clean. Also hit and recovered
+from an unrelated transient filesystem hiccup mid-session (a `cargo build`
+briefly couldn't find the repo's `Cargo.toml`, and one `Write` call for
+`communities.rs` didn't persist) — `git status` confirmed nothing was
+actually lost once it resolved; the missing file was just rewritten.
+Pushed to `origin/main`.
 
-1. Start on real feature data behind one of the UI's other nav panes
-   (Messages/Communities/Hangouts are still placeholder `Text`, unlike
-   Profile/Settings now) — lower crypto risk, more UI/data-model shaped.
+Remaining steps: no locked queue. Reasonable candidates, none started,
+none chosen over the others:
 
-Not a locked decision — say if you'd rather go a different direction
-entirely (e.g. toward the P2P/ADR-0003 spikes, actually *publishing* a
-KeyPackage once something like a directory service exists, or toward the
-"thin cloud" identity/discovery service multiple modules above are
-currently stubbed pending).
+1. Messages or Hangouts panes — harder than Communities was, since both
+   are inherently about interaction with other people/devices, which
+   nothing in this repo can do yet (no discovery, no wired-up P2P
+   messaging). Would need at least a stub of "send this to a peer you
+   already have an `EndpointAddr` for" using `core::p2p` to be more than
+   fake local data.
+2. The P2P/ADR-0003 spikes (NAT-traversal measurement, WebRTC/E2EE-
+   through-SFU, etc.) — real prototyping work, not scaffolding.
+3. Actually *publishing* a `KeyPackage` and/or the "thin cloud" identity/
+   discovery service multiple modules (`p2p`, `identity`) are currently
+   stubbed pending.
+
+Not a locked decision — say which direction, or propose something else.
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
