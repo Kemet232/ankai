@@ -16,8 +16,9 @@
 //! "thin cloud" identity/discovery side), so today "creating an account" can
 //! only mean "generate and persist a local identity for this installation."
 
-use openmls::credentials::BasicCredential;
-use openmls::prelude::{OpenMlsProvider, SignatureScheme};
+use openmls::credentials::{BasicCredential, CredentialWithKey};
+use openmls::key_packages::KeyPackage;
+use openmls::prelude::{Ciphersuite, OpenMlsProvider, SignatureScheme};
 use openmls_basic_credential::SignatureKeyPair;
 
 use crate::db::Db;
@@ -41,6 +42,13 @@ pub struct DeviceId(pub String);
 /// one scheme, and ED25519 is the obvious default (small keys/signatures,
 /// no parameter-choice footguns unlike the ECDSA variants).
 pub const DEVICE_SIGNATURE_SCHEME: SignatureScheme = SignatureScheme::ED25519;
+
+/// ANKAI's chosen MLS ciphersuite: X25519 KEM, AES-128-GCM, SHA-256,
+/// Ed25519 signing (matching `DEVICE_SIGNATURE_SCHEME`). This is RFC 9420's
+/// mandatory-to-implement baseline suite — the safe, unsurprising default,
+/// not a deliberate optimization. Hardcoded for the same reason as the
+/// signature scheme above: nothing yet needs to negotiate between suites.
+pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 /// A device's real `openmls_basic_credential::SignatureKeyPair` public key.
 /// The private key is *not* stored here — it lives in whichever
@@ -165,14 +173,55 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>, Error> {
 
 /// A device's published `KeyPackage` — MLS's prekey equivalent. ADR-0004:
 /// "each device publishes KeyPackages to a directory ahead of time" so a
-/// sender can start a conversation with an offline recipient.
+/// sender can start a conversation with an offline recipient. See
+/// `create_key_package` for building a real one; this struct's field stays
+/// `Option` because *publishing* one (to the directory service ADR-0004
+/// describes, which doesn't exist yet) is a distinct, unbuilt step from
+/// having built one locally.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedKeyPackage {
     pub owner: DeviceId,
-    /// Real `openmls` type, left `None` for now: building an actual
-    /// `KeyPackage` requires a live `OpenMlsProvider` + `Signer` +
-    /// `Ciphersuite`, none of which this scaffolding phase wires up.
-    pub key_package: Option<openmls::key_packages::KeyPackage>,
+    pub key_package: Option<KeyPackage>,
+}
+
+/// Builds a fresh MLS `KeyPackage` for `device` and persists its private
+/// material (the HPKE init/encryption keypair `build` generates) into
+/// `provider`'s storage. Requires `device`'s signature key pair to already
+/// be in `provider`'s storage — true for anything `load_or_create_device`
+/// returned.
+///
+/// This only builds and stores the key package locally; ADR-0004's
+/// "publishes to a directory" half doesn't exist yet (no discovery
+/// service), so there is nowhere to actually publish it to yet — see
+/// `PublishedKeyPackage`'s doc comment.
+///
+/// Callers must call `provider.flush(db)` afterwards to persist the new
+/// private material to disk, same as after `load_or_create_device` creates
+/// a new device.
+pub fn create_key_package(
+    device: &Device,
+    provider: &AnkaiMlsProvider,
+) -> Result<PublishedKeyPackage, Error> {
+    let signer = SignatureKeyPair::read(
+        provider.storage(),
+        &device.signature_key.0,
+        DEVICE_SIGNATURE_SCHEME,
+    )
+    .ok_or_else(|| Error::Identity("device signature key not found in MLS storage".to_string()))?;
+
+    let credential_with_key = CredentialWithKey {
+        credential: device.credential.clone().into(),
+        signature_key: device.signature_key.0.clone().into(),
+    };
+
+    let bundle = KeyPackage::builder()
+        .build(CIPHERSUITE, provider, &signer, credential_with_key)
+        .map_err(|e| Error::Identity(format!("failed to build key package: {e}")))?;
+
+    Ok(PublishedKeyPackage {
+        owner: device.id.clone(),
+        key_package: Some(bundle.key_package().clone()),
+    })
 }
 
 #[cfg(test)]
@@ -220,6 +269,31 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(first.account, second.account);
         assert_eq!(first.signature_key, second.signature_key);
+    }
+
+    #[test]
+    fn key_package_is_built_for_the_right_device_and_ciphersuite() {
+        let db = Db::open_in_memory("correct horse battery staple").unwrap();
+        let provider = AnkaiMlsProvider::load(&db).unwrap();
+        let device = load_or_create_device(&db, &provider).unwrap();
+
+        let published = create_key_package(&device, &provider).unwrap();
+        provider.flush(&db).unwrap();
+
+        assert_eq!(published.owner, device.id);
+
+        let key_package = published
+            .key_package
+            .expect("create_key_package should always return Some");
+        assert_eq!(key_package.ciphersuite(), CIPHERSUITE);
+
+        // The key package's leaf-node credential should be the same
+        // BasicCredential the device was created with, round-tripped
+        // through openmls's Credential wrapper — not a placeholder.
+        let leaf_credential =
+            BasicCredential::try_from(key_package.leaf_node().credential().clone())
+                .expect("leaf node credential should be a BasicCredential");
+        assert_eq!(leaf_credential, device.credential);
     }
 
     #[test]
