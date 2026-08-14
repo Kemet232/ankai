@@ -11,5 +11,6 @@ pub mod keychain;
 pub mod mls_provider;
 pub mod p2p;
 pub mod protocol;
+pub mod util;
 
 pub use error::Error;

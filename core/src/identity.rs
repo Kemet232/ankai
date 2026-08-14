@@ -24,6 +24,7 @@ use openmls_basic_credential::SignatureKeyPair;
 use crate::db::Db;
 use crate::error::Error;
 use crate::mls_provider::AnkaiMlsProvider;
+use crate::util::{decode_hex, encode_hex, random_id};
 
 /// Opaque handle for a user's root identity key. Concrete key material and
 /// algorithm choice land with ADR-0004 — see this module's doc comment for
@@ -93,7 +94,9 @@ pub fn load_or_create_device(db: &Db, provider: &AnkaiMlsProvider) -> Result<Dev
     );
 
     if let (Some(account_id), Some(device_id), Some(public_key_hex)) = existing {
-        let public_key = decode_hex(&public_key_hex)?;
+        let public_key = decode_hex(&public_key_hex).ok_or_else(|| {
+            Error::Identity(format!("corrupt stored hex value: {public_key_hex:?}"))
+        })?;
         return Ok(Device {
             id: DeviceId(device_id.clone()),
             account: AccountId(account_id),
@@ -144,31 +147,6 @@ fn create_device() -> Result<NewDevice, Error> {
         device,
         signature_key_pair,
     })
-}
-
-/// A fresh random 128-bit id, hex-encoded. Plenty of entropy to avoid
-/// collisions for a single-installation identifier; these are opaque
-/// handles, not secret key material, so 128 bits (vs. `keychain`'s 256-bit
-/// passphrases) is a deliberately lighter budget.
-fn random_id() -> String {
-    let bytes: [u8; 16] = rand::random();
-    encode_hex(&bytes)
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn decode_hex(hex: &str) -> Result<Vec<u8>, Error> {
-    let bad_hex = || Error::Identity(format!("corrupt stored hex value: {hex:?}"));
-
-    if !hex.len().is_multiple_of(2) {
-        return Err(bad_hex());
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| bad_hex()))
-        .collect()
 }
 
 /// A device's published `KeyPackage` — MLS's prekey equivalent. ADR-0004:
@@ -294,16 +272,5 @@ mod tests {
             BasicCredential::try_from(key_package.leaf_node().credential().clone())
                 .expect("leaf node credential should be a BasicCredential");
         assert_eq!(leaf_credential, device.credential);
-    }
-
-    #[test]
-    fn hex_round_trips_including_empty_and_odd_length_is_rejected() {
-        assert_eq!(decode_hex(&encode_hex(&[])).unwrap(), Vec::<u8>::new());
-        assert_eq!(
-            decode_hex(&encode_hex(&[0, 1, 254, 255])).unwrap(),
-            vec![0, 1, 254, 255]
-        );
-        assert!(decode_hex("abc").is_err());
-        assert!(decode_hex("zz").is_err());
     }
 }

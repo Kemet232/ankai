@@ -11,6 +11,7 @@
 use keyring::Entry;
 
 use crate::error::Error;
+use crate::util::encode_hex;
 
 const SERVICE: &str = "ankai";
 const DB_KEY_ACCOUNT: &str = "device-db-key";
@@ -41,8 +42,7 @@ pub fn device_db_passphrase() -> Result<String, Error> {
 /// string — both the OS keychain APIs and SQLCipher's PBKDF2 keying expect a
 /// string, not raw bytes.
 fn generate_passphrase() -> String {
-    let bytes: [u8; 32] = rand::random();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    encode_hex(&rand::random::<[u8; 32]>())
 }
 
 #[cfg(test)]
