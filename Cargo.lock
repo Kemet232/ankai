@@ -4561,6 +4561,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nat-probe"
+version = "0.0.1"
+dependencies = [
+ "iroh",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "natord"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -429,3 +429,34 @@ choices:
    rollback netcode to QUIC unreliable datagrams over an iroh connection
    and measure latency/jitter/loss behavior before this becomes the
    committed netplay transport.
+
+### Spike 1 status (NAT traversal success-rate measurement) — tool built, cohort measurement still pending, 2026-08-15
+
+The minimal iroh-based ping/connect tool this spike calls for now exists at
+`tools/nat-probe/`. It binds an iroh endpoint on the `N0` preset (real
+DNS-based address lookup plus n0.computer's default relay servers — the
+opposite of `core::p2p`'s deliberately relay-less `Minimal` preset, see
+`tools/nat-probe/src/main.rs`'s module doc comment for why the two must stay
+separate), takes on either the `listen` or `connect` role from the same
+binary, and after connecting reports — via iroh's own `Connection::paths()`
+introspection API, not a guess — whether the path actually selected for
+application data is direct/hole-punched or relayed, alongside iroh's
+per-path RTT estimate and a real application-level ping/echo RTT. Output is
+plain structured `stdout` lines; there is no telemetry pipeline or
+aggregation built (not needed for what this spike requires — see its own
+doc comment for why).
+
+**This does not close spike 1.** What's still outstanding is exactly what
+the spike's own text asks for: running the tool "across a diverse beta
+cohort (mobile carrier-grade NAT, symmetric home routers, corporate/campus
+networks, VPNs)" and comparing the observed direct-connect vs.
+relay-fallback split against the ~90% (Tailscale-optimized) and ~70%
+(conservative academic baseline) figures cited above. That's real-world
+data collection across networks nobody has run this tool on yet — an
+agent working alone in one sitting cannot manufacture a beta cohort or
+diverse NAT conditions, and no such data is claimed here. This should be
+closed the same way ADR-0002's spikes 1 and 2 were: only after a human (or
+several, across genuinely different networks) actually runs `nat-probe`
+in the real world and reports back what it saw — see `PROGRESS.md` for
+that precedent. Until then this line item stays open and this ADR remains
+`Proposed`, not `Accepted`, on spike 1's account same as before.

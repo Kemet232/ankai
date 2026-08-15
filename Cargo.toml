@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "client",
     "core",
+    "tools/nat-probe",
 ]
 
 [workspace.package]
@@ -14,6 +15,11 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
+# Only `tools/nat-probe` uses this directly today (to serialize an
+# `iroh::EndpointAddr` to a copy-pasteable single line for its manual
+# two-machine test), but it's centralized here like every other dependency
+# in this table rather than pinned ad hoc in that crate's own Cargo.toml.
+serde_json = "1"
 thiserror = "1"
 # SQLCipher-backed encrypted SQLite, per docs/adr/0004-e2ee-stack.md's local
 # encrypted message database decision. `bundled-sqlcipher` vendors SQLCipher's
