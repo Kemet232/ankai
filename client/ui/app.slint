@@ -17,7 +17,7 @@
 // flag from src/main.rs (`--spike` / ANKAI_SPIKE_DEBUG=1) — it is legacy
 // prototype code, not part of this shell.
 
-import { LineEdit, Button } from "std-widgets.slint";
+import { LineEdit, Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
@@ -30,6 +30,205 @@ export { SpikeGlassBlurWindow }
 export struct CommunityRef {
     id: string,
     name: string,
+}
+
+// ---------------------------------------------------------------------
+// Small glass-styled building blocks for the Profile pane (ADR-0002's
+// spike gate is closed — see this file's header comment above — so this
+// reuses the same technique spike-glass-blur.slint / module-card.slint
+// already proved out: alpha-tint + border + specular strip + drop-shadow,
+// NOT a true backdrop blur, which Slint 1.17 doesn't have. Kept local to
+// this file rather than exported: nothing outside the Profile pane needs
+// them yet, and module-card.slint's ModuleCardItem stays legacy/spike-only
+// per its own header comment.
+// ---------------------------------------------------------------------
+
+// A small circular glass icon-button (▲ / ▼ / × / + glyphs), built on the
+// same TouchArea-based custom-button pattern spike-glass-blur.slint's
+// potato-toggle already demonstrates, instead of std-widgets' generic
+// `Button`. 32x32px effective size meets tokens.md's minimum tap-target
+// accessibility floor.
+component GlassIconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <color> tint: Theme.accent-cyan;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: 16px;
+    background: !root.enabled ? transparent : touch.pressed ? root.tint.with-alpha(0.35) : touch.has-hover ? root.tint.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: root.enabled ? root.tint.with-alpha(0.4) : Theme.silver.with-alpha(0.12);
+    opacity: root.enabled ? 1.0 : 0.35;
+
+    animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.glyph;
+        color: root.enabled ? root.tint : Theme.text-secondary;
+        font-size: 14px;
+        font-weight: 700;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// One row of the Top 8 — a glass module card in the spirit of
+// module-card.slint's ModuleCardItem (accent edge stripe + glass-tinted
+// background + drop-shadow), with a rank badge and the three
+// up/down/remove GlassIconButtons replacing generic std-widgets Buttons.
+component Top8CardItem inherits Rectangle {
+    in property <int> rank;
+    in property <string> comm-name;
+    in property <color> accent;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    callback move-up();
+    callback move-down();
+    callback remove();
+
+    border-radius: 16px;
+    background: Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: root.accent;
+        }
+
+        Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: 16px;
+            background: root.accent.with-alpha(0.18);
+            border-width: 1px;
+            border-color: root.accent.with-alpha(0.4);
+
+            Text {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                text: "" + root.rank;
+                color: root.accent;
+                font-weight: 700;
+                font-size: 14px;
+            }
+        }
+
+        Text {
+            text: root.comm-name;
+            color: Theme.text-primary;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        GlassIconButton {
+            glyph: "▲";
+            tint: root.accent;
+            enabled: root.can-move-up;
+            clicked => {
+                root.move-up();
+            }
+        }
+
+        GlassIconButton {
+            glyph: "▼";
+            tint: root.accent;
+            enabled: root.can-move-down;
+            clicked => {
+                root.move-down();
+            }
+        }
+
+        GlassIconButton {
+            glyph: "×";
+            tint: Theme.state-busy;
+            clicked => {
+                root.remove();
+            }
+        }
+    }
+}
+
+// A compact "add to Top 8" pill chip for the secondary picker list.
+component AddCommunityChip inherits Rectangle {
+    in property <string> comm-name;
+    in property <bool> enabled: true;
+
+    callback add();
+
+    height: 36px;
+    border-radius: 18px;
+    background: !root.enabled ? Theme.bg-surface-raised.with-alpha(0.4) : touch.has-hover ? Theme.accent-cyan.with-alpha(0.16) : Theme.bg-surface-raised.with-alpha(0.6);
+    border-width: 1px;
+    border-color: root.enabled ? Theme.accent-cyan.with-alpha(0.35) : Theme.silver.with-alpha(0.15);
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: start;
+
+        Text {
+            text: root.comm-name;
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: "+";
+            color: root.enabled ? Theme.accent-cyan : Theme.text-secondary;
+            font-size: 16px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.add();
+            }
+        }
+    }
 }
 
 export component AppWindow inherits Window {
@@ -45,6 +244,18 @@ export component AppWindow inherits Window {
         "Hangouts",
         "Settings",
     ];
+
+    // Accent colors cycled across Top 8 module cards (see the Profile pane
+    // below) so the "Top 8" reads as personalization rather than a plain
+    // list — same spirit as spike-glass-blur.slint's mock module list,
+    // which varied each card's accent for the same reason. All four values
+    // are real tokens.md accent/state colors, just cycled by index.
+    property <[color]> top8-accent-cycle: [
+        Theme.accent-cyan,
+        Theme.accent-violet,
+        Theme.accent-gold,
+        Theme.state-online,
+    ];
     property <int> selected-index: 0;
     property <int> profile-index: 0; // index of "Profile" in nav-items, above
     property <int> messages-index: 1; // index of "Messages" in nav-items, above
@@ -57,6 +268,15 @@ export component AppWindow inherits Window {
     // property at startup and saves it back out on save-display-name.
     in-out property <string> display-name: "";
     callback save-display-name(string);
+
+    // Single uppercase letter shown in the Profile pane's avatar-placeholder
+    // circle, derived from display-name. Computed in main.rs (once at
+    // startup, again on save-display-name) rather than in this file: Slint
+    // 1.17 has no string-slicing/char-at builtin to pull a first letter out
+    // of an arbitrary string, only whole-string operations. See main.rs's
+    // `initial_letter` doc comment for the fallback behavior when the name
+    // is empty.
+    in property <string> display-name-initial: "";
 
     // This installation's local identity (see ankai_core::identity) — set
     // once at startup by main.rs, never changes at runtime.
@@ -164,13 +384,52 @@ export component AppWindow inherits Window {
     in-out property <string> new-hangout-name: "";
     callback create-hangout(string);
 
+    // ---------------------------------------------------------------
+    // Ambient background wash — a very restrained accent-tinted diagonal
+    // gradient over the void base, per tokens.md's "Elevation/depth" z0
+    // layer. Deliberately much subtler than spike-glass-blur.slint's loud
+    // confetti-grid demo pattern (that was a rendering showcase; this is
+    // the real app). Declared before the HorizontalLayout below so it sits
+    // behind everything (Slint draws siblings in declaration order).
+    // ---------------------------------------------------------------
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: @linear-gradient(150deg, Theme.accent-violet.with-alpha(0.05) 0%, transparent 35%, transparent 65%, Theme.accent-cyan.with-alpha(0.04) 100%);
+    }
+
     HorizontalLayout {
-        // ---- Sidebar: persistent nav destinations ----
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+
+        // ---- Sidebar: persistent nav destinations, glass-panel chrome ----
+        // Same technique as spike-glass-blur.slint's glass panel (alpha
+        // tint + border + specular strip + drop-shadow — Slint 1.17 has no
+        // backdrop-blur primitive, see that file's header comment), applied
+        // here to the real app shell for the first time.
         Rectangle {
             width: 220px;
-            background: Theme.bg-surface-raised;
+            background: Theme.bg-surface-raised.with-alpha(0.82);
             border-width: 1px;
-            border-color: Theme.silver.with-alpha(0.15);
+            border-color: Theme.silver.with-alpha(0.16);
+            drop-shadow-color: Theme.bg-void.with-alpha(0.55);
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-x: 6px;
+
+            // Specular highlight falloff, confined to the upper portion of
+            // the panel so it reads as a soft light source, not a glowing
+            // bar down a 600px-tall panel.
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: 140px;
+                background: @linear-gradient(180deg, #ffffff14 0%, #ffffff00 100%);
+            }
 
             VerticalLayout {
                 padding: 16px;
@@ -180,20 +439,33 @@ export component AppWindow inherits Window {
                 Text {
                     text: "ANKAI";
                     color: Theme.text-primary;
-                    font-size: 18px;
+                    font-size: 20px;
                     font-weight: 700;
                 }
 
-                Rectangle { height: 16px; }
+                Rectangle {
+                    height: 3px;
+                    width: 36px;
+                    border-radius: 2px;
+                    background: @linear-gradient(90deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                }
+
+                Rectangle { height: 20px; }
 
                 for item[i] in nav-items: Rectangle {
                     height: 40px;
-                    border-radius: 6px;
-                    background: root.selected-index == i ? Theme.accent-violet.with-alpha(0.18) : transparent;
+                    border-radius: 20px;
+                    background: root.selected-index == i ? @linear-gradient(120deg, Theme.accent-cyan.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : nav-touch.has-hover ? Theme.silver.with-alpha(0.06) : transparent;
+                    border-width: root.selected-index == i ? 1px : 0px;
+                    border-color: Theme.accent-cyan.with-alpha(0.45);
+                    drop-shadow-color: Theme.accent-cyan.with-alpha(0.22);
+                    drop-shadow-blur: root.selected-index == i ? 14px : 0px;
+
+                    animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
                     Text {
-                        x: 12px;
-                        width: parent.width - 24px;
+                        x: 16px;
+                        width: parent.width - 32px;
                         height: parent.height;
                         vertical-alignment: center;
                         text: item;
@@ -202,7 +474,8 @@ export component AppWindow inherits Window {
                         font-weight: root.selected-index == i ? 600 : 400;
                     }
 
-                    TouchArea {
+                    nav-touch := TouchArea {
+                        mouse-cursor: pointer;
                         clicked => {
                             root.selected-index = i;
                         }
@@ -225,133 +498,234 @@ export component AppWindow inherits Window {
                 font-weight: 700;
             }
 
-            if root.selected-index == root.profile-index: VerticalLayout {
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
-
-                Text {
-                    text: "Profile";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Account ID";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    Text {
-                        text: root.account-id;
-                        color: Theme.text-primary;
-                        font-size: 14px;
-                    }
-                }
+            // -----------------------------------------------------------
+            // Profile pane — the "Liquid Y2K" showcase (docs/design/
+            // tokens.md). Real glass module cards, not stacked plain-text
+            // rows: identity header with an avatar placeholder, a
+            // de-emphasized technical-metadata chip row, and the Top 8
+            // Communities module cards + add-chip picker. Wrapped in a
+            // ScrollView since card content can exceed the window height
+            // once several communities are featured (and per tokens.md's
+            // accessibility floor, panels must tolerate text-scaling
+            // without breaking layout, which a fixed-height pane wouldn't).
+            // -----------------------------------------------------------
+            if root.selected-index == root.profile-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
 
                 VerticalLayout {
-                    spacing: 4px;
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 24px;
+                    alignment: start;
 
-                    Text {
-                        text: "Device ID";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
+                    // ---- Identity header: the "this is you" moment ----
+                    Rectangle {
+                        border-radius: 20px;
+                        background: Theme.glass-tint;
+                        border-width: 1px;
+                        border-color: Theme.silver.with-alpha(0.2);
+                        drop-shadow-color: Theme.bg-void.with-alpha(0.5);
+                        drop-shadow-blur: 20px;
+                        drop-shadow-offset-y: 6px;
+
+                        Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: 60px;
+                            border-radius: 20px;
+                            background: @linear-gradient(180deg, #ffffff1a 0%, #ffffff00 100%);
+                        }
+
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 20px;
+                            alignment: start;
+
+                            Rectangle {
+                                width: 84px;
+                                height: 84px;
+                                border-radius: 42px;
+                                background: @linear-gradient(135deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                                border-width: 1px;
+                                border-color: Theme.silver.with-alpha(0.3);
+
+                                Text {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    text: root.display-name-initial == "" ? "A" : root.display-name-initial;
+                                    color: Theme.bg-void;
+                                    font-size: 36px;
+                                    font-weight: 700;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+
+                                Text {
+                                    text: root.display-name == "" ? "Unnamed ANKAI member" : root.display-name;
+                                    color: Theme.text-primary;
+                                    font-size: 24px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: root.display-name == "" ? "Set a display name in Settings to personalize your profile." : "This is your ANKAI profile.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
                     }
 
-                    Text {
-                        text: root.device-id;
-                        color: Theme.text-primary;
-                        font-size: 14px;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-
-                    Text {
-                        text: "Top 8 Communities";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    Text {
-                        text: "Feature up to 8 of your communities on your profile, in whatever order you like. There's no \"Top 8 friends\" yet — ANKAI doesn't have a real contacts/friends model built, so this is communities for now.";
-                        color: Theme.text-secondary;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-
-                    if root.featured-communities.length == 0: Text {
-                        text: "No featured communities yet — add some below.";
-                        color: Theme.text-secondary;
-                        font-size: 13px;
-                    }
-
-                    for entry[i] in root.featured-communities: HorizontalLayout {
-                        spacing: 8px;
+                    // ---- Technical metadata: de-emphasized, secondary ----
+                    HorizontalLayout {
+                        spacing: 12px;
                         alignment: start;
 
+                        Rectangle {
+                            border-radius: 12px;
+                            background: Theme.bg-surface-raised.with-alpha(0.55);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 2px;
+                                alignment: start;
+
+                                Text {
+                                    text: "ACCOUNT ID";
+                                    color: Theme.text-secondary;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: root.account-id;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 12px;
+                            background: Theme.bg-surface-raised.with-alpha(0.55);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 2px;
+                                alignment: start;
+
+                                Text {
+                                    text: "DEVICE ID";
+                                    color: Theme.text-secondary;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                }
+
+                                Text {
+                                    text: root.device-id;
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Top 8 Communities: the showcase piece ----
+                    VerticalLayout {
+                        spacing: 12px;
+
                         Text {
-                            text: (i + 1) + ". " + entry.name;
+                            text: "Top 8 Communities";
                             color: Theme.text-primary;
-                            font-size: 14px;
-                            vertical-alignment: center;
+                            font-size: 16px;
+                            font-weight: 700;
                         }
-
-                        Rectangle { horizontal-stretch: 1; }
-
-                        Button {
-                            text: "Up";
-                            enabled: i > 0;
-                            clicked => {
-                                root.move-featured-community-up(entry.id);
-                            }
-                        }
-
-                        Button {
-                            text: "Down";
-                            enabled: i < root.featured-communities.length - 1;
-                            clicked => {
-                                root.move-featured-community-down(entry.id);
-                            }
-                        }
-
-                        Button {
-                            text: "Remove";
-                            clicked => {
-                                root.unfeature-community(entry.id);
-                            }
-                        }
-                    }
-
-                    if root.unfeatured-communities.length > 0: Text {
-                        text: "Add to Top 8";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    for entry in root.unfeatured-communities: HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
 
                         Text {
-                            text: entry.name;
+                            text: "Feature up to 8 of your communities on your profile, in whatever order you like. There's no \"Top 8 friends\" yet — ANKAI doesn't have a real contacts/friends model built, so this is communities for now.";
                             color: Theme.text-secondary;
-                            font-size: 14px;
-                            vertical-alignment: center;
+                            font-size: 11px;
+                            wrap: word-wrap;
                         }
 
-                        Rectangle { horizontal-stretch: 1; }
+                        if root.featured-communities.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
 
-                        Button {
-                            text: "Add";
-                            enabled: root.featured-communities.length < 8;
-                            clicked => {
-                                root.feature-community(entry.id);
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "No featured communities yet — add some below.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.featured-communities: Top8CardItem {
+                                rank: i + 1;
+                                comm-name: entry.name;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                can-move-up: i > 0;
+                                can-move-down: i < root.featured-communities.length - 1;
+                                move-up => {
+                                    root.move-featured-community-up(entry.id);
+                                }
+                                move-down => {
+                                    root.move-featured-community-down(entry.id);
+                                }
+                                remove => {
+                                    root.unfeature-community(entry.id);
+                                }
+                            }
+                        }
+
+                        if root.unfeatured-communities.length > 0: VerticalLayout {
+                            spacing: 10px;
+
+                            Rectangle { height: 4px; }
+
+                            Text {
+                                text: "Add to Top 8";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+
+                            for entry in root.unfeatured-communities: HorizontalLayout {
+                                alignment: start;
+
+                                AddCommunityChip {
+                                    comm-name: entry.name;
+                                    enabled: root.featured-communities.length < 8;
+                                    add => {
+                                        root.feature-community(entry.id);
+                                    }
+                                }
                             }
                         }
                     }

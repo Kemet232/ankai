@@ -71,6 +71,22 @@ fn open_local_db() -> ankai_core::db::Db {
         .expect("failed to open local encrypted database")
 }
 
+/// Derives the single uppercase letter shown in the Profile pane's avatar
+/// placeholder circle (see `ui/app.slint`'s Profile header) from the saved
+/// display name. Slint 1.17 has no string-slicing/char-at builtin (only
+/// whole-string operations like `to-uppercase`/`is-empty`), so this one
+/// piece of presentation logic — "first letter of the name, or a fallback
+/// when there's no name yet" — has to live here instead of in the .slint
+/// file with everything else. Falls back to "A" (for ANKAI) when the name
+/// is empty, rather than showing a blank circle.
+fn initial_letter(name: &str) -> String {
+    name.trim()
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "A".to_string())
+}
+
 /// Recomputes the Profile pane's Top 8 UI state (`featured-communities`/
 /// `unfeatured-communities`) fresh from `core::top8`/`core::communities` and
 /// pushes it into the running `AppWindow`. Called once at startup and again
@@ -178,12 +194,17 @@ fn main() -> Result<(), slint::PlatformError> {
         .get_setting("display_name")
         .expect("failed to read display_name setting")
         .unwrap_or_default();
+    app.set_display_name_initial(initial_letter(&saved_display_name).into());
     app.set_display_name(saved_display_name.into());
 
     let db_for_save = db.clone();
+    let app_weak_for_name = app.as_weak();
     app.on_save_display_name(move |name| {
         if let Err(err) = db_for_save.set_setting("display_name", &name) {
             eprintln!("ankai-client: failed to save display name: {err}");
+        }
+        if let Some(app) = app_weak_for_name.upgrade() {
+            app.set_display_name_initial(initial_letter(&name).into());
         }
     });
 
