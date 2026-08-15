@@ -88,6 +88,33 @@ const MIGRATIONS: &[Migration] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );",
     },
+    Migration {
+        version: 6,
+        description: "create conversations and messages tables",
+        // See crate::messaging's doc comment. `conversations` maps a peer
+        // (this device's stable hex-encoded EndpointId for them, see
+        // `messaging::peer_id_for`) to the real OpenMLS `GroupId` of the
+        // 2-member MLS group backing that 1:1 conversation — the group's
+        // actual state lives in the `mls_storage` blob (migration 3), this
+        // table just remembers which group id goes with which peer.
+        // `messages` stores already-decrypted plaintext (the ciphertext
+        // itself is never at rest anywhere): "encrypted at rest" is
+        // satisfied by the whole SQLCipher-encrypted file, same as
+        // `settings`/`communities` already rely on, not a second encryption
+        // layer on top.
+        sql: "CREATE TABLE IF NOT EXISTS conversations (
+        peer_id    TEXT NOT NULL PRIMARY KEY,
+        group_id   BLOB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+        id         TEXT NOT NULL PRIMARY KEY,
+        peer_id    TEXT NOT NULL,
+        direction  TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
+        content    TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -298,7 +325,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 5);
+        assert_eq!(db.schema_version().unwrap(), 6);
     }
 
     #[test]
@@ -307,20 +334,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 5);
+            assert_eq!(db.schema_version().unwrap(), 6);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 5);
+            assert_eq!(db.schema_version().unwrap(), 6);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 5, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 6, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -358,7 +385,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 5);
+            assert_eq!(db.schema_version().unwrap(), 6);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
