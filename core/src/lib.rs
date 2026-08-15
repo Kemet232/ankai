@@ -12,6 +12,7 @@ pub mod forum_posts;
 pub mod hangouts;
 pub mod identity;
 pub mod keychain;
+pub mod mal_forums;
 pub mod messaging;
 pub mod mls_provider;
 pub mod p2p;

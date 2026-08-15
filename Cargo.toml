@@ -90,3 +90,15 @@ bytes = "1"
 # PeerConnectionEventHandler` needs the same macro on the impl block.
 # Already in the dependency tree transitively via `webrtc`/`rtc`.
 async-trait = "0.1"
+# HTTP client. Originally added directly by `server/directory` for
+# `HttpDirectoryClient` (ADR-0008's reference implementation — see that
+# crate's Cargo.toml for the full provenance note); promoted to a workspace
+# dependency here so `core::mal_forums` (a second, unrelated consumer — MAL's
+# public REST API, not ANKAI's own infrastructure) reuses the exact same
+# resolved version/feature set instead of pulling in a second HTTP client
+# crate. `default-features = false` + explicit `rustls` avoids also pulling
+# in the `native-tls`/OpenSSL backend; `json` for typed request/response
+# bodies; `query` (added for `core::mal_forums`) for `RequestBuilder::query`,
+# used to build MAL's `?board_id=...&limit=...`-style query strings without
+# hand-rolled percent-encoding.
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
