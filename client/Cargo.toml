@@ -23,6 +23,21 @@ directories.workspace = true
 # otherwise-synchronous client binary — see main.rs's P2P setup for how this
 # runtime and Slint's own (blocking, main-thread) event loop coexist.
 tokio.workspace = true
+# HttpDirectoryClient, per docs/adr/0008-identity-discovery-service.md
+# (Status: Proposed) — an optional, opt-in path (see main.rs: only used if
+# ANKAI_DIRECTORY_URL is set at startup) that replaces core::messaging's
+# manual full-PeerInvite paste with a lookup by a peer's short DeviceId
+# against a real running ankai-directory-server. Compiling this dependency
+# in unconditionally is fine: the ADR being Proposed, not Accepted, gates
+# *talking to a real network service*, which stays opt-in at runtime via the
+# env var, not at compile time — see core::messaging's module doc comment.
+ankai-directory-server = { path = "../server/directory" }
+# Needed to call HttpDirectoryClient::new/device_signer's SignatureKeyPair
+# type by name, and to bring the OpenMlsProvider trait (for
+# AnkaiMlsProvider::storage()) into scope — same versions ankai-core pins,
+# so the workspace resolves one copy of each.
+openmls = "0.8.1"
+openmls_basic_credential = "0.5.0"
 
 [build-dependencies]
 slint-build = "1.17"

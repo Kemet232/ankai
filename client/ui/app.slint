@@ -77,6 +77,20 @@ export component AppWindow inherits Window {
     in-out property <[string]> message-log: [];
     callback send-message(string, string);
 
+    // Experimental, opt-in ADR-0008 directory lookup (Status: Proposed —
+    // see docs/adr/0008-identity-discovery-service.md). main.rs sets
+    // directory-enabled once at startup, true only if a human configured
+    // ANKAI_DIRECTORY_URL; when false this whole section stays hidden and
+    // the manual-paste flow above is the only way to connect, unchanged
+    // from before this integration existed. A successful lookup fills in
+    // peer-address-input above with the same invite text a manual paste
+    // would produce — sending still goes through the same send-message
+    // callback either way.
+    in property <bool> directory-enabled: false;
+    in-out property <string> peer-device-id-input: "";
+    in-out property <string> lookup-status: "";
+    callback lookup-peer-by-device-id(string);
+
     // Backed by core::hangouts (see that module's doc comment for what a
     // "Hangout" is and isn't yet — local-only hosting metadata, no real-time
     // sync, no media playback, no participants). main.rs loads the initial
@@ -240,6 +254,45 @@ export component AppWindow inherits Window {
                         width: 500px;
                         placeholder-text: "Paste a peer's invite here";
                         text <=> root.peer-address-input;
+                    }
+                }
+
+                if root.directory-enabled: VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Or, look up a peer by their Device ID (experimental — directory server configured)";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        LineEdit {
+                            width: 340px;
+                            placeholder-text: "Peer's Device ID (hex)";
+                            text <=> root.peer-device-id-input;
+                            accepted => {
+                                root.lookup-peer-by-device-id(root.peer-device-id-input);
+                            }
+                        }
+
+                        Button {
+                            text: "Look up";
+                            clicked => {
+                                root.lookup-peer-by-device-id(root.peer-device-id-input);
+                            }
+                        }
+                    }
+
+                    if root.lookup-status != "": Text {
+                        text: root.lookup-status;
+                        color: Theme.state-busy;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                 }
 
