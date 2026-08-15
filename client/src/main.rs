@@ -19,6 +19,16 @@
 
 slint::include_modules!();
 
+// Separate, additive generated-code module for the FloatingPanel demo (see
+// client/ui/floating-panel-demo.slint, client/build.rs) — included via an
+// explicit path rather than a second `slint::include_modules!()` call,
+// since that macro can only ever point at one file per crate (see
+// build.rs's comment). Debug-only; not part of the real app flow.
+mod floating_panel_demo {
+    #![allow(clippy::all)]
+    include!(concat!(env!("OUT_DIR"), "/floating_panel_demo.rs"));
+}
+
 mod directory;
 
 use std::cell::RefCell;
@@ -477,6 +487,20 @@ fn main() -> Result<(), slint::PlatformError> {
         // client/ui/spike-glass-blur.slint.
         let spike = SpikeGlassBlurWindow::new()?;
         return spike.run();
+    }
+
+    // Separate, additive debug-only path proving out the FloatingPanel
+    // component (client/ui/floating-panel.slint) — an "MSN-Messenger-
+    // style" floating/draggable window paradigm, not yet wired into the
+    // real app shell. See client/ui/floating-panel-demo.slint and
+    // PROGRESS.md session 13. Mirrors --spike/ANKAI_SPIKE_DEBUG above,
+    // deliberately kept as its own separate flag rather than folded into
+    // --spike.
+    let floating_demo = std::env::args().any(|arg| arg == "--floating-demo")
+        || std::env::var("ANKAI_FLOATING_DEMO").is_ok_and(|v| v == "1");
+    if floating_demo {
+        let demo = floating_panel_demo::FloatingPanelDemoWindow::new()?;
+        return demo.run();
     }
 
     let db = Rc::new(open_local_db());

@@ -1,0 +1,219 @@
+// ANKAI client — reusable floating/draggable "desktop window" panel.
+//
+// Building block for the MSN-Messenger-style floating-window UI paradigm
+// described in the human's mockup (session 12/13): separate windows for
+// e.g. a video player, the Hangout Room watch-party chat, a friends list,
+// or a DM chat window — each with its own title bar, close button, and
+// free drag movement, layered on top of the main app content. This is an
+// ADDITIVE UI paradigm on top of the existing single-pane-per-screen app
+// shell (sidebar nav, one content area that swaps per selection) — not a
+// replacement for it. See floating-panel-demo.slint for a standalone,
+// separately-reachable proof this genuinely works, mirroring how
+// spike-glass-blur.slint is a self-contained demo of its own techniques.
+// NOT wired into the real app shell (ui/app.slint) yet — deliberately
+// deferred to a follow-up so it lands on the real Messages/Hangouts/Home
+// pane content once that work settles, not a moving target.
+//
+// Visual treatment matches the established glass-panel family (module-
+// card.slint's ModuleCardItem, spike-glass-blur.slint's glass panel, the
+// already-redesigned Profile pane): alpha tint + border + specular-
+// highlight strip + drop-shadow. Slint 1.17 has no backdrop-filter/true
+// blur-behind primitive — see spike-glass-blur.slint's header comment for
+// the ADR-0002 background on why this is the honest ceiling, not a
+// shortcut taken here.
+//
+// Drag mechanism: adapted from spike-glass-blur.slint's proven
+// ModuleCardItem drag-reorder technique — an origin captured once at
+// press, a live pointer position tracked via TouchArea's mouse-x/mouse-y,
+// and the new position computed fresh every move event as
+// `origin + (current - anchor)` rather than accumulated incrementally
+// (`self.x += ...`), so there is no drift or feedback loop. That spike
+// uses ONE fixed overlay TouchArea shared across all reorderable cards
+// specifically because dragging one card also swaps array entries live
+// out from under the whole set; a FloatingPanel has no such cross-panel
+// interaction (each one drags completely independently of the others), and
+// Slint's TouchArea has a real implicit pointer grab on press (confirmed
+// by reading i-slint-core's input.rs: `mouse_input_state.grabbed` keeps
+// delivering `moved`/mouse-x/mouse-y to whichever element received the
+// press even once the cursor leaves that element's own bounds, until
+// release) — so each panel's own title-bar TouchArea can safely own its
+// whole press/move/release lifecycle by itself, instead of needing a
+// host-shared overlay. Same core anchor-plus-delta math as the spike,
+// just self-contained per panel and generalized from one axis (y) to two
+// (x and y).
+import { Theme } from "theme.slint";
+
+export component FloatingPanel inherits Rectangle {
+    in property <string> panel-title: "";
+    in property <length> panel-x: 40px;
+    in property <length> panel-y: 40px;
+    in property <length> panel-width: 360px;
+    in property <length> panel-height: 260px;
+    // Host-controlled: true when this is the frontmost / most-recently-
+    // interacted-with panel, for a subtle focus highlight. Real stacking
+    // order (which panel visually draws on top of the others) is a
+    // separate, host-owned concern — see floating-panel-demo.slint's
+    // header comment for how that's actually achieved.
+    in property <bool> is-active: false;
+
+    // Fired continuously while the title bar is being dragged, with the
+    // panel's proposed new top-left position (in the host's coordinate
+    // space). The host is the source of truth for position (see
+    // floating-panel-demo.slint) — this component never writes to
+    // panel-x/panel-y itself, only requests a new value each move event.
+    callback dragged(length, length);
+    // Fired once per press anywhere in the panel (title bar or content
+    // area) — the host's cue to bring this panel to the front of the
+    // on-screen stack.
+    callback interacted();
+    // Fired when the close ("x") button is clicked. The host decides what
+    // "closing" means (remove from a list, hide, etc).
+    callback close();
+
+    property <bool> dragging: false;
+    property <length> drag-origin-x: 0px;
+    property <length> drag-origin-y: 0px;
+    property <length> press-anchor-x: 0px;
+    property <length> press-anchor-y: 0px;
+
+    x: panel-x;
+    y: panel-y;
+    width: panel-width;
+    height: panel-height;
+    clip: true;
+    border-radius: 18px;
+    background: Theme.glass-tint;
+    border-width: 1px;
+    border-color: is-active ? Theme.accent-cyan.with-alpha(0.55) : Theme.silver.with-alpha(0.2);
+    drop-shadow-color: Theme.bg-void.with-alpha(170.0 / 255.0);
+    drop-shadow-blur: dragging ? 40px : (is-active ? 28px : 18px);
+    drop-shadow-offset-y: dragging ? 16px : 8px;
+
+    animate drop-shadow-blur, drop-shadow-offset-y, border-color {
+        duration: Theme.motion-duration-standard;
+        easing: Theme.motion-easing-standard;
+    }
+
+    // Specular highlight strip — same technique as module-card.slint /
+    // spike-glass-blur.slint's glass panel (tokens.md "Normal" tier).
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 44%;
+        background: @linear-gradient(180deg, #ffffff26 0%, #ffffff00 100%);
+    }
+
+    VerticalLayout {
+        title-bar := Rectangle {
+            height: 34px;
+            background: Theme.bg-surface-raised.with-alpha(0.6);
+
+            // Drag handle: covers the whole title bar, but is declared
+            // BEFORE (i.e. hit-test/paint-order-wise underneath) the
+            // HorizontalLayout below holding the close button, so the
+            // close button still wins its own clicks (Slint hit-tests
+            // front-to-back — later-declared siblings, drawn on top, get
+            // first refusal on a press).
+            drag-touch := TouchArea {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+
+                changed pressed => {
+                    if (self.pressed) {
+                        root.dragging = true;
+                        root.drag-origin-x = root.panel-x;
+                        root.drag-origin-y = root.panel-y;
+                        root.press-anchor-x = self.pressed-x;
+                        root.press-anchor-y = self.pressed-y;
+                        root.interacted();
+                    } else {
+                        root.dragging = false;
+                    }
+                }
+
+                moved => {
+                    if (root.dragging) {
+                        root.dragged(
+                            root.drag-origin-x + (self.mouse-x - root.press-anchor-x),
+                            root.drag-origin-y + (self.mouse-y - root.press-anchor-y));
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.space-3;
+                padding-right: Theme.space-2;
+                spacing: Theme.space-2;
+                alignment: center;
+
+                Text {
+                    text: root.panel-title;
+                    color: Theme.text-primary;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+
+                close-btn := Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: close-touch.has-hover ? Theme.state-busy.with-alpha(0.4) : Theme.silver.with-alpha(0.14);
+
+                    animate background {
+                        duration: Theme.motion-duration-standard;
+                    }
+
+                    Text {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        text: "×";
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                        font-weight: 700;
+                    }
+
+                    close-touch := TouchArea {
+                        clicked => {
+                            root.close();
+                        }
+                    }
+                }
+            }
+        }
+
+        content-area := Rectangle {
+            background: transparent;
+
+            // Background click-catcher: fires "brought to front" for
+            // presses that land on empty content space (real desktop
+            // windows focus on any click, not just the title bar).
+            // Declared before @children so real child content's own
+            // TouchAreas still take hit-test priority over their own
+            // bounds — see the drag-touch comment above for why
+            // declaration order gives us this for free.
+            content-touch := TouchArea {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                changed pressed => {
+                    if (self.pressed) {
+                        root.interacted();
+                    }
+                }
+            }
+
+            @children
+        }
+    }
+}
