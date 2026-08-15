@@ -129,6 +129,141 @@ fn refresh_top8(app: &AppWindow, db: &ankai_core::db::Db) {
     app.set_unfeatured_communities(slint::ModelRc::from(Rc::new(slint::VecModel::from(
         unfeatured_refs,
     ))));
+
+    refresh_stats(app, db);
+}
+
+/// Picks the title to show for a watchlist entry: prefers the cached English
+/// title, falls back to romaji, and (only if AniList had neither on file —
+/// rare but real, see `AnimeSummary`'s doc comment) a last-resort id-based
+/// label rather than an empty string.
+fn watchlist_title(entry: &ankai_core::anime::WatchlistEntry) -> String {
+    entry
+        .title_english
+        .clone()
+        .or_else(|| entry.title_romaji.clone())
+        .unwrap_or_else(|| format!("AniList #{}", entry.anilist_id))
+}
+
+/// Formats a watchlist entry's progress line. `episode_count` is `None` for
+/// currently-airing shows AniList hasn't settled a final count for yet (see
+/// `ankai_core::anime`'s doc comment) — in that case there's no denominator
+/// to show, so this reads "N episodes watched" instead of "N / ? episodes".
+fn watchlist_progress(entry: &ankai_core::anime::WatchlistEntry) -> String {
+    match entry.episode_count {
+        Some(total) => format!("{} / {total} episodes", entry.watched_episodes),
+        None => format!("{} episodes watched", entry.watched_episodes),
+    }
+}
+
+/// Recomputes the My Page "Currently Watching" module from
+/// `ankai_core::anime`'s real local watchlist, filtered to
+/// `WatchStatus::Watching` only (see that module's doc comment — this is
+/// deliberately not a full watchlist browser). Called once at startup and
+/// again after any watchlist mutation, same "recompute fresh from core"
+/// shape as `refresh_top8`.
+fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db) {
+    let watching =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
+            .unwrap_or_else(|err| {
+                eprintln!("ankai-client: failed to list watching anime: {err}");
+                Vec::new()
+            });
+
+    let cards: Vec<WatchlistCard> = watching
+        .iter()
+        .map(|entry| WatchlistCard {
+            anilist_id: entry.anilist_id as i32,
+            title: watchlist_title(entry).into(),
+            progress: watchlist_progress(entry).into(),
+        })
+        .collect();
+
+    app.set_watching_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
+
+    refresh_stats(app, db);
+}
+
+/// Recomputes the My Page Friends section (accepted friends + pending
+/// *incoming* requests) from `ankai_core::friends`'s real tables. Called
+/// once at startup, after accepting/declining a request, and whenever a
+/// friends-protocol message arrives over P2P (see the receive loop below).
+/// Presence (`FriendCard::status`) always resets to `""` ("not checked")
+/// here — the list just changed, so any previously fetched presence no
+/// longer necessarily reflects who's actually in it; `on_refresh_friends_presence`
+/// re-checks it live, on demand.
+fn refresh_friends(app: &AppWindow, db: &ankai_core::db::Db) {
+    let friends = ankai_core::friends::list_friends(db).unwrap_or_else(|err| {
+        eprintln!("ankai-client: failed to list friends: {err}");
+        Vec::new()
+    });
+    let pending = ankai_core::friends::list_pending_requests(db).unwrap_or_else(|err| {
+        eprintln!("ankai-client: failed to list pending friend requests: {err}");
+        Vec::new()
+    });
+
+    let friend_cards: Vec<FriendCard> = friends
+        .into_iter()
+        .map(|f| FriendCard {
+            device_id: f.device_id.0.into(),
+            account_id: f.account_id.0.into(),
+            status: "".into(),
+        })
+        .collect();
+    let pending_cards: Vec<FriendCard> = pending
+        .into_iter()
+        .map(|f| FriendCard {
+            device_id: f.device_id.0.into(),
+            account_id: f.account_id.0.into(),
+            status: "".into(),
+        })
+        .collect();
+
+    app.set_friends_list(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        friend_cards,
+    ))));
+    app.set_pending_friend_requests(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        pending_cards,
+    ))));
+
+    refresh_stats(app, db);
+}
+
+/// Recomputes the Stats tab's real counts. Every number here comes from the
+/// same `core::` list calls already used elsewhere in this file — nothing
+/// is estimated. Called from `refresh_top8`/`refresh_watchlist`/
+/// `refresh_friends` so it always reflects the latest state without every
+/// mutating callback needing to remember to call it directly.
+fn refresh_stats(app: &AppWindow, db: &ankai_core::db::Db) {
+    let communities_count = ankai_core::communities::list(db)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let watching_count =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
+            .map(|v| v.len())
+            .unwrap_or(0);
+    let completed_count =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Completed))
+            .map(|v| v.len())
+            .unwrap_or(0);
+    let planned_count =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Planned))
+            .map(|v| v.len())
+            .unwrap_or(0);
+    let dropped_count =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Dropped))
+            .map(|v| v.len())
+            .unwrap_or(0);
+    let friends_count = ankai_core::friends::list_friends(db)
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    app.set_stat_communities_count(communities_count as i32);
+    app.set_stat_watching_count(watching_count as i32);
+    app.set_stat_completed_count(completed_count as i32);
+    app.set_stat_planned_count(planned_count as i32);
+    app.set_stat_dropped_count(dropped_count as i32);
+    app.set_stat_friends_count(friends_count as i32);
 }
 
 /// Truncates a `messaging::peer_id_for`-style hex peer id to a short,
@@ -254,7 +389,10 @@ fn refresh_recent_posts(app: &AppWindow, db: &ankai_core::db::Db) {
 /// [`spawn_friend_presence_checks`] using the returned `Vec<Friend>` (kept
 /// separate so the caller doesn't need a second DB read just to get the
 /// real `Friend` values `check_presence` needs).
-fn refresh_friends(app: &AppWindow, db: &ankai_core::db::Db) -> Vec<ankai_core::friends::Friend> {
+fn refresh_home_friends(
+    app: &AppWindow,
+    db: &ankai_core::db::Db,
+) -> Vec<ankai_core::friends::Friend> {
     let friends = ankai_core::friends::list_friends(db).unwrap_or_else(|err| {
         eprintln!("ankai-client: failed to load friends for Home: {err}");
         Vec::new()
@@ -528,6 +666,15 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // "Currently Watching" (ankai_core::anime's real local watchlist,
+    // filtered to WatchStatus::Watching — see refresh_watchlist's doc
+    // comment). No mutation callbacks yet: this pane is read-only display
+    // of whatever's already on the watchlist, since there's no "search
+    // AniList and add" UI built in this pass — that's real, separate future
+    // work (this module's own AniList search/trending/popular functions are
+    // fully built and tested, just not wired into any UI screen yet).
+    refresh_watchlist(&app, &db);
+
     let hangouts = ankai_core::hangouts::list(&db).expect("failed to list hangouts");
     let hangout_names: Vec<slint::SharedString> =
         hangouts.into_iter().map(|h| h.name.into()).collect();
@@ -594,6 +741,132 @@ fn main() -> Result<(), slint::PlatformError> {
     let own_invite_text = ankai_core::messaging::format_peer_invite(&own_invite)
         .expect("failed to encode own P2P/MLS invite");
     app.set_own_peer_address(own_invite_text.into());
+
+    // Friends (ankai_core::friends): a real accepted-friends list plus real
+    // pending *incoming* requests, sharing this same P2pNode with messaging
+    // (see that module's "Wire dispatch" doc section). There is
+    // deliberately no "send a friend request" UI wired here — sending would
+    // need a way to pick a target device (the same look-up-by-Device-ID/
+    // username machinery Messages already has), and this pass scopes that
+    // out to keep the surface reviewable; accepting/declining an incoming
+    // request (which core::friends fully supports) is what's wired.
+    refresh_friends(&app, &db);
+
+    let node_for_accept_friend = p2p_node.clone();
+    let db_for_accept_friend = db.clone();
+    let mls_provider_for_accept_friend = mls_provider.clone();
+    let device_for_accept_friend = device.clone();
+    let app_weak_for_accept_friend = app.as_weak();
+    let p2p_handle_for_accept_friend = p2p_runtime.handle().clone();
+    app.on_accept_friend_request(move |device_id_text| {
+        let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
+        // Run to completion on the UI thread via Handle::block_on rather
+        // than tokio::spawn: accept_friend_request interleaves synchronous
+        // Db writes with one async P2P send inside a single async fn (see
+        // its doc comment), so the Db/MLS-provider `Rc`s it needs can't
+        // safely cross into a spawned task (see this file's
+        // MessagingHandles doc comment on why `Db` isn't `Send`/`Sync`
+        // across threads). This does mean the UI blocks for the duration of
+        // that one P2P send attempt (no timeout on it, unlike
+        // check_presence's) — same accepted tradeoff as this file's
+        // existing directory-publish `block_on` call at startup.
+        let result =
+            p2p_handle_for_accept_friend.block_on(ankai_core::friends::accept_friend_request(
+                &node_for_accept_friend,
+                &db_for_accept_friend,
+                &device_for_accept_friend,
+                &mls_provider_for_accept_friend,
+                &device_id,
+            ));
+        match result {
+            Ok(_outcome) => {
+                if let Some(app) = app_weak_for_accept_friend.upgrade() {
+                    refresh_friends(&app, &db_for_accept_friend);
+                }
+            }
+            Err(err) => eprintln!("ankai-client: failed to accept friend request: {err}"),
+        }
+    });
+
+    let db_for_decline_friend = db.clone();
+    let app_weak_for_decline_friend = app.as_weak();
+    app.on_decline_friend_request(move |device_id_text| {
+        let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
+        if let Err(err) =
+            ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
+        {
+            eprintln!("ankai-client: failed to decline friend request: {err}");
+        }
+        if let Some(app) = app_weak_for_decline_friend.upgrade() {
+            refresh_friends(&app, &db_for_decline_friend);
+        }
+    });
+
+    // Real, on-demand presence checks (ankai_core::friends::check_presence)
+    // against every accepted friend. Unlike accept above, check_presence
+    // takes no Db/MLS-provider reference (just `&P2pNode` and an owned
+    // `Friend`), so it's safe to run as real spawned tasks that report back
+    // via invoke_from_event_loop — same shape as messaging's send/receive
+    // paths.
+    let node_for_presence = p2p_node.clone();
+    let db_for_presence = db.clone();
+    let app_weak_for_presence = app.as_weak();
+    let p2p_handle_for_presence = p2p_runtime.handle().clone();
+    app.on_refresh_friends_presence(move || {
+        let friends = match ankai_core::friends::list_friends(&db_for_presence) {
+            Ok(friends) => friends,
+            Err(err) => {
+                eprintln!("ankai-client: failed to list friends for presence check: {err}");
+                return;
+            }
+        };
+
+        if let Some(app) = app_weak_for_presence.upgrade() {
+            if let Some(model) = app
+                .get_friends_list()
+                .as_any()
+                .downcast_ref::<slint::VecModel<FriendCard>>()
+            {
+                for i in 0..model.row_count() {
+                    if let Some(mut row) = model.row_data(i) {
+                        row.status = "checking...".into();
+                        model.set_row_data(i, row);
+                    }
+                }
+            }
+        }
+
+        for friend in friends {
+            let node = node_for_presence.clone();
+            let app_weak = app_weak_for_presence.clone();
+            p2p_handle_for_presence.spawn(async move {
+                let online = ankai_core::friends::check_presence(&node, &friend).await;
+                let device_id = friend.device_id.0.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    let friends_list = app.get_friends_list();
+                    let Some(model) = friends_list
+                        .as_any()
+                        .downcast_ref::<slint::VecModel<FriendCard>>()
+                    else {
+                        return;
+                    };
+                    for i in 0..model.row_count() {
+                        let Some(mut row) = model.row_data(i) else {
+                            continue;
+                        };
+                        if row.device_id.as_str() == device_id.as_str() {
+                            row.status = if online { "online" } else { "offline" }.into();
+                            model.set_row_data(i, row);
+                            break;
+                        }
+                    }
+                });
+            });
+        }
+    });
 
     // Experimental, opt-in ADR-0008 directory integration (Status:
     // Proposed — see docs/adr/0008-identity-discovery-service.md and
@@ -694,6 +967,39 @@ fn main() -> Result<(), slint::PlatformError> {
                         eprintln!("ankai-client: messaging handles not initialized yet");
                         return;
                     };
+
+                    // Friends-protocol messages carry a fixed magic prefix
+                    // real MLS wire bytes never start with (see
+                    // ankai_core::friends's "Wire dispatch" doc section), so
+                    // trying friends::handle_incoming first and falling
+                    // through to messaging::decrypt_incoming only when it
+                    // reports "not ours" (Ok(None)) safely dispatches both
+                    // message kinds over this one shared P2pNode/accept_loop
+                    // with zero changes to messaging.rs itself.
+                    match ankai_core::friends::handle_incoming(
+                        &handles.db,
+                        &handles.mls_provider,
+                        &bytes,
+                    ) {
+                        Ok(Some(_event)) => {
+                            // A new pending request or a confirmed accept —
+                            // either way, the Friends section's data
+                            // changed; refresh_friends recomputes both
+                            // lists fresh rather than hand-patching one row.
+                            refresh_friends(&app, &handles.db);
+                            return;
+                        }
+                        Ok(None) => {
+                            // Not a friends-protocol message; fall through
+                            // to messaging below, unchanged.
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "ankai-client: failed to process incoming friend message: {err}"
+                            );
+                            return;
+                        }
+                    }
 
                     let result = ankai_core::messaging::decrypt_incoming(
                         &handles.db,
@@ -1001,7 +1307,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // doc comment) or newly-added friends/posts can be retried without
     // restarting the app.
     refresh_recent_posts(&app, &db);
-    let initial_friends = refresh_friends(&app, &db);
+    let initial_friends = refresh_home_friends(&app, &db);
     spawn_anime_refresh(p2p_runtime.handle().clone(), app.as_weak());
     spawn_friend_presence_checks(
         initial_friends,
@@ -1020,7 +1326,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             };
             refresh_recent_posts(&app, &db_for_refresh);
-            let friends = refresh_friends(&app, &db_for_refresh);
+            let friends = refresh_home_friends(&app, &db_for_refresh);
             spawn_anime_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
             spawn_friend_presence_checks(
                 friends,
