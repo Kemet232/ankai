@@ -60,10 +60,11 @@ openmls_basic_credential = "0.5.0"
 # docs/adr/0003-p2p-networking-stack.md — same version ankai-core pins.
 iroh.workspace = true
 # HTTP client for HttpDirectoryClient. Already a *transitive* dependency of
-# this exact workspace at 0.13.4 (pulled in by iroh/iroh-relay) — this adds
-# it as a direct dependency of this crate rather than introducing a new
-# HTTP stack; see the ADR's "Transport" section for the Cargo.lock evidence.
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# this exact workspace at 0.13.4 (pulled in by iroh/iroh-relay); promoted to
+# a `[workspace.dependencies]` entry (see root Cargo.toml) once `core::anime`
+# became a second, unrelated direct consumer, so both crates resolve to the
+# same version/feature set rather than each pinning it separately.
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }

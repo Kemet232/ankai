@@ -27,3 +27,8 @@ rand.workspace = true
 # see root Cargo.toml for the feature-selection rationale.
 iroh.workspace = true
 tokio.workspace = true
+# HTTP client for `core::anime`'s AniList GraphQL client — see root
+# Cargo.toml's `reqwest` entry for the full provenance note (originally a
+# `server/directory`-only dependency, promoted to workspace-shared once
+# this became a second consumer).
+reqwest.workspace = true
