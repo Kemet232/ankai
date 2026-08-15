@@ -70,7 +70,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Cross-community recent-activity feed | done — `core::forum_posts::list_recent_across_communities`: real posts pulled from every local community into one most-recent-first feed, each correctly tagged with its real community name — the data source for "Hot Discussions" | `core/src/forum_posts.rs` |
 | Real friends system + on-demand presence (`core::friends`) | done — real P2P friend-request/accept flow (signed, real crypto, rides the existing P2P transport as a lightweight non-MLS message kind since a request has to work *before* any conversation/group exists), a real `friends`/`friend_requests` DB schema, and genuine presence: `check_presence` makes a real ~3s-timeout connection attempt right now rather than returning a stored flag — proven by a test that closes a node mid-test and watches the same call flip from online to offline. Device-scoped, not account-scoped (same honest limitation as Top 8/usernames) | `core/src/friends.rs` |
 | MyAnimeList forum discussions (`core::mal_forums`) | done — real read-only client (boards/topics/topic-posts), Client-ID-only auth (no OAuth login needed — confirmed empirically), reads the real credential from an env var at runtime, never hardcoded. Real live-network test against MAL's actual servers | `core/src/mal_forums.rs` |
-| Home dashboard (new screen) | done — real Trending/Popular (AniList), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence, not a placeholder anymore). No "Around the Web" — Reddit access stayed blocked all session (see below) | `client/ui/app.slint`, `client/src/main.rs` |
+| Home dashboard (new screen) | done — real Trending/Popular (AniList), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence, not a placeholder anymore). No "Around the Web" — Reddit access was blocked all session and the human has since dropped the idea entirely (see below); not on the roadmap anymore | `client/ui/app.slint`, `client/src/main.rs` |
 | My Page redesign (tabs) | done — banner/avatar header retained, tabbed into My Page / Guestbook / Stats / Settings; Top 8 (existing) plus a new real "Currently Watching" module (AniList watchlist); real friends list + real pending-request Accept/Decline; Guestbook stays an honest empty-state placeholder (needs other people writing to your profile, which needs more than exists yet); Stats tab shows real counts (communities/Top 8/watchlist/friends) | `client/ui/app.slint`, `client/src/main.rs` |
 | Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. **Not wired into the real app** — the human changed their mind mid-session and no longer wants live dragging, just a fixed layout matching their reference image, so wiring this onto the real Home/Messages/Hangouts panes is now a smaller task than originally scoped (no drag interaction needed, just fixed positioning reusing the same glass-panel visual work) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 
@@ -520,10 +520,9 @@ Reddit's own `robots.txt`/access policy, which is exactly the kind of
 workaround this project won't quietly build around. Pushshift was checked
 too — dead for general use since 2023, mod-only now. **MyAnimeList was
 chosen instead** (real forums, real free Client-ID-only API, an actually
-working registration flow) — see `core::mal_forums` above. Reddit itself is
-still not integrated; if it's wanted later, it needs the human to
-successfully register a real app first (unresolved blocker, not something
-to route around).
+working registration flow) — see `core::mal_forums` above. **The human has
+since dropped Reddit entirely** — not a future candidate, not queued, done.
+Don't propose it again without the human raising it fresh.
 
 **The "floating window" scope changed twice, worth remembering exactly
 what was decided:** the human first asked for a full MSN-Messenger-style
@@ -603,14 +602,12 @@ Remaining steps, none locked:
 2. Communities/Hangouts/Settings panes still have the old plain content
    styling (only their shared chrome, Home, and My Page got the real
    visual treatment this session and last).
-3. Reddit "Around the Web" — blocked on the human successfully registering
-   a real Reddit developer app (see above); not something to route around.
-4. Multi-conversation messaging UI — still hasn't started (queued since
+3. Multi-conversation messaging UI — still hasn't started (queued since
    session 11).
-5. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+4. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
-6. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
+5. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
    held back — real payments/money, needs a human product/legal decision
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
