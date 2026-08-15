@@ -22,6 +22,16 @@ import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
 
+// A minimal (id, name) pair for a community, used by the Profile pane's
+// Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
+// separate from the plain `[string]` community-names list the Communities
+// pane already used, since picking/reordering needs the real id, not just
+// the display name.
+export struct CommunityRef {
+    id: string,
+    name: string,
+}
+
 export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
@@ -60,6 +70,21 @@ export component AppWindow inherits Window {
     in-out property <[string]> community-names: [];
     in-out property <string> new-community-name: "";
     callback create-community(string);
+
+    // Backed by core::top8 (see that module's doc comment for full scope —
+    // "Top 8 communities," a deliberately honest stand-in for the classic
+    // MySpace "Top 8 friends" until ANKAI has a real contacts/friends
+    // model). featured-communities is the user's current Top 8, in order
+    // (at most 8 entries); unfeatured-communities is every other community
+    // they have, offered as "add to Top 8" candidates. main.rs recomputes
+    // both fresh from core::top8/core::communities after every mutation
+    // below, so these always reflect real persisted state.
+    in-out property <[CommunityRef]> featured-communities: [];
+    in-out property <[CommunityRef]> unfeatured-communities: [];
+    callback feature-community(string);
+    callback unfeature-community(string);
+    callback move-featured-community-up(string);
+    callback move-featured-community-down(string);
 
     // Backed by core::messaging (see that module's doc comment for what this
     // deliberately is and isn't yet — real MLS/RFC 9420 end-to-end
@@ -188,6 +213,94 @@ export component AppWindow inherits Window {
                         text: root.device-id;
                         color: Theme.text-primary;
                         font-size: 14px;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: "Top 8 Communities";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    Text {
+                        text: "Feature up to 8 of your communities on your profile, in whatever order you like. There's no \"Top 8 friends\" yet — ANKAI doesn't have a real contacts/friends model built, so this is communities for now.";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.featured-communities.length == 0: Text {
+                        text: "No featured communities yet — add some below.";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                    }
+
+                    for entry[i] in root.featured-communities: HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            text: (i + 1) + ". " + entry.name;
+                            color: Theme.text-primary;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Button {
+                            text: "Up";
+                            enabled: i > 0;
+                            clicked => {
+                                root.move-featured-community-up(entry.id);
+                            }
+                        }
+
+                        Button {
+                            text: "Down";
+                            enabled: i < root.featured-communities.length - 1;
+                            clicked => {
+                                root.move-featured-community-down(entry.id);
+                            }
+                        }
+
+                        Button {
+                            text: "Remove";
+                            clicked => {
+                                root.unfeature-community(entry.id);
+                            }
+                        }
+                    }
+
+                    if root.unfeatured-communities.length > 0: Text {
+                        text: "Add to Top 8";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    for entry in root.unfeatured-communities: HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            text: entry.name;
+                            color: Theme.text-secondary;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Button {
+                            text: "Add";
+                            enabled: root.featured-communities.length < 8;
+                            clicked => {
+                                root.feature-community(entry.id);
+                            }
+                        }
                     }
                 }
             }
