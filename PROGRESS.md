@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-15 (session 11)
+Last updated: 2026-08-15 (session 12)
 
 ## What ANKAI is
 
@@ -64,6 +64,8 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Directory server wired into `client` (opt-in) | done — if `ANKAI_DIRECTORY_URL` is set, the client publishes its own `KeyPackage`/`EndpointAddr` to the real directory server on startup and offers a "look up by Device ID" field in Messages, replacing the need to paste a whole invite blob; unset (the default) behaves exactly as before, manual-paste-only. Real end-to-end proof: a test spins up the actual compiled `ankai-directory-server` binary as a separate OS process and confirms a full cross-process lookup + MLS-encrypted message round-trip through it | `client/src/directory.rs`, `client/src/main.rs`, `server/directory/tests/external_process_e2e.rs` |
 | Community discussion posts (`core::forum_posts`) | done — flat, chronological, append-only text posts inside a community (the "forum" half of "communities/forums"); no replies, editing, or moderation yet. Wired into the Communities pane: selecting a community loads its posts, a real field + button posts new ones | `core/src/forum_posts.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Profile customization: "Top 8 Communities" (`core::top8`) | done — MySpace-style featured-items picker, honestly scoped to communities (not "friends," since there's no real contacts model yet); pick/reorder/remove up to 8, reuses the existing `settings` table rather than a new migration | `core/src/top8.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| Usernames for the directory service | done — a device can claim a short name (lowercase alphanumeric/underscore, 3-20 chars) via the directory server instead of sharing a raw Device ID; device-scoped (not account-scoped — flagged for revisit once real multi-device/account support exists), first-come-first-served with the same signed-request ownership pinning the server already uses for device keys. Wired end-to-end: claim in Settings, look a peer up by username in Messages. Real full-stack test: device B finds device A purely by username and sends a real MLS-encrypted message through a real running server | `server/directory/src/username.rs`, `client/src/directory.rs`, `client/src/main.rs` |
+| Real "Liquid Y2K" visual design applied (shared shell + Profile pane) | done — the validated glass-panel design system (`docs/design/tokens.md`, proven in `client/ui/spike-glass-blur.slint`, gated on two ADR-0002 spikes that closed back in session 3 but were never actually applied to the real app until now) is live on the sidebar/window chrome and the Profile pane: glass-tinted panels, glowing active-nav pill, avatar-initial header card, de-emphasized ID chips, and the Top 8 list rebuilt as real accent-cycled glass module cards with custom icon buttons instead of generic OS buttons. Messages/Communities/Hangouts/Settings pane *content* untouched this pass (shared chrome only) — human asked to see one screen done properly before the rest follow | `client/ui/app.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -425,18 +427,77 @@ subprocess-based end-to-end test run explicitly)/`clippy -D warnings`/
 `fmt --check` all verified clean, plus a real client run/screenshot
 confirming no regression. Pushed to `origin/main`.
 
-Remaining steps: no locked queue again. Reasonable next candidates, none
-started, none chosen over the others:
+**Session 12 (2026-08-15) started with two more parallel tracks (usernames,
+then a UI redesign), then paused mid-flow at the human's request.**
 
-1. Multi-conversation messaging UI (queued behind this session's directory
-   work, now unblocked) — `core::messaging`'s DB tables already support
-   more than one conversation, the UI still only shows one at a time.
-2. Usernames for the directory service (human request, also unblocked now)
-   — let people claim a short human-readable name instead of sharing a raw
-   Device ID. Default scoping call already made: **device-scoped** for now
-   (tied to a `DeviceId`, first-come-first-served, ownership enforced via
-   the same request-signing the directory server already does), flagged as
-   needing revisiting once real multi-device/account support exists.
+- **Usernames for the directory service**: built as scoped in session 11's
+  notes (device-scoped, first-come-first-served, same signed-request
+  ownership pattern as device-key TOFU pinning). Verified with a real
+  full-stack test (device B finds device A purely by username, sends a
+  real MLS-encrypted message through a real running server) — the
+  orchestrator wrote an equivalent test concurrently with the agent by
+  accident (both working in the same worktree at once) and kept the
+  agent's version, which used a cleaner dedicated helper.
+- **UI redesign**: the human pushed back hard mid-session — "i really
+  dont like how basic the ui is... its not what i had in mind at all and
+  is not intuitive." Investigation found the real cause: ANKAI has a
+  detailed intended visual design (`docs/design/tokens.md`, "Liquid Y2K" —
+  dark glass panels, cyan/violet/gold accents) that was validated for real
+  back in session 3 (ADR-0002's two spikes both closed), but nobody ever
+  applied it to the actual app — every feature session since then
+  (including all of this one) just built on the plain flat nav skeleton
+  that was only ever meant to be a temporary placeholder. Human wanted one
+  screen redone properly before committing to the rest; the shared window
+  chrome (sidebar/background) and the Profile pane got the real glass
+  treatment (see phase table above). Messages/Communities/Hangouts/Settings
+  pane content is still the old plain style, waiting on the human's
+  reaction to Profile before continuing.
+
+**Process notes:**
+- The stuck-agent-ends-turn-mid-background-build pattern (see sessions 10
+  and 11) recurred for both tracks again; handled the same way — the
+  orchestrator finished verification directly rather than fighting the
+  loop, and used `TaskStop` once a track's work was safely committed but
+  its agent kept looping and burning tokens regardless.
+- **Twice this session, a screenshot meant to capture the running ANKAI
+  app instead captured an unrelated browser window** (the human's own
+  browsing) even though `osascript` reported the correct window bounds
+  immediately beforehand. Both screenshots were deleted immediately and
+  not examined/kept/referenced further; no further live-app screenshots
+  were attempted after the second occurrence — verification fell back to
+  source review plus one earlier screenshot that *did* legitimately
+  capture the app (taken before this failure mode started occurring).
+  **Future sessions: treat window-bounds-then-screencapture as
+  unreliable in this environment specifically** — a successful
+  `osascript` bounds query does not guarantee the app window is actually
+  the topmost thing on screen at capture time. If a screenshot looks
+  wrong (unrelated content, wrong app), delete it immediately and stop —
+  do not retry blindly, and do not describe or act on what was captured.
+- A live UI click (attempting to open the Communities pane to see a
+  populated Top 8 card) also missed the app window and landed on an
+  unrelated browser tab, for the same underlying reason. Stopped
+  attempting further live interaction immediately, per this repo's
+  standing caution (see the Hangouts-era incident note elsewhere in this
+  file) — verified the populated-card styling via source review instead.
+
+Merged both tracks onto `main` — no conflicts on either merge. Full
+workspace `build`/`test` (77 tests)/`clippy -D warnings`/`fmt --check` all
+verified clean on the merged tree. Pushed to `origin/main`.
+
+**Session paused here at the human's explicit request ("after this is
+done lets stop")** — not a natural stopping point in the backlog, just
+where the human wanted to break. Nothing below is a locked decision, and
+the UI-redesign rollout to the rest of the app is specifically waiting on
+the human's reaction to the Profile pane before continuing:
+
+1. **UI redesign rollout** (paused, waiting on human reaction to Profile)
+   — Messages, Communities, Hangouts, and Settings panes still have the
+   old plain content styling; the shared shell they inherit is already
+   redone.
+2. Multi-conversation messaging UI — `core::messaging`'s DB tables already
+   support more than one conversation, the UI still only shows one at a
+   time. Was queued behind the directory-wiring track in session 11; still
+   hasn't started.
 3. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement across real diverse networks) and spike 2 (subjective
    AEC/noise-suppression audio quality on real hardware) both have working
@@ -445,9 +506,9 @@ started, none chosen over the others:
    reference impl, QUIC-datagram netplay) — no tooling started on any yet.
 5. Other still-unstarted parts of the original product idea: real forum
    threading/replies (posts are flat-only right now), the creator
-   marketplace (explicitly held back this session — involves real
-   payments/money, a product-and-legal decision the human should weigh in
-   on before any scaffolding starts, not something to default into).
+   marketplace (explicitly held back — involves real payments/money, a
+   product-and-legal decision the human should weigh in on before any
+   scaffolding starts, not something to default into).
 6. Frame-level E2E encryption through an SFU (ADR-0003 spike 2's harder
    half) — genuinely unstarted, needs an actual SFU to forward through.
 
