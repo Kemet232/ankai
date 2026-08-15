@@ -15,6 +15,18 @@ openmls_rust_crypto = "0.5.1"
 # Basic-credential signature keypairs (openmls's own org crate) — version
 # pinned to match what openmls 0.8.1 itself depends on internally.
 openmls_basic_credential = "0.5.0"
+# Only for the `signatures::Signer` trait (SignatureKeyPair::sign) — needed
+# by core::friends to sign/verify plain (non-MLS) friend-request messages
+# directly with a device's real signature key, without OpenMLS's own group
+# API in between. `openmls::prelude` re-exports `OpenMlsCrypto` (used for
+# signature *verification*) but not `signatures::Signer`, and
+# `SignatureKeyPair::private()` (the alternative to get raw key bytes out)
+# is gated behind openmls_basic_credential's own "test-utils" feature — so
+# going through the real `Signer` trait is the only non-hacky option.
+# Already present in Cargo.lock transitively at this exact version (both
+# openmls and openmls_basic_credential depend on it), so this adds no new
+# crate to the dependency tree, just a direct workspace reference.
+openmls_traits = "0.5.0"
 # SQLCipher-backed encrypted SQLite for local persistence, per
 # docs/adr/0004-e2ee-stack.md.
 rusqlite.workspace = true
@@ -26,4 +38,14 @@ rand.workspace = true
 # Generic P2P data transport, per docs/adr/0003-p2p-networking-stack.md —
 # see root Cargo.toml for the feature-selection rationale.
 iroh.workspace = true
-tokio.workspace = true
+# "time" adds tokio::time::timeout, used by core::friends's on-demand
+# presence check (a short-timeout real connection attempt, not a stored
+# flag — see that module's doc comment) — the workspace default feature set
+# doesn't include it, same additive pattern tools/nat-probe and
+# tools/webrtc-audio-probe already use for the same reason.
+tokio = { workspace = true, features = ["time"] }
+# HTTP client for `core::anime`'s AniList GraphQL client — see root
+# Cargo.toml's `reqwest` entry for the full provenance note (originally a
+# `server/directory`-only dependency, promoted to workspace-shared once
+# this became a second consumer).
+reqwest.workspace = true
