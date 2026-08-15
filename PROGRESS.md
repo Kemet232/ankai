@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-15 (session 10)
+Last updated: 2026-08-15 (session 11)
 
 ## What ANKAI is
 
@@ -61,6 +61,9 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Hangouts pane | done — `core::hangouts` (create/list/get against a new `hangouts` table, migration 5), mirroring Communities' shape exactly; local-only hosting metadata, no real-time sync/media/participants yet | `core/src/hangouts.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | ADR-0003 spike 2 tool (WebRTC audio/E2EE prototype) | done — new `tools/webrtc-audio-probe` binary crate: a real two-process `webrtc-rs` v0.20 voice-call prototype (manual SDP offer/answer exchange, synthetic-tone-over-real-Opus/RTP, DTLS-SRTP confirmed active via `get_stats()`). Verified end-to-end: both sides reach `Connected`, audio verification passes. Spike itself is **not closed** — subjective audio quality on real hardware, frame-level E2E through an SFU, and multi-OS validation are all still unstarted human/future work | `tools/webrtc-audio-probe/`, `docs/adr/0003-p2p-networking-stack.md` ("Spike 2 status") |
 | ADR-0008: identity/discovery service + reference backend | done — `docs/adr/0008-identity-discovery-service.md` (Status: **Proposed**, researched: axum vs. tonic, SQLite vs. Postgres, ED25519-request-signing auth reusing `identity.rs`'s existing device key, TOFU pubkey pinning); `server/directory/` is a real reference implementation (axum + SQLite, KeyPackage-consumed-on-lookup + 30-day expiry, EndpointAddr 10-minute TTL) plus `HttpDirectoryClient`, a second real `DirectoryService` impl proven against it via real signed-request integration tests (including rejection of unsigned/badly-signed/impersonating publishes). Deliberately not wired into `client` — still `Proposed`, real gaps (TOFU bootstrapping, unauthenticated EndpointAddr lookups vs. the threat model, SQLite-single-process) documented as pre-`Accepted` blockers | `docs/adr/0008-identity-discovery-service.md`, `server/directory/` |
+| Directory server wired into `client` (opt-in) | done — if `ANKAI_DIRECTORY_URL` is set, the client publishes its own `KeyPackage`/`EndpointAddr` to the real directory server on startup and offers a "look up by Device ID" field in Messages, replacing the need to paste a whole invite blob; unset (the default) behaves exactly as before, manual-paste-only. Real end-to-end proof: a test spins up the actual compiled `ankai-directory-server` binary as a separate OS process and confirms a full cross-process lookup + MLS-encrypted message round-trip through it | `client/src/directory.rs`, `client/src/main.rs`, `server/directory/tests/external_process_e2e.rs` |
+| Community discussion posts (`core::forum_posts`) | done — flat, chronological, append-only text posts inside a community (the "forum" half of "communities/forums"); no replies, editing, or moderation yet. Wired into the Communities pane: selecting a community loads its posts, a real field + button posts new ones | `core/src/forum_posts.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| Profile customization: "Top 8 Communities" (`core::top8`) | done — MySpace-style featured-items picker, honestly scoped to communities (not "friends," since there's no real contacts model yet); pick/reorder/remove up to 8, reuses the existing `settings` table rather than a new migration | `core/src/top8.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -365,25 +368,87 @@ issue, not a code regression (each track's own agent already
 screenshot-verified its pane in isolation before merging, and this exact
 Keychain flow has worked in every prior session). Pushed to `origin/main`.
 
+**Session 11 (2026-08-15) ran three more tracks in parallel** (human:
+"multiple conversations at once and work on the bigger unstarted parts of
+the original idea use agent do em simultaneously"). Also picked up
+candidate 4 from session 10's list first, since the human separately asked
+for a way to find people by something shorter than a full address blob:
+
+- **Directory server wired into `client` (opt-in)**: publishes this
+  device's `KeyPackage`/`EndpointAddr` to a real running directory server
+  on startup if `ANKAI_DIRECTORY_URL` is set, and offers "look up by Device
+  ID" in Messages as an alternative to pasting a full invite. Off (and
+  behaviorally identical to before) if the env var is unset — kept opt-in
+  since ADR-0008 is still `Proposed`. Verified for real: a test spawns the
+  actual compiled server binary as its own OS process and drives a full
+  cross-process lookup + encrypted message exchange through it.
+- **Community discussion posts**: the "forum" half of "communities/forums"
+  — flat, append-only text posts inside a community.
+- **"Top 8 Communities" profile customization**: the classic MySpace
+  Top-8 idea, honestly rescoped to communities (not "friends," since ANKAI
+  has no real contacts/relationship model yet — explicitly flagged as
+  something to revisit once one exists, not something to fake now).
+
+**Multi-conversation messaging UI (session 10's candidate 1) and
+usernames-for-the-directory-service (a new human request) were both
+deliberately sequenced behind the directory-wiring track** rather than run
+in parallel with it — all three would touch the same Messages-pane code in
+`client/src/main.rs`/`app.slint`, and conflicting edits there would have
+cost more time to untangle than the parallelism saved. Neither has started
+yet.
+
+**Process notes:**
+- The now-familiar "agent stalls mid-task, ends its turn waiting for its
+  own background build instead of actually waiting" failure mode (see
+  session 10's notes) recurred for all three tracks this session. Rather
+  than keep resuming stuck agents, the orchestrator finished verification
+  directly each time (running `cargo build/test/clippy/fmt` itself in the
+  agent's worktree) — faster than fighting the loop, and `TaskStop` was
+  used once a track's work was already safely committed but its agent kept
+  looping and burning tokens regardless.
+- One real bug surfaced and was fixed directly by the orchestrator: the
+  Top8 track's `client/src/main.rs` had a borrow-then-move conflict
+  (`featured_ids` borrowed `&str` out of `featured` right before `featured`
+  was consumed) — fixed by collecting owned `String`s instead.
+- The human has said explicitly they trust agent-run testing and don't want
+  to be a bottleneck for validation — screenshots/manual review still
+  happen, but nothing in this session waited on the human clicking through
+  anything themselves.
+
+Merged all three onto `main`. Two real conflicts, both in the
+already-familiar shape (two branches independently extending the same
+Profile-pane wiring in `client/src/main.rs`/`app.slint` with genuinely
+independent, non-overlapping features) — resolved by keeping both blocks,
+not by picking one over the other. Post-merge, full workspace `build`/
+`test` (59 tests across all crates, plus the directory server's
+subprocess-based end-to-end test run explicitly)/`clippy -D warnings`/
+`fmt --check` all verified clean, plus a real client run/screenshot
+confirming no regression. Pushed to `origin/main`.
+
 Remaining steps: no locked queue again. Reasonable next candidates, none
 started, none chosen over the others:
 
-1. Wire `core::messaging`'s conversation/message DB tables into a real
-   multi-conversation UI (currently one-peer-at-a-time, matching the
-   original stub's UI scope, now with real crypto/persistence underneath).
-2. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+1. Multi-conversation messaging UI (queued behind this session's directory
+   work, now unblocked) — `core::messaging`'s DB tables already support
+   more than one conversation, the UI still only shows one at a time.
+2. Usernames for the directory service (human request, also unblocked now)
+   — let people claim a short human-readable name instead of sharing a raw
+   Device ID. Default scoping call already made: **device-scoped** for now
+   (tied to a `DeviceId`, first-come-first-served, ownership enforced via
+   the same request-signing the directory server already does), flagged as
+   needing revisiting once real multi-device/account support exists.
+3. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement across real diverse networks) and spike 2 (subjective
-   AEC/noise-suppression audio quality on real hardware, ADR-0002-style)
-   both have working tools now but still need a human to actually run them
-   and report results before either spike can close.
-3. The remaining ADR-0003 spikes (3-5: group-call topology, ANKAI Node
+   AEC/noise-suppression audio quality on real hardware) both have working
+   tools now but still need a human to actually run them.
+4. The remaining ADR-0003 spikes (3-5: group-call topology, ANKAI Node
    reference impl, QUIC-datagram netplay) — no tooling started on any yet.
-4. Wire `HttpDirectoryClient` into the real `client` app once ADR-0008 is
-   actually reviewed/accepted by the human (it's deliberately not wired up
-   yet — see the ADR's own "what would need to happen" list: TOFU
-   bootstrapping sign-off, the unauthenticated-EndpointAddr-lookup tension
-   with the threat model, SQLite-vs-real-deployment).
-5. Frame-level E2E encryption through an SFU (ADR-0003 spike 2's harder
+5. Other still-unstarted parts of the original product idea: real forum
+   threading/replies (posts are flat-only right now), the creator
+   marketplace (explicitly held back this session — involves real
+   payments/money, a product-and-legal decision the human should weigh in
+   on before any scaffolding starts, not something to default into).
+6. Frame-level E2E encryption through an SFU (ADR-0003 spike 2's harder
    half) — genuinely unstarted, needs an actual SFU to forward through.
 
 Not a locked decision — say which direction (or several, in parallel again
