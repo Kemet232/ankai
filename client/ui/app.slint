@@ -56,10 +56,29 @@ export component AppWindow inherits Window {
     // Backed by core::communities (see that module's doc comment for what a
     // "community" is and isn't yet — local-only, no membership/networking).
     // main.rs loads the initial list at startup and appends to it on
-    // create-community; there's no delete/rename yet.
+    // create-community; there's no delete/rename yet. community-ids is a
+    // parallel array to community-names (same index = same community),
+    // needed so a clicked row can pass its id (not just its display name)
+    // to open-community.
     in-out property <[string]> community-names: [];
+    in-out property <[string]> community-ids: [];
     in-out property <string> new-community-name: "";
     callback create-community(string);
+
+    // Backed by core::forum_posts (see that module's doc comment for what a
+    // "post" is and isn't yet — flat, append-only, local-only discussion
+    // text, no replies/editing/deleting/authorship/moderation). Selecting a
+    // community from the list above sets selected-community-id/-name and
+    // fires open-community, which main.rs handles by loading that
+    // community's posts (oldest first) into community-posts; empty
+    // selected-community-id means "showing the community list", not "inside
+    // a community" — that's how the pane below decides which to show.
+    in-out property <string> selected-community-id: "";
+    in-out property <string> selected-community-name: "";
+    in-out property <[string]> community-posts: [];
+    in-out property <string> new-post-content: "";
+    callback open-community(string, string);
+    callback create-post(string, string);
 
     // Backed by core::messaging (see that module's doc comment for what this
     // deliberately is and isn't yet — real MLS/RFC 9420 end-to-end
@@ -284,7 +303,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.communities-index: VerticalLayout {
+            if root.selected-index == root.communities-index && root.selected-community-id == "": VerticalLayout {
                 padding: 32px;
                 spacing: 16px;
                 alignment: start;
@@ -317,10 +336,99 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                for name in root.community-names: Text {
-                    text: "• " + name;
+                Text {
+                    text: "Select a community to view or post in its discussion thread.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                }
+
+                for name[i] in root.community-names: Rectangle {
+                    height: 32px;
+                    border-radius: 6px;
+
+                    Text {
+                        x: 4px;
+                        width: parent.width - 8px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: "• " + name;
+                        color: Theme.text-secondary;
+                        font-size: 14px;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open-community(root.community-ids[i], name);
+                        }
+                    }
+                }
+            }
+
+            if root.selected-index == root.communities-index && root.selected-community-id != "": VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Button {
+                        text: "< Back to communities";
+                        clicked => {
+                            root.selected-community-id = "";
+                            root.selected-community-name = "";
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.selected-community-name;
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "Posts here are flat and local-only for now: no replies/threading, no editing or deleting, and no author beyond \"this device\" — a community's posts only live on this device until real sync is built.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    LineEdit {
+                        width: 400px;
+                        placeholder-text: "Write a post";
+                        text <=> root.new-post-content;
+                        accepted => {
+                            root.create-post(root.selected-community-id, root.new-post-content);
+                        }
+                    }
+
+                    Button {
+                        text: "Post";
+                        clicked => {
+                            root.create-post(root.selected-community-id, root.new-post-content);
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Discussion (oldest first)";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                }
+
+                for post in root.community-posts: Text {
+                    text: "• " + post;
                     color: Theme.text-secondary;
                     font-size: 14px;
+                    wrap: word-wrap;
                 }
             }
 

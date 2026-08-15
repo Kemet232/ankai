@@ -142,10 +142,15 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let communities = ankai_core::communities::list(&db).expect("failed to list communities");
-    let community_names: Vec<slint::SharedString> =
-        communities.into_iter().map(|c| c.name.into()).collect();
-    let community_model = std::rc::Rc::new(slint::VecModel::from(community_names));
-    app.set_community_names(slint::ModelRc::from(community_model.clone()));
+    let (community_names, community_ids): (Vec<slint::SharedString>, Vec<slint::SharedString>) =
+        communities
+            .into_iter()
+            .map(|c| (c.name.into(), c.id.into()))
+            .unzip();
+    let community_name_model = std::rc::Rc::new(slint::VecModel::from(community_names));
+    let community_id_model = std::rc::Rc::new(slint::VecModel::from(community_ids));
+    app.set_community_names(slint::ModelRc::from(community_name_model.clone()));
+    app.set_community_ids(slint::ModelRc::from(community_id_model.clone()));
 
     let db_for_communities = db.clone();
     let app_weak = app.as_weak();
@@ -156,12 +161,67 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         match ankai_core::communities::create(&db_for_communities, name) {
             Ok(community) => {
-                community_model.push(community.name.into());
+                community_name_model.push(community.name.into());
+                community_id_model.push(community.id.into());
                 if let Some(app) = app_weak.upgrade() {
                     app.set_new_community_name("".into());
                 }
             }
             Err(err) => eprintln!("ankai-client: failed to create community: {err}"),
+        }
+    });
+
+    // Forum posts within a community (ankai_core::forum_posts — see that
+    // module's doc comment for scope: flat, append-only, local-only text,
+    // no replies/editing/authorship/moderation). Selecting a community from
+    // the list loads its posts (oldest first); posting appends both to the
+    // DB and to the live model, same "create + append" shape as
+    // create-community above.
+    let community_posts_model =
+        std::rc::Rc::new(slint::VecModel::from(Vec::<slint::SharedString>::new()));
+    app.set_community_posts(slint::ModelRc::from(community_posts_model.clone()));
+
+    let db_for_open_community = db.clone();
+    let app_weak_for_open_community = app.as_weak();
+    let community_posts_model_for_open = community_posts_model.clone();
+    app.on_open_community(move |id, name| {
+        let posts = match ankai_core::forum_posts::list_posts(&db_for_open_community, &id) {
+            Ok(posts) => posts,
+            Err(err) => {
+                eprintln!("ankai-client: failed to list posts for community {id}: {err}");
+                return;
+            }
+        };
+        community_posts_model_for_open.set_vec(
+            posts
+                .into_iter()
+                .map(|p| slint::SharedString::from(p.content))
+                .collect::<Vec<_>>(),
+        );
+        if let Some(app) = app_weak_for_open_community.upgrade() {
+            app.set_selected_community_id(id);
+            app.set_selected_community_name(name);
+            app.set_new_post_content("".into());
+        }
+    });
+
+    let db_for_create_post = db.clone();
+    let app_weak_for_create_post = app.as_weak();
+    app.on_create_post(move |community_id, content| {
+        let content = content.trim();
+        if content.is_empty() {
+            return;
+        }
+        match ankai_core::forum_posts::create_post(&db_for_create_post, &community_id, content) {
+            Ok(post) => {
+                community_posts_model.push(post.content.into());
+                if let Some(app) = app_weak_for_create_post.upgrade() {
+                    app.set_new_post_content("".into());
+                }
+            }
+            Err(err) => {
+                eprintln!("ankai-client: failed to create post in community {community_id}: {err}")
+            }
         }
     });
 
