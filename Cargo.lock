@@ -259,6 +259,7 @@ dependencies = [
  "rand 0.9.5",
  "rusqlite",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -1028,6 +1029,7 @@ dependencies = [
  "directories",
  "slint",
  "slint-build",
+ "tokio",
 ]
 
 [[package]]

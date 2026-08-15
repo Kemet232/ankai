@@ -10,6 +10,7 @@ pub mod directory;
 pub mod error;
 pub mod identity;
 pub mod keychain;
+pub mod messaging;
 pub mod mls_provider;
 pub mod p2p;
 pub mod protocol;

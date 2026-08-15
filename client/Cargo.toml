@@ -19,6 +19,10 @@ ankai-core = { path = "../core" }
 slint = { version = "1.17", features = ["renderer-skia"] }
 # Cross-platform app data directory resolution — see root Cargo.toml.
 directories.workspace = true
+# Async runtime to drive ankai_core::p2p/messaging's async API from this
+# otherwise-synchronous client binary — see main.rs's P2P setup for how this
+# runtime and Slint's own (blocking, main-thread) event loop coexist.
+tokio.workspace = true
 
 [build-dependencies]
 slint-build = "1.17"

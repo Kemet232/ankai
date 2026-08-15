@@ -34,7 +34,7 @@
 //! the ADR's own ecosystem-maturity risk note).
 
 use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 
 use crate::error::Error;
 
@@ -141,6 +141,58 @@ impl P2pNode {
         Ok(())
     }
 
+    /// Runs an accept loop that keeps going until the endpoint is closed
+    /// (`accept()` returns `None`): for each incoming connection, reads
+    /// whatever bytes arrive on its first bidirectional stream, invokes
+    /// `on_message` with the sender's `EndpointId` and those bytes, then
+    /// finishes its own send side with no bytes (a bare ack, not an echo —
+    /// unlike `accept_and_echo_once`) and waits for the peer to close before
+    /// accepting the next connection.
+    ///
+    /// This extends `accept_and_echo_once`'s explicitly one-shot scaffolding
+    /// into something a caller can run for the app's whole lifetime — added
+    /// for `crate::messaging`'s receive side, which needs to keep listening
+    /// rather than handle a single connection and return. Still Phase 1
+    /// scope per this module's doc comment: connections are handled one at a
+    /// time (no concurrency across connections), only the first stream on
+    /// each connection is read, and there's still only one ALPN/protocol. A
+    /// connection that fails partway through (bad handshake, stream error,
+    /// ...) is silently skipped rather than ending the whole loop or being
+    /// reported to `on_message` — there's no logging/tracing story in this
+    /// codebase yet to report it through; a real implementation would want
+    /// one.
+    pub async fn accept_loop<F>(&self, mut on_message: F) -> Result<(), Error>
+    where
+        F: FnMut(EndpointId, Vec<u8>),
+    {
+        loop {
+            let Some(incoming) = self.endpoint.accept().await else {
+                return Ok(());
+            };
+
+            let Ok(conn) = incoming.await else {
+                continue;
+            };
+
+            let remote = conn.remote_id();
+
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                continue;
+            };
+
+            let Ok(message) = recv.read_to_end(64 * 1024).await else {
+                continue;
+            };
+
+            on_message(remote, message);
+
+            if send.finish().is_err() {
+                continue;
+            }
+            conn.closed().await;
+        }
+    }
+
     /// Shuts the endpoint down, waiting for queued close messages to be
     /// sent so peers see a clean disconnect rather than a timeout.
     pub async fn close(self) {
@@ -171,6 +223,48 @@ mod tests {
 
         let accepting = accept_task.await.unwrap();
         accepting.close().await;
+        connecting.close().await;
+    }
+
+    #[tokio::test]
+    async fn accept_loop_receives_multiple_messages_in_order() {
+        use std::sync::{Arc, Mutex};
+
+        let accepting = P2pNode::bind().await.unwrap();
+        let accepting_addr = accepting.addr();
+
+        let received = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let received_for_loop = received.clone();
+        let accept_task = tokio::spawn(async move {
+            accepting
+                .accept_loop(move |_from, bytes| {
+                    received_for_loop.lock().unwrap().push(bytes);
+                })
+                .await
+                .unwrap();
+        });
+
+        let connecting = P2pNode::bind().await.unwrap();
+        // Each `send` call is its own connection; `send` only returns once
+        // it has read the accept side's ack, which `accept_loop` only sends
+        // after invoking `on_message` — so by the time these two calls
+        // return, both messages are guaranteed to already be in `received`.
+        connecting
+            .send(accepting_addr.clone(), b"first")
+            .await
+            .unwrap();
+        connecting.send(accepting_addr, b"second").await.unwrap();
+
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![b"first".to_vec(), b"second".to_vec()]
+        );
+
+        // `accept_loop` only returns once its endpoint closes, and it's
+        // borrowed for the duration of `accept_task` — aborting is the
+        // simplest clean-enough teardown for a test (dropping the endpoint
+        // still closes the underlying socket).
+        accept_task.abort();
         connecting.close().await;
     }
 }

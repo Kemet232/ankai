@@ -15,10 +15,14 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-# Only `tools/nat-probe` uses this directly today (to serialize an
+# JSON (de)serialization — used by `tools/nat-probe` to serialize an
 # `iroh::EndpointAddr` to a copy-pasteable single line for its manual
-# two-machine test), but it's centralized here like every other dependency
-# in this table rather than pinned ad hoc in that crate's own Cargo.toml.
+# two-machine test, and by `core::messaging` to turn a peer's `EndpointAddr`
+# (already `#[derive(Serialize, Deserialize)]` in iroh-base) into a string a
+# user can paste/share out-of-band, without inventing a custom wire format.
+# Already present in Cargo.lock transitively (several existing deps pull it
+# in), so this adds no new crate to the dependency tree, just a direct
+# workspace reference to one already there.
 serde_json = "1"
 thiserror = "1"
 # SQLCipher-backed encrypted SQLite, per docs/adr/0004-e2ee-stack.md's local
