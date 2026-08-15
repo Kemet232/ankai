@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-14 (session 8)
+Last updated: 2026-08-15 (session 9)
 
 ## What ANKAI is
 
@@ -54,6 +54,9 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Real MLS KeyPackage generation | done — `identity::create_key_package` builds a real `KeyPackage` via `KeyPackage::builder().build()`, using the device's stored signature key as signer and a new explicit `CIPHERSUITE` constant; stops at "build and store locally," core-only (no directory service to publish to, so not wired into `client` — asked and confirmed) | `core/src/identity.rs` |
 | Local Communities feature | done — `core::communities` (create/list/get against a new `communities` table, migration 4); Communities nav pane wired end-to-end (name field + Create button, backed by a real callback + list model); explicitly local-only, no membership/networking yet — see the module doc comment | `core/src/communities.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Shared hex/random-id helper | done — `core::util` consolidates what had become three near-identical "N random bytes → hex string" implementations (`keychain`, `identity`, and communities' id generation) | `core/src/util.rs` |
+| Messages P2P stub | done — `core::messaging` (send/receive plaintext over `core::p2p`, JSON-encoded `EndpointAddr` for out-of-band address sharing) plus a real Messages nav pane (own address, paste-a-peer field, send, in-memory log); `p2p.rs` gained a persistent `accept_loop` alongside its original one-shot `accept_and_echo_once`; deliberately no discovery, no MLS/E2EE, no DB persistence yet — see `core/src/messaging.rs`'s module doc comment | `core/src/messaging.rs`, `core/src/p2p.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| ADR-0003 spike 1 tool (NAT-traversal probe) | done — new `tools/nat-probe` binary crate (uses iroh's `N0` preset, unlike `core::p2p`'s deliberately-`Minimal` production scaffolding) reports direct-vs-relay path selection and RTT via iroh's own `Connection::paths()` introspection; verified with a real localhost smoke test (both sides agreed: direct path selected, relay path present-but-unused). Spike itself is **not closed** — only the tool exists; running it across a real diverse-network cohort is still unstarted human/future work, same bar as ADR-0002's spikes | `tools/nat-probe/`, `docs/adr/0003-p2p-networking-stack.md` ("Spike 1 status") |
+| Directory-service client interface (`core::directory`) | done — `DirectoryService` trait (publish/lookup a device's `KeyPackage`s, publish/lookup a device's current `EndpointAddr`) plus one in-memory implementation for tests; explicitly not wired into `client` and not a real server — no server technology has been chosen (that's flagged as a genuinely ADR-shaped decision for the human, not made here) | `core/src/directory.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -217,22 +220,75 @@ briefly couldn't find the repo's `Cargo.toml`, and one `Write` call for
 actually lost once it resolved; the missing file was just rewritten.
 Pushed to `origin/main`.
 
-Remaining steps: no locked queue. Reasonable candidates, none started,
-none chosen over the others:
+**Session 9 (2026-08-15) ran all three of session 8's candidates in parallel**
+(human said "do all of them same time spin up some agents" instead of picking
+one). Three isolated git worktrees, one agent per track, each briefed with
+explicit scope boundaries so none of them would fake data or silently make an
+architectural call that belongs to the human:
 
-1. Messages or Hangouts panes — harder than Communities was, since both
-   are inherently about interaction with other people/devices, which
-   nothing in this repo can do yet (no discovery, no wired-up P2P
-   messaging). Would need at least a stub of "send this to a peer you
-   already have an `EndpointAddr` for" using `core::p2p` to be more than
-   fake local data.
-2. The P2P/ADR-0003 spikes (NAT-traversal measurement, WebRTC/E2EE-
-   through-SFU, etc.) — real prototyping work, not scaffolding.
-3. Actually *publishing* a `KeyPackage` and/or the "thin cloud" identity/
-   discovery service multiple modules (`p2p`, `identity`) are currently
-   stubbed pending.
+- **Messages stub**: `core::messaging` (send/receive plaintext over
+  `core::p2p`) + a real Messages nav pane. `p2p.rs` gained a persistent
+  `accept_loop` (extending its prior one-shot `accept_and_echo_once`).
+  Peer addresses are shared out-of-band as pasted JSON — no discovery yet.
+- **ADR-0003 spike 1 tool**: `tools/nat-probe`, a real connect/telemetry
+  binary using iroh's `N0` preset (not `core::p2p`'s `Minimal`), verified
+  end-to-end with a real localhost smoke test. The agent correctly refused
+  to fabricate cohort data — the tool exists, the actual "run it across a
+  diverse beta cohort of networks" measurement is still unstarted human
+  work, same as it was before this session.
+- **Directory-service interface**: `core::directory`'s `DirectoryService`
+  trait + in-memory implementation, matching exactly what `identity.rs`
+  and `p2p.rs` were already stubbed pending. Deliberately stops short of a
+  real server or a new ADR — the agent's own assessment (matching the
+  orchestrator's) is that picking real server tech (transport/auth/storage/
+  hosting) is genuinely ADR-shaped and shouldn't be defaulted into inside a
+  feature branch.
 
-Not a locked decision — say which direction, or propose something else.
+Merged all three onto `main` via three `--no-ff` merges. Only one real
+conflict, in `Cargo.toml` (`nat-probe` and `messaging` both added a
+`serde_json` doc comment on the same line) — resolved by combining both
+comments to describe both consumers accurately. `core/src/lib.rs`'s two new
+`mod` lines (`directory`, `messaging`) merged clean, alphabetized.
+
+One process mistake worth flagging for future sessions: the merge commit's
+`git add -A` picked up `.claude/worktrees/*` (the framework's own temporary
+per-agent worktree dirs) as embedded git repos. Caught immediately by git's
+own warning, fixed with a follow-up commit (`git rm --cached`) and a new
+`.claude/worktrees/` `.gitignore` entry. **Future sessions: prefer `git add
+<specific paths>` over `git add -A` when merging multi-track work in this
+repo**, or check `git status` output for unexpected `.claude/` entries
+before committing.
+
+Post-merge, full workspace `build`/`test` (28 tests, all pass, including 6
+new: 2 messaging/p2p, 5 directory, 4 nat-probe address-parsing minus the 3
+that already existed)/`clippy -D warnings`/`fmt --check` all verified clean
+on the merged tree — not just per-branch. Ran the real client and
+screenshotted it (full-screen capture, no synthetic clicks — see the
+standing note below) to confirm no regression and that the Messages nav
+entry renders. Pushed to `origin/main`.
+
+Remaining steps: no locked queue again. Reasonable next candidates, none
+started, none chosen over the others:
+
+1. Wire `core::messaging` to actually encrypt over MLS instead of sending
+   plaintext, now that a real device identity + KeyPackage machinery
+   (`identity.rs`) exists — the messaging stub explicitly deferred this.
+2. Persist messages/conversations to the encrypted DB instead of in-memory
+   only (`core::messaging`'s current explicit limitation).
+3. Hangouts pane — still nothing built here; same "needs P2P wiring to be
+   more than fake data" bar Messages just cleared.
+4. The remaining ADR-0003 spikes (2-5: WebRTC audio/E2EE, group-call
+   topology, ANKAI Node reference impl, QUIC-datagram netplay) — spike 1
+   now has a tool but still needs real cohort data collected by a human
+   across real diverse networks before it can be marked closed.
+5. Decide (human call, likely wants its own ADR per `core::directory`'s
+   author's own assessment) what real server technology backs the
+   `DirectoryService` trait, then build a real implementation against it —
+   unlocks actually publishing KeyPackages/EndpointAddrs instead of just
+   having the local interface.
+
+Not a locked decision — say which direction (or several, in parallel again
+if that's still the preferred mode), or propose something else.
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
