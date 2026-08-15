@@ -442,6 +442,20 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_directory_enabled(directory_client.is_some());
 
+    // This device's own directory username, if it's ever successfully
+    // claimed one — purely local display state (see app.slint's
+    // claimed-username doc comment): the directory server remains the real
+    // source of truth for who owns it, this is just "what did we last
+    // successfully claim, so the Settings field isn't blank on the next
+    // run." Saved under its own settings key, distinct from display_name,
+    // since the two aren't the same thing (see client::directory's doc
+    // comment on why usernames aren't folded into display_name).
+    let saved_username = db
+        .get_setting("directory_username")
+        .expect("failed to read directory_username setting")
+        .unwrap_or_default();
+    app.set_claimed_username(saved_username.into());
+
     // Load this device's entire persisted message history (oldest first)
     // into the same most-recent-first model shape the live send/receive
     // paths already push into — same idea as Settings loading
@@ -608,55 +622,173 @@ fn main() -> Result<(), slint::PlatformError> {
     // integration is off. On success this fills peer-address-input with
     // the same invite-blob text a manual paste would produce, so
     // on_send_message above (unchanged) is exactly what runs next — no
-    // separate send path for directory-sourced peers.
+    // separate send path for directory-sourced peers. Usernames
+    // (claim-username / lookup-peer-by-username, both below) are wired
+    // alongside this, under the same directory_client.is_some() gate — see
+    // ankai_directory_server::username's module doc comment for what a
+    // username here is and isn't (device-scoped, not account-scoped).
     if let Some(client) = directory_client {
-        let app_weak_for_lookup = app.as_weak();
-        let p2p_handle_for_lookup = p2p_runtime.handle().clone();
-        app.on_lookup_peer_by_device_id(move |device_id_text| {
-            let device_id_text = device_id_text.trim().to_string();
-            if device_id_text.is_empty() {
-                return;
-            }
-            let peer = ankai_core::identity::DeviceId(device_id_text.clone());
+        let own_device_id = device.id.clone();
+
+        {
             let client = client.clone();
-            let app_weak = app_weak_for_lookup.clone();
-            p2p_handle_for_lookup.spawn(async move {
-                let result = directory::lookup_peer_invite(&client, &peer).await;
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(app) = app_weak.upgrade() else {
-                        return;
-                    };
-                    match result {
-                        Ok(Some(invite)) => {
-                            match ankai_core::messaging::format_peer_invite(&invite) {
-                                Ok(text) => {
-                                    app.set_peer_address_input(text.into());
-                                    app.set_lookup_status(
-                                        format!("Found {device_id_text} in the directory — invite filled in below.")
-                                            .into(),
-                                    );
-                                }
-                                Err(err) => {
-                                    app.set_lookup_status(
-                                        format!("Found {device_id_text} but failed to encode its invite: {err}")
-                                            .into(),
-                                    );
+            let app_weak_for_lookup = app.as_weak();
+            let p2p_handle_for_lookup = p2p_runtime.handle().clone();
+            app.on_lookup_peer_by_device_id(move |device_id_text| {
+                let device_id_text = device_id_text.trim().to_string();
+                if device_id_text.is_empty() {
+                    return;
+                }
+                let peer = ankai_core::identity::DeviceId(device_id_text.clone());
+                let client = client.clone();
+                let app_weak = app_weak_for_lookup.clone();
+                p2p_handle_for_lookup.spawn(async move {
+                    let result = directory::lookup_peer_invite(&client, &peer).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(app) = app_weak.upgrade() else {
+                            return;
+                        };
+                        match result {
+                            Ok(Some(invite)) => {
+                                match ankai_core::messaging::format_peer_invite(&invite) {
+                                    Ok(text) => {
+                                        app.set_peer_address_input(text.into());
+                                        app.set_lookup_status(
+                                            format!("Found {device_id_text} in the directory — invite filled in below.")
+                                                .into(),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        app.set_lookup_status(
+                                            format!("Found {device_id_text} but failed to encode its invite: {err}")
+                                                .into(),
+                                        );
+                                    }
                                 }
                             }
+                            Ok(None) => {
+                                app.set_lookup_status(
+                                    format!("No published KeyPackage/EndpointAddr found for {device_id_text}.")
+                                        .into(),
+                                );
+                            }
+                            Err(err) => {
+                                app.set_lookup_status(format!("Directory lookup failed: {err}").into());
+                            }
                         }
-                        Ok(None) => {
-                            app.set_lookup_status(
-                                format!("No published KeyPackage/EndpointAddr found for {device_id_text}.")
-                                    .into(),
-                            );
-                        }
-                        Err(err) => {
-                            app.set_lookup_status(format!("Directory lookup failed: {err}").into());
-                        }
-                    }
+                    });
                 });
             });
-        });
+        }
+
+        // Look up a peer by username: resolves to a DeviceId via the
+        // directory server, then goes through client::directory's
+        // lookup_peer_invite_by_username, which itself calls the exact
+        // same lookup_peer_invite as the Device-ID path above — not a
+        // separate/forked lookup path.
+        {
+            let client = client.clone();
+            let app_weak_for_lookup = app.as_weak();
+            let p2p_handle_for_lookup = p2p_runtime.handle().clone();
+            app.on_lookup_peer_by_username(move |username_text| {
+                let username_text = username_text.trim().to_string();
+                if username_text.is_empty() {
+                    return;
+                }
+                let client = client.clone();
+                let app_weak = app_weak_for_lookup.clone();
+                p2p_handle_for_lookup.spawn(async move {
+                    let result = directory::lookup_peer_invite_by_username(&client, &username_text).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(app) = app_weak.upgrade() else {
+                            return;
+                        };
+                        match result {
+                            Ok(Some(invite)) => {
+                                match ankai_core::messaging::format_peer_invite(&invite) {
+                                    Ok(text) => {
+                                        app.set_peer_address_input(text.into());
+                                        app.set_lookup_status(
+                                            format!("Found {username_text} in the directory — invite filled in below.")
+                                                .into(),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        app.set_lookup_status(
+                                            format!("Found {username_text} but failed to encode its invite: {err}")
+                                                .into(),
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                app.set_lookup_status(
+                                    format!("No device found for username \"{username_text}\".").into(),
+                                );
+                            }
+                            Err(err) => {
+                                app.set_lookup_status(format!("Username lookup failed: {err}").into());
+                            }
+                        }
+                    });
+                });
+            });
+        }
+
+        // Claim (or update) this device's own username. The actual claim
+        // is a real signed request to the directory server (see
+        // client::directory::claim_own_username /
+        // HttpDirectoryClient::claim_username); on success the claimed name
+        // is also saved locally (via the MESSAGING_HANDLES thread-local,
+        // the same UI-thread-only Db access pattern the receive loop uses —
+        // Db isn't Send, so it can't be captured directly into this
+        // tokio-spawned async block) purely so the Settings field shows it
+        // again on the next run.
+        {
+            let client = client.clone();
+            let device_id = own_device_id.clone();
+            let app_weak_for_claim = app.as_weak();
+            let p2p_handle_for_claim = p2p_runtime.handle().clone();
+            app.on_claim_username(move |username_text| {
+                let username_text = username_text.trim().to_string();
+                if username_text.is_empty() {
+                    return;
+                }
+                let client = client.clone();
+                let device_id = device_id.clone();
+                let app_weak = app_weak_for_claim.clone();
+                p2p_handle_for_claim.spawn(async move {
+                    let result = directory::claim_own_username(&client, &device_id, &username_text).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(app) = app_weak.upgrade() else {
+                            return;
+                        };
+                        match result {
+                            Ok(()) => {
+                                let handles = MESSAGING_HANDLES.with(|h| h.borrow().clone());
+                                if let Some(handles) = handles {
+                                    if let Err(err) =
+                                        handles.db.set_setting("directory_username", &username_text)
+                                    {
+                                        eprintln!(
+                                            "ankai-client: failed to save claimed username locally: {err}"
+                                        );
+                                    }
+                                }
+                                app.set_claimed_username(username_text.clone().into());
+                                app.set_username_input("".into());
+                                app.set_username_status(format!("Claimed \"{username_text}\".").into());
+                            }
+                            Err(err) => {
+                                app.set_username_status(
+                                    format!("Failed to claim \"{username_text}\": {err}").into(),
+                                );
+                            }
+                        }
+                    });
+                });
+            });
+        }
     }
 
     app.run()

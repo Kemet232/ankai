@@ -259,3 +259,151 @@ async fn republishing_under_the_same_device_id_with_a_different_key_is_rejected(
         "publishing under an already-claimed device id with a different key must fail"
     );
 }
+
+// ---- Usernames (crate::username / Storage::claim_username /
+// HttpDirectoryClient::claim_username, lookup_username) ----
+//
+// Same rigor bar as the KeyPackage/EndpointAddr tests above: real signed
+// requests from real device identities against a real running server, not
+// just exercising `Storage` in-process.
+
+#[tokio::test]
+async fn claimed_username_resolves_to_the_right_device_id_via_a_real_signed_request() {
+    let base_url = spawn_test_server().await;
+    let real = real_device();
+
+    let claimant = HttpDirectoryClient::new(base_url.clone(), real.device.id.clone(), real.signer);
+    claimant
+        .claim_username(&real.device.id, "ash_ketchum")
+        .await
+        .expect("claiming a valid, unclaimed username with a real signature should succeed");
+
+    // A separate client session (no shared state with the claimant) looks
+    // it up over a real network round trip.
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    let resolved = looker
+        .lookup_username("ash_ketchum")
+        .await
+        .expect("lookup should succeed");
+    assert_eq!(
+        resolved,
+        Some(real.device.id.clone()),
+        "the username must resolve to the exact DeviceId that claimed it"
+    );
+}
+
+#[tokio::test]
+async fn a_different_real_device_cannot_steal_an_already_claimed_username() {
+    let base_url = spawn_test_server().await;
+    let owner = real_device();
+
+    let owner_client =
+        HttpDirectoryClient::new(base_url.clone(), owner.device.id.clone(), owner.signer);
+    owner_client
+        .claim_username(&owner.device.id, "misty")
+        .await
+        .expect("first claim should succeed");
+
+    // A second, entirely independent real device identity — its own
+    // signature key, its own DeviceId — tries to claim the same name.
+    let impostor = real_device();
+    let impostor_client = HttpDirectoryClient::new(
+        base_url.clone(),
+        impostor.device.id.clone(),
+        impostor.signer,
+    );
+    let result = impostor_client
+        .claim_username(&impostor.device.id, "misty")
+        .await;
+    assert!(
+        result.is_err(),
+        "a different device claiming an already-claimed username must be rejected"
+    );
+
+    // The username must still resolve to its real original owner.
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    assert_eq!(
+        looker.lookup_username("misty").await.unwrap(),
+        Some(owner.device.id)
+    );
+}
+
+#[tokio::test]
+async fn the_same_device_can_update_its_own_claimed_username() {
+    let base_url = spawn_test_server().await;
+    let real = real_device();
+
+    let client = HttpDirectoryClient::new(base_url.clone(), real.device.id.clone(), real.signer);
+    client
+        .claim_username(&real.device.id, "old_handle")
+        .await
+        .expect("first claim should succeed");
+    client
+        .claim_username(&real.device.id, "new_handle")
+        .await
+        .expect("the same device re-claiming under a new name should succeed");
+
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    assert_eq!(
+        looker.lookup_username("old_handle").await.unwrap(),
+        None,
+        "the old username should be freed once the device updates to a new one"
+    );
+    assert_eq!(
+        looker.lookup_username("new_handle").await.unwrap(),
+        Some(real.device.id)
+    );
+}
+
+#[tokio::test]
+async fn invalid_usernames_are_genuinely_rejected_by_the_real_server_not_silently_accepted() {
+    let base_url = spawn_test_server().await;
+    let real = real_device();
+    let client = HttpDirectoryClient::new(base_url.clone(), real.device.id.clone(), real.signer);
+
+    // Too short, bad characters, and an uppercase collision attempt against
+    // an already-claimed lowercase name.
+    for bad in ["ab", "Ash_Ketchum", "ash ketchum", &"x".repeat(21)] {
+        let result = client.claim_username(&real.device.id, bad).await;
+        assert!(
+            result.is_err(),
+            "expected {bad:?} to be rejected by real server-side validation"
+        );
+    }
+
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    assert_eq!(looker.lookup_username("ab").await.unwrap(), None);
+    assert_eq!(looker.lookup_username("ash_ketchum").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn unsigned_username_claim_is_rejected_not_silently_accepted() {
+    let base_url = spawn_test_server().await;
+    let device_id = "victim-device";
+
+    let raw = reqwest::Client::new();
+    let resp = raw
+        .post(format!("{base_url}/v1/devices/{device_id}/username"))
+        .body(r#"{"username":"villain"}"#)
+        .send()
+        .await
+        .expect("request should complete (even though it should be rejected)");
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    assert_eq!(
+        looker.lookup_username("villain").await.unwrap(),
+        None,
+        "an unsigned claim must not have been stored"
+    );
+}
+
+#[tokio::test]
+async fn looking_up_a_username_nobody_claimed_is_empty_not_an_error() {
+    let base_url = spawn_test_server().await;
+    let looker = throwaway_client(base_url, DeviceId("looker-session".to_string()));
+    assert_eq!(
+        looker.lookup_username("nobody_has_this").await.unwrap(),
+        None
+    );
+}

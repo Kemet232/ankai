@@ -16,5 +16,17 @@ pub fn endpoint_addr_path(device_id: &str) -> String {
     format!("/v1/devices/{device_id}/endpoint-addr")
 }
 
+/// Path for `device` claiming/updating its username. See `crate::username`.
+pub fn username_path(device_id: &str) -> String {
+    format!("/v1/devices/{device_id}/username")
+}
+
+/// Path for looking up which `DeviceId` currently claims `username`.
+pub fn username_lookup_path(username: &str) -> String {
+    format!("/v1/usernames/{username}")
+}
+
 pub const KEY_PACKAGES_ROUTE: &str = "/v1/devices/{device_id}/key-packages";
 pub const ENDPOINT_ADDR_ROUTE: &str = "/v1/devices/{device_id}/endpoint-addr";
+pub const USERNAME_ROUTE: &str = "/v1/devices/{device_id}/username";
+pub const USERNAME_LOOKUP_ROUTE: &str = "/v1/usernames/{username}";

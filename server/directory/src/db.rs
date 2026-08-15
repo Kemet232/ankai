@@ -9,12 +9,18 @@
 //! callers (see `crate::app`) are expected to run them inside
 //! `tokio::task::spawn_blocking` rather than call them directly from an
 //! async context, per the ADR's "why not sqlx" reasoning.
+//!
+//! Also holds the `usernames` table (device-scoped short names — see
+//! `crate::username`'s module doc comment for the full scope/validation
+//! story); `claim_username`/`lookup_username` are this table's read/write
+//! surface, mirroring `bind_device_key`'s first-come-first-served shape.
 
 use std::sync::Mutex;
 
 use rusqlite::Connection;
 
 use crate::auth::AuthError;
+use crate::username::{self, UsernameError};
 
 /// `KeyPackage`s older than this are excluded from lookups (and get
 /// deleted the next time storage happens to touch that device's rows),
@@ -69,6 +75,12 @@ impl Storage {
                 addr_json TEXT NOT NULL,
                 published_at_unix INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS usernames (
+                username TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                claimed_at_unix INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS usernames_device_id ON usernames(device_id);
             ",
         )?;
         Ok(())
@@ -197,6 +209,91 @@ impl Storage {
             _ => None,
         })
     }
+
+    /// Claims `username_val` for `device_id`, per `crate::username`'s
+    /// module doc comment: validates the format first (real rejection, not
+    /// silent normalization); if the username is unclaimed, binds it to
+    /// `device_id`; if it's already claimed by `device_id` itself, this is
+    /// an idempotent "touch" (updates the claimed-at timestamp, same
+    /// semantics as `bind_device_key`'s "same key again: fine"); if it's
+    /// claimed by a *different* device, rejects with
+    /// [`UsernameError::AlreadyClaimed`] — first claim wins, matching the
+    /// TOFU spirit of `bind_device_key`.
+    ///
+    /// A device can only hold one username at a time: claiming a new one
+    /// deletes any username this same `device_id` previously held, freeing
+    /// it for someone else to claim. This is what makes "the same device
+    /// can update its own claimed username" (per the module doc comment)
+    /// actually change the username rather than just adding a second one.
+    pub fn claim_username(
+        &self,
+        device_id: &str,
+        username_val: &str,
+        now: i64,
+    ) -> Result<(), ClaimUsernameError> {
+        username::validate(username_val)?;
+
+        let conn = self.lock()?;
+        let existing_owner: Option<String> = conn
+            .query_row(
+                "SELECT device_id FROM usernames WHERE username = ?1",
+                [username_val],
+                |row| row.get(0),
+            )
+            .ok();
+
+        match existing_owner {
+            Some(owner) if owner == device_id => {
+                conn.execute(
+                    "UPDATE usernames SET claimed_at_unix = ?2 WHERE username = ?1",
+                    rusqlite::params![username_val, now],
+                )
+                .map_err(StorageError::from)?;
+                Ok(())
+            }
+            Some(_) => Err(UsernameError::AlreadyClaimed.into()),
+            None => {
+                conn.execute("DELETE FROM usernames WHERE device_id = ?1", [device_id])
+                    .map_err(StorageError::from)?;
+                conn.execute(
+                    "INSERT INTO usernames (username, device_id, claimed_at_unix) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![username_val, device_id, now],
+                )
+                .map_err(StorageError::from)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// The `DeviceId` currently claiming `username_val`, or `None` if
+    /// nobody has (either it was never claimed, or the format wouldn't
+    /// even validate — either way, "not found," not an error, matching
+    /// `get_endpoint_addr`'s convention).
+    pub fn lookup_username(&self, username_val: &str) -> Result<Option<String>, StorageError> {
+        let conn = self.lock()?;
+        let device_id: Option<String> = conn
+            .query_row(
+                "SELECT device_id FROM usernames WHERE username = ?1",
+                [username_val],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(device_id)
+    }
+}
+
+/// Errors from [`Storage::claim_username`]: either the username failed
+/// [`crate::username::validate`], it's already claimed by a different
+/// device, or a real storage error occurred. Kept as a distinct type from
+/// [`StorageError`] (which has no opinion on username semantics) and
+/// [`UsernameError`] (which has no opinion on SQLite) rather than folding
+/// either into the other.
+#[derive(Debug, thiserror::Error)]
+pub enum ClaimUsernameError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Username(#[from] UsernameError),
 }
 
 #[cfg(test)]
@@ -281,6 +378,76 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn username_claim_round_trips_and_is_first_come_first_served() {
+        let storage = Storage::open(":memory:").unwrap();
+        storage.claim_username("d1", "alice_1", 100).unwrap();
+        assert_eq!(
+            storage.lookup_username("alice_1").unwrap(),
+            Some("d1".to_string())
+        );
+
+        // A different device can't steal an already-claimed username.
+        let err = storage.claim_username("d2", "alice_1", 200).unwrap_err();
+        assert!(matches!(
+            err,
+            ClaimUsernameError::Username(UsernameError::AlreadyClaimed)
+        ));
+        // Still owned by d1, unaffected by the failed steal attempt.
+        assert_eq!(
+            storage.lookup_username("alice_1").unwrap(),
+            Some("d1".to_string())
+        );
+
+        // The same device can re-claim (idempotent touch).
+        storage.claim_username("d1", "alice_1", 300).unwrap();
+        assert_eq!(
+            storage.lookup_username("alice_1").unwrap(),
+            Some("d1".to_string())
+        );
+    }
+
+    #[test]
+    fn same_device_can_change_its_username_freeing_the_old_one() {
+        let storage = Storage::open(":memory:").unwrap();
+        storage.claim_username("d1", "old_name", 100).unwrap();
+        storage.claim_username("d1", "new_name", 200).unwrap();
+
+        assert_eq!(storage.lookup_username("old_name").unwrap(), None);
+        assert_eq!(
+            storage.lookup_username("new_name").unwrap(),
+            Some("d1".to_string())
+        );
+
+        // The freed name is now claimable by someone else.
+        storage.claim_username("d2", "old_name", 300).unwrap();
+        assert_eq!(
+            storage.lookup_username("old_name").unwrap(),
+            Some("d2".to_string())
+        );
+    }
+
+    #[test]
+    fn invalid_usernames_are_rejected_not_silently_accepted() {
+        let storage = Storage::open(":memory:").unwrap();
+
+        for bad in ["Alice", "ab", &"a".repeat(21), "has space", "has-dash"] {
+            let err = storage.claim_username("d1", bad, 100).unwrap_err();
+            assert!(
+                matches!(err, ClaimUsernameError::Username(UsernameError::Invalid(_))),
+                "expected {bad:?} to be rejected as invalid"
+            );
+        }
+        // None of the rejected attempts should have been stored.
+        assert_eq!(storage.lookup_username("alice").unwrap(), None);
+    }
+
+    #[test]
+    fn looking_up_a_username_nobody_claimed_is_empty_not_an_error() {
+        let storage = Storage::open(":memory:").unwrap();
+        assert_eq!(storage.lookup_username("nobody_here").unwrap(), None);
     }
 
     #[test]
