@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-15 (session 9)
+Last updated: 2026-08-15 (session 10)
 
 ## What ANKAI is
 
@@ -57,6 +57,10 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Messages P2P stub | done — `core::messaging` (send/receive plaintext over `core::p2p`, JSON-encoded `EndpointAddr` for out-of-band address sharing) plus a real Messages nav pane (own address, paste-a-peer field, send, in-memory log); `p2p.rs` gained a persistent `accept_loop` alongside its original one-shot `accept_and_echo_once`; deliberately no discovery, no MLS/E2EE, no DB persistence yet — see `core/src/messaging.rs`'s module doc comment | `core/src/messaging.rs`, `core/src/p2p.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | ADR-0003 spike 1 tool (NAT-traversal probe) | done — new `tools/nat-probe` binary crate (uses iroh's `N0` preset, unlike `core::p2p`'s deliberately-`Minimal` production scaffolding) reports direct-vs-relay path selection and RTT via iroh's own `Connection::paths()` introspection; verified with a real localhost smoke test (both sides agreed: direct path selected, relay path present-but-unused). Spike itself is **not closed** — only the tool exists; running it across a real diverse-network cohort is still unstarted human/future work, same bar as ADR-0002's spikes | `tools/nat-probe/`, `docs/adr/0003-p2p-networking-stack.md` ("Spike 1 status") |
 | Directory-service client interface (`core::directory`) | done — `DirectoryService` trait (publish/lookup a device's `KeyPackage`s, publish/lookup a device's current `EndpointAddr`) plus one in-memory implementation for tests; explicitly not wired into `client` and not a real server — no server technology has been chosen (that's flagged as a genuinely ADR-shaped decision for the human, not made here) | `core/src/directory.rs` |
+| MLS-encrypted + persisted messaging | done — `core::messaging` now does real OpenMLS 2-member-group encryption per peer (`PeerInvite` bundles an `EndpointAddr` + a fresh `KeyPackage` into one paste-able blob, since there's still no directory service to publish/fetch through); messages persist as plaintext (post-decryption) in new `conversations`/`messages` tables (migration 6 — see note below on the migration-5 collision with Hangouts); still no discovery service, no multi-conversation UI, no delivery guarantees | `core/src/messaging.rs`, `core/src/db.rs` |
+| Hangouts pane | done — `core::hangouts` (create/list/get against a new `hangouts` table, migration 5), mirroring Communities' shape exactly; local-only hosting metadata, no real-time sync/media/participants yet | `core/src/hangouts.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| ADR-0003 spike 2 tool (WebRTC audio/E2EE prototype) | done — new `tools/webrtc-audio-probe` binary crate: a real two-process `webrtc-rs` v0.20 voice-call prototype (manual SDP offer/answer exchange, synthetic-tone-over-real-Opus/RTP, DTLS-SRTP confirmed active via `get_stats()`). Verified end-to-end: both sides reach `Connected`, audio verification passes. Spike itself is **not closed** — subjective audio quality on real hardware, frame-level E2E through an SFU, and multi-OS validation are all still unstarted human/future work | `tools/webrtc-audio-probe/`, `docs/adr/0003-p2p-networking-stack.md` ("Spike 2 status") |
+| ADR-0008: identity/discovery service + reference backend | done — `docs/adr/0008-identity-discovery-service.md` (Status: **Proposed**, researched: axum vs. tonic, SQLite vs. Postgres, ED25519-request-signing auth reusing `identity.rs`'s existing device key, TOFU pubkey pinning); `server/directory/` is a real reference implementation (axum + SQLite, KeyPackage-consumed-on-lookup + 30-day expiry, EndpointAddr 10-minute TTL) plus `HttpDirectoryClient`, a second real `DirectoryService` impl proven against it via real signed-request integration tests (including rejection of unsigned/badly-signed/impersonating publishes). Deliberately not wired into `client` — still `Proposed`, real gaps (TOFU bootstrapping, unauthenticated EndpointAddr lookups vs. the threat model, SQLite-single-process) documented as pre-`Accepted` blockers | `docs/adr/0008-identity-discovery-service.md`, `server/directory/` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -267,25 +271,120 @@ screenshotted it (full-screen capture, no synthetic clicks — see the
 standing note below) to confirm no regression and that the Messages nav
 entry renders. Pushed to `origin/main`.
 
+**Session 10 (2026-08-15) ran all four of session 9's candidates in
+parallel again** (human: "do all of em use agents"). Four isolated
+worktrees, one agent per track:
+
+- **MLS-encrypt + persist messaging**: real OpenMLS 2-member-group
+  encryption per peer, plus DB persistence (`conversations`/`messages`
+  tables). Since there's still no directory service, group setup piggybacks
+  a `PeerInvite` (address + a fresh `KeyPackage`) on the same out-of-band
+  paste flow the address-only stub already used.
+- **Hangouts pane**: local-only hosting metadata (`core::hangouts`),
+  mirroring Communities' shape exactly. The agent explicitly declined the
+  optional P2P-join stretch goal as scope creep beyond matching Communities'
+  precedent — a judgment call, not a shortfall.
+- **ADR-0003 spike 2 tool** (WebRTC audio/E2EE prototype): a real two-process
+  `webrtc-rs` voice-call prototype, genuinely verified end-to-end (DTLS-SRTP
+  active, Opus/RTP round-trip passes). A real connection-timeout bug hunt
+  turned out to be a **test-harness artifact**, not a code bug: relaying the
+  tool's printed SDP through `zsh`'s `echo` builtin silently rewrites the
+  SDP's literal `\r\n` sequences into real newlines mid-string, corrupting
+  it in transit (`printf '%s\n'` doesn't have this problem). Worth
+  remembering for any future hand-relayed multi-line protocol testing in
+  this repo.
+- **ADR-0008 + reference backend**: a genuinely researched ADR (axum vs.
+  tonic, SQLite vs. Postgres, ED25519-request-signing auth reusing
+  `identity.rs`'s existing device key rather than inventing new crypto,
+  TOFU pubkey pinning), staying `Proposed` per ADR-0003's own precedent,
+  plus a real reference server + a second real `DirectoryService`
+  implementation (`HttpDirectoryClient`) proven against each other with
+  real signed-request integration tests — including proving rejection
+  paths (unsigned, badly-signed, impersonating-a-pinned-device all
+  genuinely fail, not just the happy path).
+
+**Process notes for future sessions, some costly this time:**
+
+1. **`isolation: "worktree"` always creates a *new* worktree — it cannot be
+   pointed at an existing one.** Passing a specific path in the prompt text
+   does nothing if `isolation: "worktree"` is also set; the tool ignores
+   the path and the agent lands somewhere else entirely, sometimes
+   contradicting its own instructions. To resume a specific existing
+   worktree (e.g. after a background agent stalls mid-task with uncommitted
+   changes), either (a) launch without `isolation` and pass the exact path
+   in the prompt — the agent just `cd`s there via Bash, no pinning involved
+   — or (b) if `isolation: "worktree"` is used, treat wherever it lands as
+   authoritative and, if prior uncommitted work needs to carry over,
+   transplant it with `git diff > patch.diff` / `git apply patch.diff`
+   rather than telling the agent to go find the old path — worktree-pinned
+   agents' Bash tool can be hard-sandboxed to refuse operations outside
+   their assigned directory, including `cd`, so a wrong instruction can
+   wedge the agent completely (this happened once this session — recovered
+   cleanly by relaunching with the transplant approach instead, no work
+   lost, but it cost a full agent turn).
+2. **Long-running background builds inside a subagent can cause the agent
+   to end its turn prematurely "waiting for a notification" that never
+   resumes it.** This happened repeatedly this session (MLS-messaging,
+   WebRTC-audio) — an agent ran `cargo build`/`cargo test` in the
+   background, printed something like "waiting for the build to finish,"
+   and then simply stopped, leaving real uncommitted work behind. Resuming
+   via `SendMessage` sometimes worked, sometimes the agent immediately
+   re-entered the same stuck pattern. When this happens, it's often faster
+   for the orchestrator to just run the verification commands directly
+   (`cd` into the worktree, run `cargo build/test/clippy/fmt` in the
+   orchestrator's own Bash) rather than keep resuming a wedged agent loop.
+3. Mid-session, background agents hit the account's session usage limit
+   (all in-flight agents failed simultaneously with the same "session limit
+   · resets" error). Nothing was lost — worktrees with uncommitted diffs
+   just sat untouched until the limit reset — but it's worth knowing this
+   can happen mid-swarm: check `git status` in each worktree before
+   assuming an agent's silence means it's still working normally.
+4. **Migration-version collisions across parallel tracks are a real,
+   expected merge-time cost of this workflow**, not a mistake by either
+   agent: Hangouts and MLS-messaging both independently claimed DB
+   migration version 5 (each only sees `main` as it existed at launch,
+   before the other's migration landed). Resolved at merge time by
+   renumbering messaging's migration to 6 and updating the affected test
+   assertions — cheap to fix, but always check for this specifically when
+   merging multiple tracks that touch `core/src/db.rs`'s `MIGRATIONS` list.
+
+Merged all four onto `main` via four `--no-ff` merges, in the order above.
+Real conflicts: `Cargo.lock` (webrtc-audio-probe's merge — resolved by
+`git generate-lockfile` after the `Cargo.toml` workspace-members list
+merged clean on its own), `core/src/db.rs` (the migration-5 collision above),
+`client/src/main.rs` (Hangouts' wiring block vs. messaging's updated module
+comment — both real, needed to coexist, not an actual disagreement).
+
+Post-merge, full workspace `build`/`test` (45 tests across `ankai-core`,
+`ankai-directory-server` unit + integration, `nat-probe`,
+`webrtc-audio-probe`, all pass)/`clippy -D warnings`/`fmt --check` all
+verified clean on the fully merged tree. Running the client to screenshot
+the final merge hit an unrelated macOS Keychain "dark wake, no UI possible"
+/ "unable to obtain authorization" error — a screen-lock/session-state
+issue, not a code regression (each track's own agent already
+screenshot-verified its pane in isolation before merging, and this exact
+Keychain flow has worked in every prior session). Pushed to `origin/main`.
+
 Remaining steps: no locked queue again. Reasonable next candidates, none
 started, none chosen over the others:
 
-1. Wire `core::messaging` to actually encrypt over MLS instead of sending
-   plaintext, now that a real device identity + KeyPackage machinery
-   (`identity.rs`) exists — the messaging stub explicitly deferred this.
-2. Persist messages/conversations to the encrypted DB instead of in-memory
-   only (`core::messaging`'s current explicit limitation).
-3. Hangouts pane — still nothing built here; same "needs P2P wiring to be
-   more than fake data" bar Messages just cleared.
-4. The remaining ADR-0003 spikes (2-5: WebRTC audio/E2EE, group-call
-   topology, ANKAI Node reference impl, QUIC-datagram netplay) — spike 1
-   now has a tool but still needs real cohort data collected by a human
-   across real diverse networks before it can be marked closed.
-5. Decide (human call, likely wants its own ADR per `core::directory`'s
-   author's own assessment) what real server technology backs the
-   `DirectoryService` trait, then build a real implementation against it —
-   unlocks actually publishing KeyPackages/EndpointAddrs instead of just
-   having the local interface.
+1. Wire `core::messaging`'s conversation/message DB tables into a real
+   multi-conversation UI (currently one-peer-at-a-time, matching the
+   original stub's UI scope, now with real crypto/persistence underneath).
+2. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+   measurement across real diverse networks) and spike 2 (subjective
+   AEC/noise-suppression audio quality on real hardware, ADR-0002-style)
+   both have working tools now but still need a human to actually run them
+   and report results before either spike can close.
+3. The remaining ADR-0003 spikes (3-5: group-call topology, ANKAI Node
+   reference impl, QUIC-datagram netplay) — no tooling started on any yet.
+4. Wire `HttpDirectoryClient` into the real `client` app once ADR-0008 is
+   actually reviewed/accepted by the human (it's deliberately not wired up
+   yet — see the ADR's own "what would need to happen" list: TOFU
+   bootstrapping sign-off, the unauthenticated-EndpointAddr-lookup tension
+   with the threat model, SQLite-vs-real-deployment).
+5. Frame-level E2E encryption through an SFU (ADR-0003 spike 2's harder
+   half) — genuinely unstarted, needs an actual SFU to forward through.
 
 Not a locked decision — say which direction (or several, in parallel again
 if that's still the preferred mode), or propose something else.
