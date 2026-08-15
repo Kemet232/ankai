@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-15 (session 12)
+Last updated: 2026-08-16 (session 13)
 
 ## What ANKAI is
 
@@ -66,6 +66,13 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Profile customization: "Top 8 Communities" (`core::top8`) | done — MySpace-style featured-items picker, honestly scoped to communities (not "friends," since there's no real contacts model yet); pick/reorder/remove up to 8, reuses the existing `settings` table rather than a new migration | `core/src/top8.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Usernames for the directory service | done — a device can claim a short name (lowercase alphanumeric/underscore, 3-20 chars) via the directory server instead of sharing a raw Device ID; device-scoped (not account-scoped — flagged for revisit once real multi-device/account support exists), first-come-first-served with the same signed-request ownership pinning the server already uses for device keys. Wired end-to-end: claim in Settings, look a peer up by username in Messages. Real full-stack test: device B finds device A purely by username and sends a real MLS-encrypted message through a real running server | `server/directory/src/username.rs`, `client/src/directory.rs`, `client/src/main.rs` |
 | Real "Liquid Y2K" visual design applied (shared shell + Profile pane) | done — the validated glass-panel design system (`docs/design/tokens.md`, proven in `client/ui/spike-glass-blur.slint`, gated on two ADR-0002 spikes that closed back in session 3 but were never actually applied to the real app until now) is live on the sidebar/window chrome and the Profile pane: glass-tinted panels, glowing active-nav pill, avatar-initial header card, de-emphasized ID chips, and the Top 8 list rebuilt as real accent-cycled glass module cards with custom icon buttons instead of generic OS buttons. Messages/Communities/Hangouts/Settings pane *content* untouched this pass (shared chrome only) — human asked to see one screen done properly before the rest follow | `client/ui/app.slint` |
+| Anime metadata + watchlist (`core::anime`) | done — real AniList GraphQL integration (search/trending/popular, unauthenticated public read, no API key needed — confirmed via live requests, real rate limit is 30/min not the commonly-cited ~90/min) plus a real local watchlist (watching/completed/planned/dropped, episode progress). Real `#[ignore]`d live-network test; caught AniList having a real live outage mid-session and reported that honestly instead of faking a pass | `core/src/anime.rs`, `core/tests/anilist_live.rs` |
+| Cross-community recent-activity feed | done — `core::forum_posts::list_recent_across_communities`: real posts pulled from every local community into one most-recent-first feed, each correctly tagged with its real community name — the data source for "Hot Discussions" | `core/src/forum_posts.rs` |
+| Real friends system + on-demand presence (`core::friends`) | done — real P2P friend-request/accept flow (signed, real crypto, rides the existing P2P transport as a lightweight non-MLS message kind since a request has to work *before* any conversation/group exists), a real `friends`/`friend_requests` DB schema, and genuine presence: `check_presence` makes a real ~3s-timeout connection attempt right now rather than returning a stored flag — proven by a test that closes a node mid-test and watches the same call flip from online to offline. Device-scoped, not account-scoped (same honest limitation as Top 8/usernames) | `core/src/friends.rs` |
+| MyAnimeList forum discussions (`core::mal_forums`) | done — real read-only client (boards/topics/topic-posts), Client-ID-only auth (no OAuth login needed — confirmed empirically), reads the real credential from an env var at runtime, never hardcoded. Real live-network test against MAL's actual servers | `core/src/mal_forums.rs` |
+| Home dashboard (new screen) | done — real Trending/Popular (AniList), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence, not a placeholder anymore). No "Around the Web" — Reddit access stayed blocked all session (see below) | `client/ui/app.slint`, `client/src/main.rs` |
+| My Page redesign (tabs) | done — banner/avatar header retained, tabbed into My Page / Guestbook / Stats / Settings; Top 8 (existing) plus a new real "Currently Watching" module (AniList watchlist); real friends list + real pending-request Accept/Decline; Guestbook stays an honest empty-state placeholder (needs other people writing to your profile, which needs more than exists yet); Stats tab shows real counts (communities/Top 8/watchlist/friends) | `client/ui/app.slint`, `client/src/main.rs` |
+| Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. **Not wired into the real app** — the human changed their mind mid-session and no longer wants live dragging, just a fixed layout matching their reference image, so wiring this onto the real Home/Messages/Hangouts panes is now a smaller task than originally scoped (no drag interaction needed, just fixed positioning reusing the same glass-panel visual work) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -484,33 +491,129 @@ Merged both tracks onto `main` — no conflicts on either merge. Full
 workspace `build`/`test` (77 tests)/`clippy -D warnings`/`fmt --check` all
 verified clean on the merged tree. Pushed to `origin/main`.
 
-**Session paused here at the human's explicit request ("after this is
-done lets stop")** — not a natural stopping point in the backlog, just
-where the human wanted to break. Nothing below is a locked decision, and
-the UI-redesign rollout to the rest of the app is specifically waiting on
-the human's reaction to the Profile pane before continuing:
+**Session 13 (2026-08-16) picked up right where session 12 paused** — the
+human came back with a generated reference image showing a much fuller
+"anime social network" vision (a Home dashboard, a richer My Page, an
+MSN-Messenger-style floating-window aesthetic) and said to replicate it and
+build whatever backend it needs. Agreed approach: **layout first, real
+systems after**, with honest placeholders only where a real system
+genuinely doesn't exist yet (never fake data).
 
-1. **UI redesign rollout** (paused, waiting on human reaction to Profile)
-   — Messages, Communities, Hangouts, and Settings panes still have the
-   old plain content styling; the shared shell they inherit is already
-   redone.
-2. Multi-conversation messaging UI — `core::messaging`'s DB tables already
-   support more than one conversation, the UI still only shows one at a
-   time. Was queued behind the directory-wiring track in session 11; still
-   hasn't started.
-3. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
-   measurement across real diverse networks) and spike 2 (subjective
-   AEC/noise-suppression audio quality on real hardware) both have working
+**Backend systems built for real this session** (see phase table above for
+each): `core::anime` (AniList + local watchlist), cross-community recent
+posts, `core::friends` (real P2P friend requests + genuine on-demand
+presence — not a placeholder), `core::mal_forums` (MyAnimeList forum
+discussions). Then two real UI screens on top: **Home dashboard** (new) and
+a tabbed **My Page** redesign. Plus a real, working floating-draggable-panel
+component (`FloatingPanel`) — built as a standalone demo since the human
+changed their mind mid-session about needing actual drag interaction (see
+below), so it's proven-real but not yet wired into the real app.
+
+**Reddit "Around the Web" stayed blocked all session, worth remembering.**
+The human tried registering a real Reddit developer app live, in the
+browser, with the orchestrator's help — hit a genuinely broken/gatekept
+registration flow (CAPTCHA loops, a "Responsible Builder Policy" wall, an
+automated-account username/password step the orchestrator correctly refused
+to fill in). A Medium post pushing a third-party Reddit-scraping service
+("FetchLayer") was evaluated and explicitly rejected — it works by ignoring
+Reddit's own `robots.txt`/access policy, which is exactly the kind of
+workaround this project won't quietly build around. Pushshift was checked
+too — dead for general use since 2023, mod-only now. **MyAnimeList was
+chosen instead** (real forums, real free Client-ID-only API, an actually
+working registration flow) — see `core::mal_forums` above. Reddit itself is
+still not integrated; if it's wanted later, it needs the human to
+successfully register a real app first (unresolved blocker, not something
+to route around).
+
+**The "floating window" scope changed twice, worth remembering exactly
+what was decided:** the human first asked for a full MSN-Messenger-style
+draggable floating-window paradigm ("idc how you do it"); a real, working
+`FloatingPanel` component was built and verified with a genuine synthesized
+OS-level drag (the panel visibly moved on screen). Then the human changed
+their mind: **no drag needed, just a fixed layout matching the reference
+image.** So the built `FloatingPanel` component (with real drag logic) is
+more capability than currently wanted — wiring the *fixed-position* version
+onto the real Home/Messages/Hangouts panes (reusing the same glass-panel
+visual work, dropping the drag mechanism) is now a smaller task than
+originally scoped. Don't rebuild drag support unless asked again.
+
+**Process notes:**
+- Hit the account session-usage limit again mid-session (see sessions 10-12
+  for the same recurring pattern) — three UI agents were cut off mid-task.
+  Recovered the same way as before: verified/fixed each directly rather
+  than re-running agents from scratch.
+- **A new failure mode this session, worth flagging clearly for future
+  sessions:** two agents launched via `isolation: "worktree"` back-to-back
+  ended up branching from a **stale** snapshot of `main` — missing three
+  backend merges (`core::anime`/friends/cross-community-posts) that had
+  just landed moments earlier. Both agents independently noticed the
+  missing modules and recreated near-duplicate copies of them to unblock
+  themselves, rather than failing outright — which meant the orchestrator
+  had to `git merge main` into each agent's branch by hand afterward
+  (checkpointing the agent's own uncommitted work first) and resolve real
+  add/add conflicts on the duplicated files, keeping the already-merged
+  `main` copies as authoritative. **If a freshly-launched worktree's
+  `git log`/`git merge-base` shows it's missing recent `main` commits you
+  know just landed, don't assume it's current — check explicitly before
+  trusting an agent's report that a dependency "already exists."**
+- **Component/function name collisions across independently-built UI
+  tracks are a real, recurring merge cost** (third time this pattern's hit
+  this project — see sessions 9-10's notes for the DB-migration-version
+  version of the same problem). This session: two agents both independently
+  named a Slint component `FriendCardItem` (different shapes) and a Rust
+  function `refresh_friends` (different signatures/purposes) for genuinely
+  different reasons. Resolved by renaming one side's to a track-specific
+  name (`HomeFriendCardItem`, `refresh_home_friends`) rather than trying to
+  unify them — they really were different things. When a merge conflict
+  looks unusually tangled (interleaved, not simple add/add), it's often two
+  independently-added components/functions with the *same name* confusing
+  the diff algorithm, not real disagreement about the same code — check for
+  that specifically before trying to hand-merge line by line.
+- One real compile error (`E0716`, a temporary-value-dropped-while-borrowed
+  in a friends-presence refresh closure) and one real `cargo fmt` violation
+  were both caught and fixed directly during merge reconciliation — both
+  were things the affected agents' own verification never reached because
+  they were cut off by the session limit first.
+- Live drag-testing the `FloatingPanel` demo required synthesizing a real
+  OS-level mouse drag — no `cliclick`/`pyautogui`/pyobjc-`Quartz` were
+  available on this machine, so this session wrote a small ad hoc
+  `ctypes`-based Python script calling macOS's `ApplicationServices`
+  `CGEventCreateMouseEvent`/`CGEventPost` directly. That script (not saved
+  anywhere permanent — scratchpad only) is a real, reusable technique if a
+  future session needs to test actual drag/multi-step-gesture UI
+  interactions on macOS again.
+- The window-capture-grabs-the-wrong-content failure mode (documented in
+  session 12's notes and in memory) recurred once more this session during
+  the drag test — deleted immediately, not described, consistent with the
+  established response.
+
+Full workspace `build`/`test` (102 tests)/`clippy -D warnings`/`fmt --check`
+all verified clean on the fully merged tree, and the real app was compiled
+and launched for the human at the end of the session, per their request to
+"finish for today."
+
+Remaining steps, none locked:
+
+1. **Wire the fixed-position (no-drag) floating-panel layout onto the real
+   Home/Messages/Hangouts panes**, matching the human's reference image as
+   closely as the real data allows. This is the most immediate next step —
+   explicitly requested, not yet done. Reuse `floating-panel.slint`'s glass
+   styling; the drag mechanism itself isn't needed per the human's latest
+   direction.
+2. Communities/Hangouts/Settings panes still have the old plain content
+   styling (only their shared chrome, Home, and My Page got the real
+   visual treatment this session and last).
+3. Reddit "Around the Web" — blocked on the human successfully registering
+   a real Reddit developer app (see above); not something to route around.
+4. Multi-conversation messaging UI — still hasn't started (queued since
+   session 11).
+5. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+   measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
-4. The remaining ADR-0003 spikes (3-5: group-call topology, ANKAI Node
-   reference impl, QUIC-datagram netplay) — no tooling started on any yet.
-5. Other still-unstarted parts of the original product idea: real forum
-   threading/replies (posts are flat-only right now), the creator
-   marketplace (explicitly held back — involves real payments/money, a
-   product-and-legal decision the human should weigh in on before any
-   scaffolding starts, not something to default into).
-6. Frame-level E2E encryption through an SFU (ADR-0003 spike 2's harder
-   half) — genuinely unstarted, needs an actual SFU to forward through.
+6. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
+   held back — real payments/money, needs a human product/legal decision
+   first), frame-level E2E encryption through an SFU — all still
+   unstarted, same as before.
 
 Not a locked decision — say which direction (or several, in parallel again
 if that's still the preferred mode), or propose something else.
