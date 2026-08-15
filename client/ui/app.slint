@@ -61,11 +61,14 @@ export component AppWindow inherits Window {
     callback create-community(string);
 
     // Backed by core::messaging (see that module's doc comment for what this
-    // deliberately is and isn't yet — one pasted peer address at a time, no
-    // discovery, no E2EE, in-memory only). own-peer-address is this device's
-    // own dialable address (set once at startup) for the user to hand to a
-    // peer out-of-band; message-log is most-recent-first and grows both from
-    // send-message and from a background receive loop pushing into it.
+    // deliberately is and isn't yet — real MLS/RFC 9420 end-to-end
+    // encryption per peer and real persistence to the encrypted local DB,
+    // but still one pasted peer invite at a time, no discovery service).
+    // own-peer-address is this device's own dialable-address-plus-MLS-
+    // KeyPackage invite (set once at startup) for the user to hand to a
+    // peer out-of-band; message-log is most-recent-first, loaded from the
+    // DB at startup and grown both by send-message and by a background
+    // receive loop that decrypts and persists incoming messages.
     in property <string> own-peer-address: "";
     in-out property <string> peer-address-input: "";
     in-out property <string> message-input: "";
@@ -192,7 +195,7 @@ export component AppWindow inherits Window {
                 }
 
                 Text {
-                    text: "This is a stub: no discovery, no encryption beyond the transport itself. Share your address below with a peer out-of-band, paste theirs in, and send plaintext.";
+                    text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
                     color: Theme.text-secondary;
                     font-size: 12px;
                     wrap: word-wrap;
@@ -202,7 +205,7 @@ export component AppWindow inherits Window {
                     spacing: 4px;
 
                     Text {
-                        text: "Your address (share this with a peer)";
+                        text: "Your invite (address + MLS key package — share this with a peer)";
                         color: Theme.text-secondary;
                         font-size: 12px;
                     }
@@ -218,14 +221,14 @@ export component AppWindow inherits Window {
                     spacing: 4px;
 
                     Text {
-                        text: "Peer's address";
+                        text: "Peer's invite";
                         color: Theme.text-secondary;
                         font-size: 12px;
                     }
 
                     LineEdit {
                         width: 500px;
-                        placeholder-text: "Paste a peer's address here";
+                        placeholder-text: "Paste a peer's invite here";
                         text <=> root.peer-address-input;
                     }
                 }
@@ -258,7 +261,7 @@ export component AppWindow inherits Window {
                 }
 
                 Text {
-                    text: "Messages (most recent first, in-memory only)";
+                    text: "Messages (most recent first, persisted to the encrypted local DB)";
                     color: Theme.text-secondary;
                     font-size: 12px;
                 }
