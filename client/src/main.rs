@@ -163,11 +163,12 @@ fn watchlist_progress(entry: &ankai_core::anime::WatchlistEntry) -> String {
 /// again after any watchlist mutation, same "recompute fresh from core"
 /// shape as `refresh_top8`.
 fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db) {
-    let watching = ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
-        .unwrap_or_else(|err| {
-            eprintln!("ankai-client: failed to list watching anime: {err}");
-            Vec::new()
-        });
+    let watching =
+        ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
+            .unwrap_or_else(|err| {
+                eprintln!("ankai-client: failed to list watching anime: {err}");
+                Vec::new()
+            });
 
     let cards: Vec<WatchlistCard> = watching
         .iter()
@@ -588,13 +589,14 @@ fn main() -> Result<(), slint::PlatformError> {
         // that one P2P send attempt (no timeout on it, unlike
         // check_presence's) — same accepted tradeoff as this file's
         // existing directory-publish `block_on` call at startup.
-        let result = p2p_handle_for_accept_friend.block_on(ankai_core::friends::accept_friend_request(
-            &node_for_accept_friend,
-            &db_for_accept_friend,
-            &device_for_accept_friend,
-            &mls_provider_for_accept_friend,
-            &device_id,
-        ));
+        let result =
+            p2p_handle_for_accept_friend.block_on(ankai_core::friends::accept_friend_request(
+                &node_for_accept_friend,
+                &db_for_accept_friend,
+                &device_for_accept_friend,
+                &mls_provider_for_accept_friend,
+                &device_id,
+            ));
         match result {
             Ok(_outcome) => {
                 if let Some(app) = app_weak_for_accept_friend.upgrade() {
@@ -609,7 +611,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let app_weak_for_decline_friend = app.as_weak();
     app.on_decline_friend_request(move |device_id_text| {
         let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
-        if let Err(err) = ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
+        if let Err(err) =
+            ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
         {
             eprintln!("ankai-client: failed to decline friend request: {err}");
         }
@@ -662,8 +665,8 @@ fn main() -> Result<(), slint::PlatformError> {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
-                    let Some(model) = app
-                        .get_friends_list()
+                    let friends_list = app.get_friends_list();
+                    let Some(model) = friends_list
                         .as_any()
                         .downcast_ref::<slint::VecModel<FriendCard>>()
                     else {
@@ -792,8 +795,11 @@ fn main() -> Result<(), slint::PlatformError> {
                     // reports "not ours" (Ok(None)) safely dispatches both
                     // message kinds over this one shared P2pNode/accept_loop
                     // with zero changes to messaging.rs itself.
-                    match ankai_core::friends::handle_incoming(&handles.db, &handles.mls_provider, &bytes)
-                    {
+                    match ankai_core::friends::handle_incoming(
+                        &handles.db,
+                        &handles.mls_provider,
+                        &bytes,
+                    ) {
                         Ok(Some(_event)) => {
                             // A new pending request or a confirmed accept —
                             // either way, the Friends section's data
