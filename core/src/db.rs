@@ -115,6 +115,25 @@ const MIGRATIONS: &[Migration] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );",
     },
+    Migration {
+        version: 7,
+        description: "create posts table",
+        // See crate::forum_posts's doc comment for what a "post" is (and
+        // isn't) in this Phase 1 scaffolding — flat, append-only discussion
+        // text attached to a community (see migration 4), no replies/
+        // editing/deleting/authorship/moderation. No FOREIGN KEY to
+        // `communities`: this schema doesn't enable SQLite's foreign_keys
+        // pragma anywhere else either (see `communities`/`hangouts`/
+        // `messaging`'s tables), so it would be unenforced decoration, not
+        // real integrity.
+        sql: "CREATE TABLE IF NOT EXISTS posts (
+        id           TEXT NOT NULL PRIMARY KEY,
+        community_id TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_posts_community_id ON posts (community_id);",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -325,7 +344,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 6);
+        assert_eq!(db.schema_version().unwrap(), 7);
     }
 
     #[test]
@@ -334,20 +353,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 6);
+            assert_eq!(db.schema_version().unwrap(), 7);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 6);
+            assert_eq!(db.schema_version().unwrap(), 7);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 6, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 7, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -385,7 +404,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 6);
+            assert_eq!(db.schema_version().unwrap(), 7);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
