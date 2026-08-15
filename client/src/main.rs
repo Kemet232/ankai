@@ -120,6 +120,30 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let hangouts = ankai_core::hangouts::list(&db).expect("failed to list hangouts");
+    let hangout_names: Vec<slint::SharedString> =
+        hangouts.into_iter().map(|h| h.name.into()).collect();
+    let hangout_model = std::rc::Rc::new(slint::VecModel::from(hangout_names));
+    app.set_hangout_names(slint::ModelRc::from(hangout_model.clone()));
+
+    let db_for_hangouts = db.clone();
+    let app_weak_for_hangouts = app.as_weak();
+    app.on_create_hangout(move |name| {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        match ankai_core::hangouts::create(&db_for_hangouts, name) {
+            Ok(hangout) => {
+                hangout_model.push(hangout.name.into());
+                if let Some(app) = app_weak_for_hangouts.upgrade() {
+                    app.set_new_hangout_name("".into());
+                }
+            }
+            Err(err) => eprintln!("ankai-client: failed to create hangout: {err}"),
+        }
+    });
+
     // P2P messaging (ankai_core::p2p / ankai_core::messaging) — see those
     // modules' doc comments for what this stub deliberately does not do yet
     // (no discovery, no E2EE beyond QUIC transport encryption, no

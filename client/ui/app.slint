@@ -39,6 +39,7 @@ export component AppWindow inherits Window {
     property <int> profile-index: 0; // index of "Profile" in nav-items, above
     property <int> messages-index: 1; // index of "Messages" in nav-items, above
     property <int> communities-index: 2; // index of "Communities" in nav-items, above
+    property <int> hangouts-index: 3; // index of "Hangouts" in nav-items, above
     property <int> settings-index: 4; // index of "Settings" in nav-items, above
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
@@ -72,6 +73,15 @@ export component AppWindow inherits Window {
     in-out property <string> send-status: "";
     in-out property <[string]> message-log: [];
     callback send-message(string, string);
+
+    // Backed by core::hangouts (see that module's doc comment for what a
+    // "Hangout" is and isn't yet — local-only hosting metadata, no real-time
+    // sync, no media playback, no participants). main.rs loads the initial
+    // list at startup and appends to it on create-hangout; there's no
+    // delete/rename yet, same as communities.
+    in-out property <[string]> hangout-names: [];
+    in-out property <string> new-hangout-name: "";
+    callback create-hangout(string);
 
     HorizontalLayout {
         // ---- Sidebar: persistent nav destinations ----
@@ -125,7 +135,7 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
@@ -305,6 +315,53 @@ export component AppWindow inherits Window {
                 }
 
                 for name in root.community-names: Text {
+                    text: "• " + name;
+                    color: Theme.text-secondary;
+                    font-size: 14px;
+                }
+            }
+
+            if root.selected-index == root.hangouts-index: VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Hangouts";
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    LineEdit {
+                        width: 240px;
+                        placeholder-text: "New hangout name";
+                        text <=> root.new-hangout-name;
+                        accepted => {
+                            root.create-hangout(root.new-hangout-name);
+                        }
+                    }
+
+                    Button {
+                        text: "Create";
+                        clicked => {
+                            root.create-hangout(root.new-hangout-name);
+                        }
+                    }
+                }
+
+                for name in root.hangout-names: Text {
                     text: "• " + name;
                     color: Theme.text-secondary;
                     font-size: 14px;
