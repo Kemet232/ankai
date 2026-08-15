@@ -138,6 +138,184 @@ fn short_peer_id(peer_id: &str) -> &str {
     &peer_id[..peer_id.len().min(10)]
 }
 
+// ---------------------------------------------------------------------
+// Home dashboard wiring (see `ui/app.slint`'s AnimeRef/RecentPostRef/
+// FriendRef doc comments for what each field is and isn't). Every
+// function here either reads real local state (`refresh_recent_posts`/
+// `refresh_friends`, plain `core::forum_posts`/`core::friends` DB reads,
+// same synchronous shape as `refresh_top8` above) or kicks off a real
+// async network call on the shared tokio runtime and hands the result
+// back to the UI thread via `slint::invoke_from_event_loop` — the same
+// pattern already established by the P2P messaging section further down
+// this file. Nothing here blocks the UI thread on a network call.
+// ---------------------------------------------------------------------
+
+/// Converts one AniList `AnimeSummary` into the Home dashboard's compact
+/// title/score display shape. English title is preferred over romaji when
+/// both exist (falls back to romaji, then a literal placeholder if AniList
+/// had neither) — resolved here rather than in `.slint`, which has no
+/// such string-fallback expression.
+fn anime_to_ref(anime: ankai_core::anime::AnimeSummary) -> AnimeRef {
+    let title = anime
+        .title_english
+        .or(anime.title_romaji)
+        .unwrap_or_else(|| "Untitled".to_string());
+    let score = match anime.average_score {
+        Some(score) => format!("Score: {score}"),
+        None => "Not yet rated".to_string(),
+    };
+    AnimeRef {
+        id: anime.id as i32,
+        title: title.into(),
+        score: score.into(),
+    }
+}
+
+/// Fetches AniList's real "trending" and "popular" rankings
+/// (`core::anime::trending_anime`/`popular_anime`) and pushes them into the
+/// Home dashboard's models once each completes. Spawned on `handle` (the
+/// same tokio runtime the P2P/messaging side already runs on) rather than
+/// called synchronously: AniList is a real third-party dependency with a
+/// real rate limit and occasional real outages (see `core::anime`'s module
+/// doc comment), so a slow or failed request must not stall the window at
+/// startup or freeze the UI thread on a refresh click.
+fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
+    let app_weak_trending = app_weak.clone();
+    handle.spawn(async move {
+        let result = ankai_core::anime::trending_anime(10).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak_trending.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(list) => {
+                    app.set_anime_status("".into());
+                    let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
+                    app.set_trending_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+                        refs,
+                    ))));
+                }
+                Err(err) => {
+                    eprintln!("ankai-client: failed to load trending anime: {err}");
+                    app.set_anime_status(format!("Couldn't load trending anime: {err}").into());
+                }
+            }
+        });
+    });
+
+    let app_weak_popular = app_weak.clone();
+    handle.spawn(async move {
+        let result = ankai_core::anime::popular_anime(10).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak_popular.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(list) => {
+                    let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
+                    app.set_popular_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+                        refs,
+                    ))));
+                }
+                Err(err) => {
+                    eprintln!("ankai-client: failed to load popular anime: {err}");
+                    app.set_anime_status(format!("Couldn't load popular anime: {err}").into());
+                }
+            }
+        });
+    });
+}
+
+/// Reloads the Home dashboard's "Hot Discussions" model from
+/// `core::forum_posts::list_recent_across_communities` — a plain, synchronous
+/// local-DB read (no network involved, unlike the anime functions above),
+/// same shape as `refresh_top8`. Capped at 12 entries: a dashboard widget,
+/// not infinite scroll.
+fn refresh_recent_posts(app: &AppWindow, db: &ankai_core::db::Db) {
+    let recent =
+        ankai_core::forum_posts::list_recent_across_communities(db, 12).unwrap_or_else(|err| {
+            eprintln!("ankai-client: failed to load recent posts for Home: {err}");
+            Vec::new()
+        });
+    let refs: Vec<RecentPostRef> = recent
+        .into_iter()
+        .map(|p| RecentPostRef {
+            community_name: p.community_name.into(),
+            content: p.content.into(),
+        })
+        .collect();
+    app.set_recent_posts(slint::ModelRc::from(Rc::new(slint::VecModel::from(refs))));
+}
+
+/// Reloads the Home dashboard's "Friend Activity" model from
+/// `core::friends::list_friends` — a plain, synchronous local-DB read.
+/// Every row starts `online: false` regardless of any previous check;
+/// callers that want a live presence result should follow up with
+/// [`spawn_friend_presence_checks`] using the returned `Vec<Friend>` (kept
+/// separate so the caller doesn't need a second DB read just to get the
+/// real `Friend` values `check_presence` needs).
+fn refresh_friends(app: &AppWindow, db: &ankai_core::db::Db) -> Vec<ankai_core::friends::Friend> {
+    let friends = ankai_core::friends::list_friends(db).unwrap_or_else(|err| {
+        eprintln!("ankai-client: failed to load friends for Home: {err}");
+        Vec::new()
+    });
+    let refs: Vec<FriendRef> = friends
+        .iter()
+        .map(|f| FriendRef {
+            device_id: f.device_id.0.clone().into(),
+            account_id: f.account_id.0.clone().into(),
+            online: false,
+        })
+        .collect();
+    app.set_friends(slint::ModelRc::from(Rc::new(slint::VecModel::from(refs))));
+    friends
+}
+
+/// Kicks off a real `core::friends::check_presence` call for each of
+/// `friends`, one independent async task per friend (each with its own
+/// ~3s timeout, per that function's doc comment) so one slow/unreachable
+/// friend can't delay the others or block the UI thread. Each task updates
+/// only its own row in the `friends` model in place once its real result
+/// comes back — matching-by-device-id rather than by index, since the
+/// model could in principle be reloaded (via refresh-home) while checks
+/// from a previous load are still in flight.
+fn spawn_friend_presence_checks(
+    friends: Vec<ankai_core::friends::Friend>,
+    node: std::sync::Arc<ankai_core::p2p::P2pNode>,
+    handle: tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+) {
+    for friend in friends {
+        let node = node.clone();
+        let app_weak = app_weak.clone();
+        let device_id = friend.device_id.0.clone();
+        handle.spawn(async move {
+            let online = ankai_core::friends::check_presence(&node, &friend).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(app) = app_weak.upgrade() else {
+                    return;
+                };
+                let friends_model = app.get_friends();
+                let Some(model) = friends_model
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<FriendRef>>()
+                else {
+                    return;
+                };
+                for i in 0..model.row_count() {
+                    if let Some(mut row) = model.row_data(i) {
+                        if row.device_id == device_id {
+                            row.online = online;
+                            model.set_row_data(i, row);
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Prefer the Skia renderer for full-effects mode per ADR-0002. If Skia
     // can't be selected (missing at compile time, or backend init fails at
@@ -811,6 +989,53 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         }
     }
+
+    // Home dashboard: recent posts and friends are plain synchronous local-
+    // DB reads (like the rest of this app's startup loads above); trending/
+    // popular anime and friend presence are real network calls, kicked off
+    // asynchronously on the same tokio runtime the P2P/messaging side above
+    // already uses (see spawn_anime_refresh/spawn_friend_presence_checks'
+    // doc comments) so neither a slow AniList response nor an unreachable
+    // friend can stall the window. refresh-home re-runs all four so a
+    // failed AniList load (rate limit, an outage — see core::anime's module
+    // doc comment) or newly-added friends/posts can be retried without
+    // restarting the app.
+    refresh_recent_posts(&app, &db);
+    let initial_friends = refresh_friends(&app, &db);
+    spawn_anime_refresh(p2p_runtime.handle().clone(), app.as_weak());
+    spawn_friend_presence_checks(
+        initial_friends,
+        p2p_node.clone(),
+        p2p_runtime.handle().clone(),
+        app.as_weak(),
+    );
+
+    {
+        let db_for_refresh = db.clone();
+        let p2p_node_for_refresh = p2p_node.clone();
+        let p2p_handle_for_refresh = p2p_runtime.handle().clone();
+        let app_weak_for_refresh = app.as_weak();
+        app.on_refresh_home(move || {
+            let Some(app) = app_weak_for_refresh.upgrade() else {
+                return;
+            };
+            refresh_recent_posts(&app, &db_for_refresh);
+            let friends = refresh_friends(&app, &db_for_refresh);
+            spawn_anime_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
+            spawn_friend_presence_checks(
+                friends,
+                p2p_node_for_refresh.clone(),
+                p2p_handle_for_refresh.clone(),
+                app.as_weak(),
+            );
+        });
+    }
+
+    // Home is the default landing pane (see ui/app.slint's selected-index
+    // doc comment) — set explicitly here too, rather than relying solely on
+    // that property's initial value, so this stays correct even if
+    // nav-items/home-index are reordered again later.
+    app.set_selected_index(app.get_home_index());
 
     app.run()
 }

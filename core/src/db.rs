@@ -134,6 +134,65 @@ const MIGRATIONS: &[Migration] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_posts_community_id ON posts (community_id);",
     },
+    Migration {
+        version: 8,
+        description: "create watchlist table",
+        // See crate::anime's doc comment for the full shape of this table,
+        // including why title/cover/episode-count are cached here rather
+        // than always re-fetched from AniList. `anilist_id` (AniList's own
+        // numeric media id) is the primary key, not a locally-generated
+        // random id like `communities`/`hangouts`/`posts` use — it's
+        // already a stable, globally-meaningful key, and using it directly
+        // makes "is this anime already on the watchlist" a plain lookup
+        // instead of a search.
+        sql: "CREATE TABLE IF NOT EXISTS watchlist (
+        anilist_id       INTEGER NOT NULL PRIMARY KEY,
+        title_romaji     TEXT,
+        title_english    TEXT,
+        cover_image_url  TEXT,
+        episode_count    INTEGER,
+        watched_episodes INTEGER NOT NULL DEFAULT 0,
+        status           TEXT NOT NULL CHECK (status IN ('watching', 'completed', 'planned', 'dropped')),
+        added_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status);",
+    },
+    Migration {
+        version: 9,
+        description: "create friend_requests and friends tables",
+        // See crate::friends's doc comment for the full design. Both tables
+        // share the same shape (a device's self-declared contact info: its
+        // DeviceId/AccountId, last-known dialable EndpointAddr as JSON text,
+        // and its device signature public key, which a received request's/
+        // accept's signature was verified against). `friend_requests` holds
+        // pending *incoming* requests only — accepting one deletes its row
+        // here and inserts the equivalent row into `friends`. No FOREIGN
+        // KEY between them, matching this schema's existing convention
+        // (see the `posts` migration's note) of not enabling SQLite's
+        // foreign_keys pragma anywhere.
+        //
+        // Numbered 9, not 8: `core::anime`'s watchlist migration (above)
+        // and this one were built in parallel worktrees that both
+        // independently claimed version 8 against the same `main` snapshot
+        // — the exact same migration-version-collision shape PROGRESS.md
+        // documents for sessions 9/10. Resolved here by renumbering this
+        // one to 9, same fix precedent.
+        sql: "CREATE TABLE IF NOT EXISTS friend_requests (
+        device_id  TEXT NOT NULL PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        addr       TEXT NOT NULL,
+        public_key BLOB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS friends (
+        device_id  TEXT NOT NULL PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        addr       TEXT NOT NULL,
+        public_key BLOB NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -344,7 +403,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 7);
+        assert_eq!(db.schema_version().unwrap(), 9);
     }
 
     #[test]
@@ -353,20 +412,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 9);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 9);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 7, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 9, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -404,7 +463,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 9);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
