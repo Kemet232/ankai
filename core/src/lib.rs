@@ -4,11 +4,13 @@
 //! docs/adr/0002 (native UI stack). Networking and crypto module internals
 //! are placeholders pending docs/adr/0003 and docs/adr/0004.
 
+pub mod anime;
 pub mod communities;
 pub mod db;
 pub mod directory;
 pub mod error;
 pub mod forum_posts;
+pub mod friends;
 pub mod hangouts;
 pub mod identity;
 pub mod keychain;

@@ -32,6 +32,31 @@ export struct CommunityRef {
     name: string,
 }
 
+// One "Currently Watching" card's display data, derived in main.rs from
+// ankai_core::anime::WatchlistEntry (see that module's doc comment for the
+// real AniList-backed watchlist this comes from). `title` prefers the
+// English title, falling back to romaji, then a last-resort placeholder —
+// Slint has no string-fallback builtin, so this pre-resolution happens in
+// Rust rather than here. `progress` is pre-formatted ("12 / 24 episodes" or
+// "12 episodes watched" if the total isn't known yet) for the same reason.
+export struct WatchlistCard {
+    anilist-id: int,
+    title: string,
+    progress: string,
+}
+
+// One friend (accepted or a pending incoming request)'s display data,
+// derived from ankai_core::friends::Friend. `status` is presence text
+// ("", "checking...", "online", "offline") for accepted friends only — see
+// core::friends's module doc comment on why this is on-demand, not push,
+// presence; pending requests leave this blank since a request hasn't been
+// accepted yet, so there's nothing worth "checking."
+export struct FriendCard {
+    device-id: string,
+    account-id: string,
+    status: string,
+}
+
 // ---------------------------------------------------------------------
 // Small glass-styled building blocks for the Profile pane (ADR-0002's
 // spike gate is closed — see this file's header comment above — so this
@@ -231,6 +256,258 @@ component AddCommunityChip inherits Rectangle {
     }
 }
 
+// A horizontal pill in the My Page tab strip (My Page / Guestbook / Stats).
+// Same glass-pill language as the sidebar's nav items, just laid out
+// horizontally and scoped to this pane instead of top-level navigation.
+component ProfileTabPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback activate();
+
+    height: 34px;
+    border-radius: 17px;
+    background: root.active ? @linear-gradient(120deg, Theme.accent-cyan.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : touch.has-hover ? Theme.silver.with-alpha(0.08) : Theme.bg-surface-raised.with-alpha(0.5);
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.accent-cyan.with-alpha(0.45);
+
+    animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.label;
+        color: root.active ? Theme.text-primary : Theme.text-secondary;
+        font-size: 13px;
+        font-weight: root.active ? 600 : 400;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.activate();
+        }
+    }
+}
+
+// One "Currently Watching" glass module card — same visual family as
+// Top8CardItem (accent edge stripe, glass-tinted background, drop-shadow),
+// read-only for now: no mark-complete/update-progress controls yet, this is
+// display-only real data (see ankai_core::anime's doc comment).
+component WatchlistCardItem inherits Rectangle {
+    in property <string> anime-title;
+    in property <string> progress-text;
+    in property <color> accent;
+
+    border-radius: 16px;
+    background: Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: root.accent;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.anime-title;
+                color: Theme.text-primary;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.progress-text;
+                color: Theme.text-secondary;
+                font-size: 12px;
+            }
+        }
+    }
+}
+
+// A small colored presence dot + label, shared by accepted-friend cards.
+// Maps directly to ankai_core::friends::check_presence's true/false real
+// connectivity result plus a "checking..." transient state and a "not
+// checked yet" default — see this file's FriendCard doc comment on why
+// there's no third "away" state.
+component PresenceBadge inherits HorizontalLayout {
+    in property <string> status;
+    spacing: 6px;
+    alignment: start;
+
+    Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        y: 4px;
+        background: root.status == "online" ? Theme.state-online : root.status == "offline" ? Theme.state-offline : root.status == "checking..." ? Theme.accent-gold : Theme.silver.with-alpha(0.4);
+    }
+
+    Text {
+        text: root.status == "" ? "not checked" : root.status;
+        color: Theme.text-secondary;
+        font-size: 11px;
+        vertical-alignment: center;
+    }
+}
+
+// An accepted friend's glass module card: device id (this session's only
+// real per-friend identifier — see ankai_core::friends's module doc comment
+// on device-scoped-not-account-scoped identity) plus a real presence badge.
+component FriendCardItem inherits Rectangle {
+    in property <string> device-id;
+    in property <string> status;
+    in property <color> accent;
+
+    border-radius: 16px;
+    background: Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: root.accent;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.device-id;
+                color: Theme.text-primary;
+                font-size: 14px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            PresenceBadge {
+                status: root.status;
+            }
+        }
+    }
+}
+
+// A pending *incoming* friend request card: device id plus real
+// Accept/Decline actions (ankai_core::friends::accept_friend_request /
+// decline_friend_request). No "sent requests" concept exists — see
+// core::friends's module doc comment — so this only ever shows requests
+// someone else sent to this device.
+component PendingRequestCardItem inherits Rectangle {
+    in property <string> device-id;
+    callback accept();
+    callback decline();
+
+    border-radius: 16px;
+    background: Theme.accent-gold.with-alpha(0.08);
+    border-width: 1px;
+    border-color: Theme.accent-gold.with-alpha(0.3);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: Theme.accent-gold;
+        }
+
+        Text {
+            text: root.device-id;
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        GlassIconButton {
+            glyph: "✓";
+            tint: Theme.state-online;
+            clicked => {
+                root.accept();
+            }
+        }
+
+        GlassIconButton {
+            glyph: "×";
+            tint: Theme.state-busy;
+            clicked => {
+                root.decline();
+            }
+        }
+    }
+}
+
+// A single real stat number + label for the Stats tab (real counts only —
+// see AppWindow's stat-* properties' doc comment).
+component StatTile inherits Rectangle {
+    in property <string> stat-label;
+    in property <int> stat-value;
+    in property <color> accent;
+
+    border-radius: 14px;
+    background: Theme.bg-surface-raised.with-alpha(0.55);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.15);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 4px;
+        alignment: center;
+
+        Text {
+            text: "" + root.stat-value;
+            color: root.accent;
+            font-size: 28px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.stat-label;
+            color: Theme.text-secondary;
+            font-size: 11px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
@@ -238,7 +515,7 @@ export component AppWindow inherits Window {
     background: Theme.bg-void;
 
     property <[string]> nav-items: [
-        "Profile",
+        "My Page",
         "Messages",
         "Communities",
         "Hangouts",
@@ -324,6 +601,49 @@ export component AppWindow inherits Window {
     callback unfeature-community(string);
     callback move-featured-community-up(string);
     callback move-featured-community-down(string);
+
+    // My Page's internal tab strip (see this file's Profile-pane section
+    // below). Kept separate from `selected-index` (the sidebar's top-level
+    // nav) — this only ever varies within the My Page pane.
+    property <[string]> profile-tabs: ["My Page", "Guestbook", "Stats"];
+    property <int> profile-tab-index: 0;
+
+    // "Currently Watching" (ankai_core::anime — real AniList-backed
+    // metadata cached at add-time, plus a real local watched-episode
+    // count). Populated at startup and refreshed after any watchlist
+    // mutation; see this module's doc comment for why staleness is a known,
+    // accepted tradeoff. Filtered client-side (in main.rs) to
+    // WatchStatus::Watching only — this is deliberately not a full
+    // watchlist browser/tracker UI, just "what's real and worth showing on
+    // a profile right now."
+    in-out property <[WatchlistCard]> watching-anime: [];
+
+    // Friends (ankai_core::friends): a real accepted-friends list plus real
+    // pending *incoming* requests, with a real Accept/Decline. There is
+    // deliberately no "send a friend request" UI here — see main.rs's doc
+    // comment on this scope call. accept-friend-request/
+    // decline-friend-request both take the request's device-id.
+    // refresh-friends-presence triggers a real on-demand connectivity check
+    // (ankai_core::friends::check_presence) against every accepted friend;
+    // each FriendCard's own `status` field updates in place as results come
+    // back (not all at once), since each check is a real, independently
+    // timed network round trip.
+    in-out property <[FriendCard]> friends-list: [];
+    in-out property <[FriendCard]> pending-friend-requests: [];
+    callback accept-friend-request(string);
+    callback decline-friend-request(string);
+    callback refresh-friends-presence();
+
+    // Real counts for the Stats tab, recomputed in main.rs alongside the
+    // data above (communities/top8/watchlist/friends) — see main.rs's
+    // refresh-stats. No fabricated numbers: anything not backed by a real
+    // core:: query simply isn't shown here.
+    in property <int> stat-communities-count: 0;
+    in property <int> stat-watching-count: 0;
+    in property <int> stat-completed-count: 0;
+    in property <int> stat-planned-count: 0;
+    in property <int> stat-dropped-count: 0;
+    in property <int> stat-friends-count: 0;
 
     // Backed by core::messaging (see that module's doc comment for what this
     // deliberately is and isn't yet — real MLS/RFC 9420 end-to-end
@@ -583,6 +903,38 @@ export component AppWindow inherits Window {
                                     font-size: 13px;
                                     wrap: word-wrap;
                                 }
+
+                                // One static "charm" (achievement badge), kept deliberately
+                                // minimal per this session's no-fake-gamification rule: this
+                                // is not a real unlock/rules system, just an honestly-labeled
+                                // always-on badge for everyone using this early build. See
+                                // PROGRESS.md's session-12 notes on why a full charms system
+                                // isn't built.
+                                HorizontalLayout {
+                                    alignment: start;
+
+                                    Rectangle {
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: Theme.accent-gold.with-alpha(0.16);
+                                        border-width: 1px;
+                                        border-color: Theme.accent-gold.with-alpha(0.4);
+
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            alignment: start;
+
+                                            Text {
+                                                text: "🌟 Early Adopter — everyone on this build has it, not a real unlock";
+                                                color: Theme.accent-gold;
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -646,6 +998,25 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+
+                    // ---- My Page's internal tab strip ----
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        for label[i] in root.profile-tabs: ProfileTabPill {
+                            label: label;
+                            active: root.profile-tab-index == i;
+                            activate => {
+                                root.profile-tab-index = i;
+                            }
+                        }
+                    }
+
+                    // ==== Tab 0: "My Page" — header (above) plus Top 8,
+                    // Currently Watching, and Friends. ====
+                    if root.profile-tab-index == 0: VerticalLayout {
+                        spacing: 24px;
 
                     // ---- Top 8 Communities: the showcase piece ----
                     VerticalLayout {
@@ -726,6 +1097,241 @@ export component AppWindow inherits Window {
                                         root.feature-community(entry.id);
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // ---- Currently Watching: real ankai_core::anime
+                    // watchlist entries (status == Watching only) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Currently Watching";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Anime tracked here comes from AniList's real public catalog, plus a real local watchlist on this device. This is a brand-new feature, so an empty list here just means nothing's been added yet, not that anything is broken.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.watching-anime.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "Nothing on your watchlist yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.watching-anime: WatchlistCardItem {
+                                anime-title: entry.title;
+                                progress-text: entry.progress;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+
+                    // ---- Friends: real ankai_core::friends accepted list
+                    // + real pending incoming requests ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Friends";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Real friend requests, sent device-to-device and accepted here. There's no address book/send-a-request UI yet — accepting an incoming request is what this pane supports today. Presence is a real, on-demand connectivity check, not a stored online/offline flag.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.pending-friend-requests.length > 0: VerticalLayout {
+                            spacing: 10px;
+
+                            Text {
+                                text: "Pending requests";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+
+                            for entry in root.pending-friend-requests: PendingRequestCardItem {
+                                device-id: entry.device-id;
+                                accept => {
+                                    root.accept-friend-request(entry.device-id);
+                                }
+                                decline => {
+                                    root.decline-friend-request(entry.device-id);
+                                }
+                            }
+                        }
+
+                        if root.friends-list.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "No friends yet — accept a pending request above to see it here.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        if root.friends-list.length > 0: HorizontalLayout {
+                            alignment: start;
+
+                            Button {
+                                text: "Refresh presence";
+                                clicked => {
+                                    root.refresh-friends-presence();
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.friends-list: FriendCardItem {
+                                device-id: entry.device-id;
+                                status: entry.status;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+                    }
+
+                    // ==== Tab 1: "Guestbook" — real UI shell, honest
+                    // placeholder: nobody else can write here yet. ====
+                    if root.profile-tab-index == 1: VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Guestbook";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "Guestbook isn't built yet — nobody can write here.";
+                                    color: Theme.text-primary;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    wrap: word-wrap;
+                                }
+
+                                Text {
+                                    text: "A real guestbook needs other people's devices to write entries onto this profile over the network — that networked-write path doesn't exist in ANKAI yet. This tab is a placeholder shell, not a preview of fake sample entries.";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // ==== Tab 2: "Stats" — real counts only, pulled from
+                    // the same core:: calls already used elsewhere in this
+                    // pane/main.rs. ====
+                    if root.profile-tab-index == 2: VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Stats";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Real counts from this device's own data — nothing here is estimated or fabricated.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            StatTile {
+                                stat-label: "Communities";
+                                stat-value: root.stat-communities-count;
+                                accent: Theme.accent-cyan;
+                            }
+                            StatTile {
+                                stat-label: "Top 8 slots filled";
+                                stat-value: root.featured-communities.length;
+                                accent: Theme.accent-violet;
+                            }
+                            StatTile {
+                                stat-label: "Friends";
+                                stat-value: root.stat-friends-count;
+                                accent: Theme.accent-gold;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            StatTile {
+                                stat-label: "Watching";
+                                stat-value: root.stat-watching-count;
+                                accent: Theme.state-online;
+                            }
+                            StatTile {
+                                stat-label: "Completed";
+                                stat-value: root.stat-completed-count;
+                                accent: Theme.accent-cyan;
+                            }
+                            StatTile {
+                                stat-label: "Planned";
+                                stat-value: root.stat-planned-count;
+                                accent: Theme.accent-violet;
+                            }
+                            StatTile {
+                                stat-label: "Dropped";
+                                stat-value: root.stat-dropped-count;
+                                accent: Theme.state-busy;
                             }
                         }
                     }
