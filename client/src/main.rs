@@ -19,6 +19,8 @@
 
 slint::include_modules!();
 
+mod directory;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -232,6 +234,52 @@ fn main() -> Result<(), slint::PlatformError> {
         .expect("failed to encode own P2P/MLS invite");
     app.set_own_peer_address(own_invite_text.into());
 
+    // Experimental, opt-in ADR-0008 directory integration (Status:
+    // Proposed — see docs/adr/0008-identity-discovery-service.md and
+    // ankai_core::messaging's module doc comment). `directory_client` stays
+    // `None`, and nothing here ever makes a network call to any directory
+    // server, unless a human explicitly set ANKAI_DIRECTORY_URL. When set,
+    // this device publishes its current KeyPackage + EndpointAddr (the same
+    // pair `own_invite` above already bundles for manual pasting) so a peer
+    // who knows this device's short DeviceId can look it up instead.
+    // Publish failure (e.g. no server running at that URL) is logged and
+    // otherwise ignored — the manual-paste flow keeps working regardless.
+    let directory_url = directory::configured_directory_url();
+    let directory_client = directory_url.as_ref().map(|url| {
+        let signer = ankai_core::identity::device_signer(&device, &mls_provider)
+            .expect("device signature key must exist to sign directory requests");
+        std::sync::Arc::new(ankai_directory_server::HttpDirectoryClient::new(
+            url.clone(),
+            device.id.clone(),
+            signer,
+        ))
+    });
+
+    if let Some(client) = &directory_client {
+        use ankai_core::directory::DirectoryService;
+        let device_id = device.id.clone();
+        let key_package_to_publish = own_invite.key_package.clone();
+        let addr_to_publish = own_invite.addr.clone();
+        let publish_result = p2p_runtime.block_on(async {
+            client
+                .publish_key_package(&device_id, key_package_to_publish)
+                .await?;
+            client
+                .publish_endpoint_addr(&device_id, addr_to_publish)
+                .await
+        });
+        match publish_result {
+            Ok(()) => println!(
+                "ankai-client: published this device's KeyPackage + EndpointAddr to the directory server at {} (experimental — ADR-0008 is still Proposed)",
+                directory_url.unwrap_or_default()
+            ),
+            Err(err) => eprintln!(
+                "ankai-client: failed to publish to the directory server (continuing without it, manual paste still works): {err}"
+            ),
+        }
+    }
+    app.set_directory_enabled(directory_client.is_some());
+
     // Load this device's entire persisted message history (oldest first)
     // into the same most-recent-first model shape the live send/receive
     // paths already push into — same idea as Settings loading
@@ -389,6 +437,65 @@ fn main() -> Result<(), slint::PlatformError> {
             });
         });
     });
+
+    // Experimental, opt-in directory-lookup-by-DeviceId callback — see the
+    // `directory_client` setup above and client::directory's doc comment.
+    // Only wired if directory_client is Some (i.e. ANKAI_DIRECTORY_URL was
+    // set); the corresponding UI section is hidden otherwise (see
+    // app.slint's `directory-enabled`), so this is unreachable when the
+    // integration is off. On success this fills peer-address-input with
+    // the same invite-blob text a manual paste would produce, so
+    // on_send_message above (unchanged) is exactly what runs next — no
+    // separate send path for directory-sourced peers.
+    if let Some(client) = directory_client {
+        let app_weak_for_lookup = app.as_weak();
+        let p2p_handle_for_lookup = p2p_runtime.handle().clone();
+        app.on_lookup_peer_by_device_id(move |device_id_text| {
+            let device_id_text = device_id_text.trim().to_string();
+            if device_id_text.is_empty() {
+                return;
+            }
+            let peer = ankai_core::identity::DeviceId(device_id_text.clone());
+            let client = client.clone();
+            let app_weak = app_weak_for_lookup.clone();
+            p2p_handle_for_lookup.spawn(async move {
+                let result = directory::lookup_peer_invite(&client, &peer).await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    match result {
+                        Ok(Some(invite)) => {
+                            match ankai_core::messaging::format_peer_invite(&invite) {
+                                Ok(text) => {
+                                    app.set_peer_address_input(text.into());
+                                    app.set_lookup_status(
+                                        format!("Found {device_id_text} in the directory — invite filled in below.")
+                                            .into(),
+                                    );
+                                }
+                                Err(err) => {
+                                    app.set_lookup_status(
+                                        format!("Found {device_id_text} but failed to encode its invite: {err}")
+                                            .into(),
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            app.set_lookup_status(
+                                format!("No published KeyPackage/EndpointAddr found for {device_id_text}.")
+                                    .into(),
+                            );
+                        }
+                        Err(err) => {
+                            app.set_lookup_status(format!("Directory lookup failed: {err}").into());
+                        }
+                    }
+                });
+            });
+        });
+    }
 
     app.run()
 }

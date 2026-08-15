@@ -21,10 +21,16 @@
 //!   `communities` — this is not a second encryption layer.
 //!
 //! **Still deliberately not done — read before extending:**
-//! - **Peer discovery.** Still no directory/lookup service (see
-//!   `crate::directory`'s doc comment — it exists only as an in-memory
-//!   interface, not wired into `client`, not a real server). See "Group
-//!   setup without a directory" below for how this module copes.
+//! - **Peer discovery beyond "paste an id you already know."** `client` can
+//!   now *optionally* source a [`PeerInvite`]'s two fields (an
+//!   `EndpointAddr` and a `KeyPackage`) from a live
+//!   `ankai-directory-server` instead of a manually pasted blob — see
+//!   "Optional: sourcing a PeerInvite from a directory server" below. That
+//!   is still not real discovery: a user still has to already know, and
+//!   paste, the exact `DeviceId` (a hex string) they want to reach. There is
+//!   no search, no contact list, no presence, and no notion of "who do I
+//!   know" — the directory only answers "does this exact id have anything
+//!   published," same as `crate::directory`'s trait always described.
 //! - **Multi-conversation UI.** [`list_messages`] returns this device's
 //!   entire flat message history across every peer it's ever talked to,
 //!   not scoped per-conversation — there's still no contact list/thread
@@ -72,6 +78,47 @@
 //! around it. The manual part is entirely the out-of-band exchange (same
 //! gap `EndpointAddr` sharing already had); the MLS mechanics themselves
 //! are OpenMLS's real API end to end.
+//!
+//! ## Optional: sourcing a `PeerInvite` from a directory server
+//!
+//! `docs/adr/0008-identity-discovery-service.md` (Status: **Proposed**, not
+//! Accepted) plus `server/directory/`'s reference implementation and its
+//! `HttpDirectoryClient` now give a real, running alternative to the manual
+//! paste above — but this module itself is unchanged by it. `client`
+//! (`client/src/main.rs`), when a human has opted in by setting
+//! `ANKAI_DIRECTORY_URL`, can call `HttpDirectoryClient::key_packages`/
+//! `endpoint_addr` for a peer's pasted `DeviceId` and assemble the exact
+//! same [`PeerInvite`] shape this module already accepts — the peer only
+//! has to be told a short hex `DeviceId` instead of a whole blob. Nothing in
+//! `encrypt_and_log_outgoing`/`parse_peer_invite`/the MLS group-setup path
+//! above changes to support this: a directory-sourced `PeerInvite` and a
+//! hand-pasted one are indistinguishable to this module by construction,
+//! which is deliberate — the crypto/group logic was not forked to add this.
+//!
+//! `core` cannot depend on `HttpDirectoryClient` directly (it lives in
+//! `server/directory`, which depends on `core` — the reverse would be
+//! circular), which is why this glue lives in `client`, not here. See that
+//! crate for the actual lookup code.
+//!
+//! This does **not** make peer discovery automatic. It is still opt-in
+//! (unset `ANKAI_DIRECTORY_URL` and the client behaves exactly as before —
+//! manual-paste-only, no network calls to any directory), still requires
+//! already knowing a peer's exact `DeviceId` out-of-band (no search/contact
+//! list/presence), and inherits every gap ADR-0008 documents and leaves
+//! open rather than resolves: TOFU pubkey pinning (first publish for a
+//! `DeviceId` wins that binding permanently, no recovery path), fully
+//! unauthenticated `EndpointAddr` lookups (a real, undischarged tension
+//! with `docs/threat-model.md`'s IP-address protection goal — anyone who
+//! learns/guesses a `DeviceId` can look up that device's current network
+//! address), `KeyPackage`s being consumed whole on lookup (a second lookup
+//! of the same device returns nothing until it republishes), and no
+//! automatic re-publish on `KeyPackage`/`EndpointAddr` rotation — `client`
+//! publishes once at startup and never again, so a long-running peer's
+//! published `EndpointAddr` goes stale after the server's 10-minute TTL
+//! until the app is restarted. There is also no revocation UI: nothing lets
+//! a device retract what it already published. None of this is new to this
+//! integration — it is exactly what ADR-0008 already flagged as "still
+//! risky / open" before this session wired a real caller up to it.
 
 use iroh::{EndpointAddr, EndpointId};
 use openmls::credentials::CredentialWithKey;
@@ -85,7 +132,7 @@ use rusqlite::OptionalExtension;
 
 use crate::db::Db;
 use crate::error::Error;
-use crate::identity::{Device, CIPHERSUITE, DEVICE_SIGNATURE_SCHEME};
+use crate::identity::{Device, CIPHERSUITE};
 use crate::mls_provider::AnkaiMlsProvider;
 use crate::p2p::P2pNode;
 use crate::util::{encode_hex, random_id};
@@ -152,7 +199,7 @@ pub fn encrypt_and_log_outgoing(
     text: &str,
 ) -> Result<Vec<Vec<u8>>, Error> {
     let peer_id = peer_id_for(invite.addr.id);
-    let signer = read_signer(device, provider)?;
+    let signer = crate::identity::device_signer(device, provider)?;
 
     let mut payloads = Vec::new();
 
@@ -300,15 +347,6 @@ fn load_group(provider: &AnkaiMlsProvider, group_id: &GroupId) -> Result<MlsGrou
     MlsGroup::load(provider.storage(), group_id)
         .map_err(|e| Error::Net(format!("failed to load MLS group state: {e}")))?
         .ok_or_else(|| Error::Net("no MLS group state found in storage for this peer".to_string()))
-}
-
-fn read_signer(device: &Device, provider: &AnkaiMlsProvider) -> Result<SignatureKeyPair, Error> {
-    SignatureKeyPair::read(
-        provider.storage(),
-        &device.signature_key.0,
-        DEVICE_SIGNATURE_SCHEME,
-    )
-    .ok_or_else(|| Error::Identity("device signature key not found in MLS storage".to_string()))
 }
 
 fn conversation_group_id(db: &Db, peer_id: &str) -> Result<Option<GroupId>, Error> {

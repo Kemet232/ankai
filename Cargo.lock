@@ -1242,7 +1242,10 @@ name = "client"
 version = "0.0.1"
 dependencies = [
  "ankai-core",
+ "ankai-directory-server",
  "directories",
+ "openmls",
+ "openmls_basic_credential",
  "slint",
  "slint-build",
  "tokio",

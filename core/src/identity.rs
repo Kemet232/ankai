@@ -162,16 +162,42 @@ pub struct PublishedKeyPackage {
     pub key_package: Option<KeyPackage>,
 }
 
+/// Reads back `device`'s real, already-generated `SignatureKeyPair` from
+/// `provider`'s storage — the same private key material
+/// `load_or_create_device` persisted (or previously persisted, on an
+/// earlier run) when this device's identity was first created. Requires
+/// `device`'s signature key pair to already be in `provider`'s storage —
+/// true for anything `load_or_create_device` returned.
+///
+/// This is the one place that touches a device's real signing key, so
+/// everything that needs to sign *as* this device goes through it rather
+/// than re-deriving its own copy: [`create_key_package`] (building a
+/// `KeyPackage`), `crate::messaging` (MLS group creation/message
+/// encryption), and, per `docs/adr/0008-identity-discovery-service.md`'s
+/// auth model, `client`'s use of `ankai_directory_server::HttpDirectoryClient`
+/// to sign directory-service publish requests with this exact same key.
+pub fn device_signer(
+    device: &Device,
+    provider: &AnkaiMlsProvider,
+) -> Result<SignatureKeyPair, Error> {
+    SignatureKeyPair::read(
+        provider.storage(),
+        &device.signature_key.0,
+        DEVICE_SIGNATURE_SCHEME,
+    )
+    .ok_or_else(|| Error::Identity("device signature key not found in MLS storage".to_string()))
+}
+
 /// Builds a fresh MLS `KeyPackage` for `device` and persists its private
 /// material (the HPKE init/encryption keypair `build` generates) into
 /// `provider`'s storage. Requires `device`'s signature key pair to already
 /// be in `provider`'s storage — true for anything `load_or_create_device`
 /// returned.
 ///
-/// This only builds and stores the key package locally; ADR-0004's
-/// "publishes to a directory" half doesn't exist yet (no discovery
-/// service), so there is nowhere to actually publish it to yet — see
-/// `PublishedKeyPackage`'s doc comment.
+/// This only builds and stores the key package locally; publishing it
+/// anywhere (e.g. to the ADR-0008 reference directory server, via
+/// `HttpDirectoryClient::publish_key_package`) is a distinct, separate step
+/// callers take on their own — see `PublishedKeyPackage`'s doc comment.
 ///
 /// Callers must call `provider.flush(db)` afterwards to persist the new
 /// private material to disk, same as after `load_or_create_device` creates
@@ -180,12 +206,7 @@ pub fn create_key_package(
     device: &Device,
     provider: &AnkaiMlsProvider,
 ) -> Result<PublishedKeyPackage, Error> {
-    let signer = SignatureKeyPair::read(
-        provider.storage(),
-        &device.signature_key.0,
-        DEVICE_SIGNATURE_SCHEME,
-    )
-    .ok_or_else(|| Error::Identity("device signature key not found in MLS storage".to_string()))?;
+    let signer = device_signer(device, provider)?;
 
     let credential_with_key = CredentialWithKey {
         credential: device.credential.clone().into(),
