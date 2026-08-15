@@ -134,6 +134,30 @@ const MIGRATIONS: &[Migration] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_posts_community_id ON posts (community_id);",
     },
+    Migration {
+        version: 8,
+        description: "create watchlist table",
+        // See crate::anime's doc comment for the full shape of this table,
+        // including why title/cover/episode-count are cached here rather
+        // than always re-fetched from AniList. `anilist_id` (AniList's own
+        // numeric media id) is the primary key, not a locally-generated
+        // random id like `communities`/`hangouts`/`posts` use — it's
+        // already a stable, globally-meaningful key, and using it directly
+        // makes "is this anime already on the watchlist" a plain lookup
+        // instead of a search.
+        sql: "CREATE TABLE IF NOT EXISTS watchlist (
+        anilist_id       INTEGER NOT NULL PRIMARY KEY,
+        title_romaji     TEXT,
+        title_english    TEXT,
+        cover_image_url  TEXT,
+        episode_count    INTEGER,
+        watched_episodes INTEGER NOT NULL DEFAULT 0,
+        status           TEXT NOT NULL CHECK (status IN ('watching', 'completed', 'planned', 'dropped')),
+        added_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_watchlist_status ON watchlist (status);",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -344,7 +368,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 7);
+        assert_eq!(db.schema_version().unwrap(), 8);
     }
 
     #[test]
@@ -353,20 +377,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 8);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 8);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 7, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 8, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -404,7 +428,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 7);
+            assert_eq!(db.schema_version().unwrap(), 8);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
