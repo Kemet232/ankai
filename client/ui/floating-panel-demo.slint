@@ -1,0 +1,229 @@
+// ANKAI client — FloatingPanel proof-of-concept demo (debug only).
+//
+// LEGACY-DEBUG-STYLE STANDALONE DEMO, mirroring spike-glass-blur.slint's
+// pattern: this is a separately-reachable window (see client/src/main.rs's
+// `--floating-demo` / ANKAI_FLOATING_DEMO=1 flag) that proves
+// floating-panel.slint's FloatingPanel component genuinely works — real
+// independent drag-to-move, real close, real "bring to front" — with
+// several panels on screen at once, not just one in isolation. It is NOT
+// part of the real app shell (ui/app.slint) and does NOT replace it; the
+// floating-window paradigm this demonstrates (separate draggable windows
+// for e.g. a video player, the Hangout Room watch-party chat, or a
+// friends list, layered on top of the main single-pane app content) is
+// still deliberately unwired from the real Messages/Hangouts/Home panes —
+// see floating-panel.slint's header comment and PROGRESS.md.
+//
+// "Bring to front" / z-order note: Slint has no first-class arbitrary
+// z-index property. What actually controls paint (and hit-test) order for
+// overlapping siblings is DECLARATION / MODEL ORDER — items declared (or,
+// for a `for` loop, appearing later in the backing array) later draw on
+// top and win pointer hits (confirmed by reading i-slint-core's input.rs:
+// hit-testing traverses `TraversalOrder::FrontToBack`, i.e. last-declared
+// first). So real dynamic re-stacking IS achievable here, not just a
+// visual highlight: `bring-to-front` below physically moves the touched
+// panel's entry to the end of the `panels` array, which is genuinely the
+// last thing the `for` loop below draws, so it genuinely paints on top of
+// (and receives clicks before) the other two. The one real limitation:
+// the reorder logic is hand-written for exactly 3 fixed panels rather than
+// a generic N, because Slint's callback/expression language has no general
+// loop statement (only `for` as element-tree syntax, not as an imperative
+// statement) to shift an arbitrary-length array — a real constraint of the
+// language, not a shortcut. A production version with a variable number of
+// panels would need either a small fixed upper bound handled the same way,
+// or the reorder computed in Rust and pushed in as a new model.
+import { Theme } from "theme.slint";
+import { FloatingPanel } from "floating-panel.slint";
+
+export struct FloatingPanelSpec {
+    panel-id: string,
+    panel-title: string,
+    panel-x: length,
+    panel-y: length,
+    panel-width: length,
+    panel-height: length,
+    closed: bool,
+}
+
+export component FloatingPanelDemoWindow inherits Window {
+    title: "ANKAI — floating panel demo (debug only)";
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    background: Theme.bg-void;
+
+    in-out property <[FloatingPanelSpec]> panels: [
+        { panel-id: "video", panel-title: "Video", panel-x: 60px, panel-y: 100px, panel-width: 380px, panel-height: 260px, closed: false },
+        { panel-id: "hangout", panel-title: "Hangout Room", panel-x: 500px, panel-y: 150px, panel-width: 360px, panel-height: 340px, closed: false },
+        { panel-id: "friends", panel-title: "Friends", panel-x: 160px, panel-y: 440px, panel-width: 300px, panel-height: 220px, closed: false },
+    ];
+
+    property <string> active-panel-id: "";
+    // Scratch slot for the array-reorder swap below — same technique
+    // spike-glass-blur.slint's card drag-reorder already uses
+    // (`swap-scratch`) for holding a value mid-swap.
+    property <FloatingPanelSpec> reorder-scratch;
+
+    callback bring-to-front(int);
+    bring-to-front(i) => {
+        if (i == 0) {
+            root.reorder-scratch = root.panels[0];
+            root.panels[0] = root.panels[1];
+            root.panels[1] = root.panels[2];
+            root.panels[2] = root.reorder-scratch;
+        } else if (i == 1) {
+            root.reorder-scratch = root.panels[1];
+            root.panels[1] = root.panels[2];
+            root.panels[2] = root.reorder-scratch;
+        }
+        // i == 2 is already the last (frontmost) array entry: no-op.
+        root.active-panel-id = root.panels[root.panels.length - 1].panel-id;
+    }
+
+    // Soft gradient wash for visual context, same family as
+    // spike-glass-blur.slint's background treatment (no confetti pattern
+    // here — kept simple since the point of this demo is the panels).
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: @linear-gradient(160deg, Theme.bg-surface.with-alpha(0.5) 0%, Theme.bg-void 65%);
+    }
+
+    VerticalLayout {
+        padding: Theme.space-6;
+        alignment: start;
+        spacing: Theme.space-1;
+
+        Text {
+            text: "ANKAI — floating panel demo (debug only)";
+            color: Theme.text-primary;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        Text {
+            text: "Drag any title bar to move its window. Click a window anywhere to bring it to the front. Click × to close.";
+            color: Theme.text-secondary;
+            font-size: 12px;
+        }
+    }
+
+    for spec[i] in root.panels : Rectangle {
+        // Transparent, unstyled wrapper so `if !spec.closed` can nest
+        // inside this `for` (Slint's `for ... : Type { }` needs exactly
+        // one element as its body; the FloatingPanel itself is
+        // absolutely positioned via panel-x/panel-y, so this wrapper's
+        // own position/size never matters).
+        if !spec.closed : FloatingPanel {
+            panel-title: spec.panel-title;
+            panel-x: spec.panel-x;
+            panel-y: spec.panel-y;
+            panel-width: spec.panel-width;
+            panel-height: spec.panel-height;
+            is-active: spec.panel-id == root.active-panel-id;
+
+            dragged(new-x, new-y) => {
+                root.panels[i].panel-x = new-x;
+                root.panels[i].panel-y = new-y;
+            }
+            interacted => {
+                root.bring-to-front(i);
+            }
+            close => {
+                root.panels[i].closed = true;
+            }
+
+            if spec.panel-id == "video" : Rectangle {
+                background: Theme.bg-void.with-alpha(0.85);
+                VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.space-2;
+                    Text {
+                        text: "▶";
+                        color: Theme.accent-cyan;
+                        font-size: 40px;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Video preview placeholder";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            if spec.panel-id == "hangout" : Rectangle {
+                background: transparent;
+                VerticalLayout {
+                    padding: Theme.space-3;
+                    spacing: Theme.space-2;
+                    Text {
+                        text: "Now watching: Cowboy Bebop S1E5";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.silver.with-alpha(0.15);
+                    }
+                    Text {
+                        text: "yui: this ep goes so hard";
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: "kento: no cap";
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                    }
+                    Rectangle {
+                        height: 26px;
+                        border-radius: 13px;
+                        background: Theme.bg-surface-raised.with-alpha(0.7);
+                        border-width: 1px;
+                        border-color: Theme.silver.with-alpha(0.2);
+                        Text {
+                            x: Theme.space-2;
+                            width: parent.width - Theme.space-4;
+                            height: parent.height;
+                            text: "Say something…";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            if spec.panel-id == "friends" : Rectangle {
+                background: transparent;
+                VerticalLayout {
+                    padding: Theme.space-3;
+                    spacing: Theme.space-3;
+                    for friend in [
+                        { name: "Mika", dot: Theme.state-online },
+                        { name: "Dre", dot: Theme.state-away },
+                        { name: "Sol", dot: Theme.state-offline },
+                    ] : HorizontalLayout {
+                        spacing: Theme.space-2;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            border-radius: 4px;
+                            background: friend.dot;
+                        }
+                        Text {
+                            text: friend.name;
+                            color: Theme.text-primary;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
