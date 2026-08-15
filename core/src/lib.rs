@@ -8,6 +8,7 @@ pub mod communities;
 pub mod db;
 pub mod directory;
 pub mod error;
+pub mod hangouts;
 pub mod identity;
 pub mod keychain;
 pub mod messaging;

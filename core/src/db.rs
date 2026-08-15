@@ -76,6 +76,18 @@ const MIGRATIONS: &[Migration] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );",
     },
+    Migration {
+        version: 5,
+        description: "create hangouts table",
+        // See crate::hangouts's doc comment for what a "Hangout" is (and
+        // isn't) in this Phase 1 scaffolding — local-only hosting metadata,
+        // no participants/playback state/media.
+        sql: "CREATE TABLE IF NOT EXISTS hangouts (
+        id         TEXT NOT NULL PRIMARY KEY,
+        name       TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -286,7 +298,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 4);
+        assert_eq!(db.schema_version().unwrap(), 5);
     }
 
     #[test]
@@ -295,20 +307,20 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 4);
+            assert_eq!(db.schema_version().unwrap(), 5);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 4);
+            assert_eq!(db.schema_version().unwrap(), 5);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
-            assert_eq!(row_count, 4, "each migration must be recorded exactly once");
+            assert_eq!(row_count, 5, "each migration must be recorded exactly once");
         }
 
         cleanup(&path);
@@ -346,7 +358,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 4);
+            assert_eq!(db.schema_version().unwrap(), 5);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
