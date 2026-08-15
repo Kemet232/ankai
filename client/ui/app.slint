@@ -33,6 +33,52 @@ export struct CommunityRef {
 }
 
 // ---------------------------------------------------------------------
+// Home dashboard data shapes (ankai_core::anime / forum_posts / friends —
+// see each module's own doc comment for full scope/limitations). Kept as
+// their own structs rather than reusing CommunityRef's shape since each
+// carries genuinely different fields.
+// ---------------------------------------------------------------------
+
+// One AniList anime entry, reduced to exactly what the Home dashboard's
+// Trending Now / Popular Right Now cards render. Real cover art (a remote
+// HTTP image URL, `ankai_core::anime::AnimeSummary::cover_image_url`) is
+// deliberately not fetched here — Slint 1.17's `Image` element loads from a
+// local path/compile-time `@image-url`, not directly from a network URL,
+// and building a fetch-decode-cache pipeline (e.g. via the `image` crate)
+// for one dashboard widget was judged out of scope for this pass; see
+// PROGRESS.md/this session's report for the honest call. `title` is
+// English-preferred-then-romaji (already resolved on the Rust side, since
+// Slint has no such fallback expression); `score` is pre-formatted display
+// text ("Score: 88" or "Not yet rated") for the same reason.
+export struct AnimeRef {
+    id: int,
+    title: string,
+    score: string,
+}
+
+// One entry in the "Hot Discussions" cross-community feed
+// (ankai_core::forum_posts::list_recent_across_communities) — a post's
+// content plus its real parent community's name, so a mixed feed can still
+// say which community it came from.
+export struct RecentPostRef {
+    community-name: string,
+    content: string,
+}
+
+// One accepted friend (ankai_core::friends::Friend) plus this device's most
+// recently checked on-demand presence result (ankai_core::friends::
+// check_presence — a real, short-timeout live connection attempt, not a
+// push/stored status; see that function's doc comment). `online` starts
+// `false` for every row until its real check completes and updates it in
+// place — there is no third "away" state, matching the module's own
+// documented online/offline-only distinction.
+export struct FriendRef {
+    device-id: string,
+    account-id: string,
+    online: bool,
+}
+
+// ---------------------------------------------------------------------
 // Small glass-styled building blocks for the Profile pane (ADR-0002's
 // spike gate is closed — see this file's header comment above — so this
 // reuses the same technique spike-glass-blur.slint / module-card.slint
@@ -231,6 +277,106 @@ component AddCommunityChip inherits Rectangle {
     }
 }
 
+// A compact glass info card for the Home dashboard: an accent stripe, a
+// bold title line, and an optional secondary line. Reused across Trending
+// Now/Popular Right Now (title = anime title, subtitle = score), Hot
+// Discussions (title = community name, subtitle = post snippet), and Your
+// Hangouts (title = hangout name, no subtitle) — same
+// stripe-plus-glass-panel shape as Top8CardItem above, just without its
+// rank badge/action buttons since none of these rows are reorderable.
+component HomeCardItem inherits Rectangle {
+    in property <string> title-text;
+    in property <string> subtitle-text: "";
+    in property <color> accent;
+
+    border-radius: 16px;
+    background: Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 4px;
+            border-radius: 2px;
+            background: root.accent;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+
+            Text {
+                text: root.title-text;
+                color: Theme.text-primary;
+                font-size: 14px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            if root.subtitle-text != "": Text {
+                text: root.subtitle-text;
+                color: Theme.text-secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// A friend row for the Home dashboard's Friend Activity section — like
+// HomeCardItem, but with a real presence dot (online/offline, from a live
+// ankai_core::friends::check_presence result) instead of a subtitle line.
+component FriendCardItem inherits Rectangle {
+    in property <string> label-text;
+    in property <bool> online;
+
+    border-radius: 16px;
+    background: Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            y: (parent.height - self.height) / 2;
+            background: root.online ? Theme.state-online : Theme.state-offline;
+        }
+
+        Text {
+            text: root.label-text;
+            color: Theme.text-primary;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        Text {
+            text: root.online ? "Online now" : "Offline";
+            color: root.online ? Theme.state-online : Theme.text-secondary;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
@@ -238,6 +384,7 @@ export component AppWindow inherits Window {
     background: Theme.bg-void;
 
     property <[string]> nav-items: [
+        "Home",
         "Profile",
         "Messages",
         "Communities",
@@ -256,12 +403,18 @@ export component AppWindow inherits Window {
         Theme.accent-gold,
         Theme.state-online,
     ];
-    property <int> selected-index: 0;
-    property <int> profile-index: 0; // index of "Profile" in nav-items, above
-    property <int> messages-index: 1; // index of "Messages" in nav-items, above
-    property <int> communities-index: 2; // index of "Communities" in nav-items, above
-    property <int> hangouts-index: 3; // index of "Hangouts" in nav-items, above
-    property <int> settings-index: 4; // index of "Settings" in nav-items, above
+    // Home is the default landing pane (index 0) — a dashboard makes more
+    // sense as "what you see first" than the Profile pane now that there's
+    // real cross-feature content (trending anime, recent discussion posts,
+    // hangouts, friend activity) to surface at a glance. main.rs also sets
+    // this explicitly at startup for robustness against future reordering.
+    in-out property <int> selected-index: 0;
+    out property <int> home-index: 0; // index of "Home" in nav-items, above
+    property <int> profile-index: 1; // index of "Profile" in nav-items, above
+    property <int> messages-index: 2; // index of "Messages" in nav-items, above
+    property <int> communities-index: 3; // index of "Communities" in nav-items, above
+    property <int> hangouts-index: 4; // index of "Hangouts" in nav-items, above
+    property <int> settings-index: 5; // index of "Settings" in nav-items, above
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
     // screen/persistence" step) — main.rs loads the saved value into this
@@ -384,6 +537,23 @@ export component AppWindow inherits Window {
     in-out property <string> new-hangout-name: "";
     callback create-hangout(string);
 
+    // Home dashboard (see ui's AnimeRef/RecentPostRef/FriendRef doc
+    // comments above for each field's real backing source —
+    // ankai_core::anime/forum_posts/friends). trending-anime/popular-anime/
+    // anime-status are loaded asynchronously (a real AniList network call,
+    // not synchronous DB reads like the rest of this app) — anime-status
+    // only ever holds an error message, cleared to "" on the next
+    // successful load. recent-posts and friends are real local-DB reads,
+    // refreshed at startup and by refresh-home. "Your Hangouts" below
+    // reuses hangout-names above rather than a separate property — same
+    // data, same model, no reason to duplicate it.
+    in-out property <[AnimeRef]> trending-anime: [];
+    in-out property <[AnimeRef]> popular-anime: [];
+    in-out property <string> anime-status: "";
+    in-out property <[RecentPostRef]> recent-posts: [];
+    in-out property <[FriendRef]> friends: [];
+    callback refresh-home();
+
     // ---------------------------------------------------------------
     // Ambient background wash — a very restrained accent-tinted diagonal
     // gradient over the void base, per tokens.md's "Elevation/depth" z0
@@ -489,13 +659,355 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
                 color: Theme.text-primary;
                 font-size: 22px;
                 font-weight: 700;
+            }
+
+            // -----------------------------------------------------------
+            // Home dashboard — the app's landing screen, same "Liquid Y2K"
+            // glass treatment as the Profile pane below (glass module
+            // cards, accent-cycled stripes, real typography scale — see
+            // this file's header comment for the shared alpha-tint +
+            // border + specular strip + drop-shadow technique). Every
+            // section here is real, possibly-empty data from a real
+            // ankai_core module (see AnimeRef/RecentPostRef/FriendRef's
+            // doc comments above for exactly which one backs each
+            // section) — nothing fabricated. "Around the Web" (a Reddit
+            // widget) from the original mockup is deliberately left out
+            // entirely rather than faked or stubbed: Reddit API access is
+            // blocked for this project right now (see PROGRESS.md), and a
+            // "coming later" placeholder box would just be dead weight
+            // until that's unblocked.
+            // -----------------------------------------------------------
+            if root.selected-index == root.home-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
+
+                VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 28px;
+                    alignment: start;
+
+                    // ---- Welcome header ----
+                    Rectangle {
+                        border-radius: 20px;
+                        background: Theme.glass-tint;
+                        border-width: 1px;
+                        border-color: Theme.silver.with-alpha(0.2);
+                        drop-shadow-color: Theme.bg-void.with-alpha(0.5);
+                        drop-shadow-blur: 20px;
+                        drop-shadow-offset-y: 6px;
+
+                        Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: 60px;
+                            border-radius: 20px;
+                            background: @linear-gradient(180deg, #ffffff1a 0%, #ffffff00 100%);
+                        }
+
+                        HorizontalLayout {
+                            padding: 24px;
+                            spacing: 20px;
+                            alignment: start;
+
+                            Rectangle {
+                                width: 64px;
+                                height: 64px;
+                                border-radius: 32px;
+                                background: @linear-gradient(135deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                                border-width: 1px;
+                                border-color: Theme.silver.with-alpha(0.3);
+
+                                Text {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    text: root.display-name-initial == "" ? "A" : root.display-name-initial;
+                                    color: Theme.bg-void;
+                                    font-size: 28px;
+                                    font-weight: 700;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: root.display-name == "" ? "Welcome to ANKAI" : "Welcome back, " + root.display-name;
+                                    color: Theme.text-primary;
+                                    font-size: 22px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: "Here's what's happening across your communities, hangouts, and friends.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                GlassIconButton {
+                                    glyph: "⟳";
+                                    tint: Theme.accent-cyan;
+                                    clicked => {
+                                        root.refresh-home();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.anime-status != "": Text {
+                        text: root.anime-status;
+                        color: Theme.state-busy;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // ---- Trending Now (real AniList data) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Trending Now";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Real-time trending anime from AniList. Cover art isn't rendered here yet — Slint doesn't load images directly from a network URL, so this is title/score text only for now.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.trending-anime.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "No trending anime data loaded yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.trending-anime: HomeCardItem {
+                                title-text: entry.title;
+                                subtitle-text: entry.score;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+
+                    // ---- Popular Right Now (real AniList data) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Popular Right Now";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        if root.popular-anime.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "No popular-anime data loaded yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.popular-anime: HomeCardItem {
+                                title-text: entry.title;
+                                subtitle-text: entry.score;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+
+                    // ---- Hot Discussions (real cross-community posts) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Hot Discussions";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "The most recent posts across every community you're in.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.recent-posts.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "No posts yet — start a discussion in a community to see it here.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry[i] in root.recent-posts: HomeCardItem {
+                                title-text: entry.community-name;
+                                subtitle-text: entry.content;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+
+                    // ---- Your Hangouts (real local watch-party sessions you host) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Your Hangouts";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Hangouts you've created on this device. There's no real-time sync yet, so this deliberately isn't labeled as other people's live watch parties.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.hangout-names.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "You haven't created any Hangouts yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for name[i] in root.hangout-names: HomeCardItem {
+                                title-text: name;
+                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            }
+                        }
+                    }
+
+                    // ---- Friend Activity (real friends + real on-demand presence) ----
+                    VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Friend Activity";
+                            color: Theme.text-primary;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Your accepted friends, with a real live connectivity check next to each — not a cached status.";
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.friends.length == 0: Rectangle {
+                            border-radius: 14px;
+                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
+
+                            VerticalLayout {
+                                padding: 16px;
+
+                                Text {
+                                    text: "You haven't added any friends yet.";
+                                    color: Theme.text-secondary;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 10px;
+
+                            for entry in root.friends: FriendCardItem {
+                                label-text: entry.account-id;
+                                online: entry.online;
+                            }
+                        }
+                    }
+                }
             }
 
             // -----------------------------------------------------------

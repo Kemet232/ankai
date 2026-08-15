@@ -171,6 +171,13 @@ const MIGRATIONS: &[Migration] = &[
         // KEY between them, matching this schema's existing convention
         // (see the `posts` migration's note) of not enabling SQLite's
         // foreign_keys pragma anywhere.
+        //
+        // Numbered 9, not 8: `core::anime`'s watchlist migration (above)
+        // and this one were built in parallel worktrees that both
+        // independently claimed version 8 against the same `main` snapshot
+        // — the exact same migration-version-collision shape PROGRESS.md
+        // documents for sessions 9/10. Resolved here by renumbering this
+        // one to 9, same fix precedent.
         sql: "CREATE TABLE IF NOT EXISTS friend_requests (
         device_id  TEXT NOT NULL PRIMARY KEY,
         account_id TEXT NOT NULL,
