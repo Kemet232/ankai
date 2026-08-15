@@ -9,6 +9,7 @@ pub mod db;
 pub mod directory;
 pub mod error;
 pub mod forum_posts;
+pub mod friends;
 pub mod hangouts;
 pub mod identity;
 pub mod keychain;

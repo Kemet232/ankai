@@ -256,6 +256,7 @@ dependencies = [
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
+ "openmls_traits",
  "rand 0.9.5",
  "rusqlite",
  "serde",
