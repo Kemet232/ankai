@@ -7,7 +7,11 @@
 //! - [`app`] + [`db`] + [`auth`]: the server — an `axum` HTTP+JSON app
 //!   (built by [`app::router`]) backed by SQLite ([`db::Storage`]),
 //!   enforcing the ADR's ED25519-request-signing auth model on publish
-//!   calls. `src/main.rs` boots this as a real standalone binary.
+//!   calls. `src/main.rs` boots this as a real standalone binary. Also
+//!   includes [`username`]: human-readable, device-scoped usernames
+//!   (claim/lookup) sitting alongside the ADR's original `KeyPackage`/
+//!   `EndpointAddr` routes — see that module's doc comment for the scoping
+//!   call and validation rule.
 //! - [`client`]: [`client::HttpDirectoryClient`], a second, real
 //!   implementation of `ankai_core::directory::DirectoryService` (the first
 //!   being `core::directory::InMemoryDirectory`) that talks to a server
@@ -30,6 +34,7 @@ pub mod auth;
 pub mod client;
 pub mod db;
 pub mod paths;
+pub mod username;
 
 pub use client::HttpDirectoryClient;
 

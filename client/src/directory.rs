@@ -15,6 +15,15 @@
 //! to the same `peer-address-input` field (and therefore the same
 //! `on_send_message` path) a manual paste already uses. Nothing about how a
 //! `PeerInvite` is consumed downstream is forked to support this.
+//!
+//! **Usernames** ([`claim_own_username`], [`lookup_peer_invite_by_username`])
+//! slot into the exact same opt-in shape: both only ever run if
+//! `ANKAI_DIRECTORY_URL` was set (same `directory_client` in `main.rs`), and
+//! [`lookup_peer_invite_by_username`] does nothing but resolve a username to
+//! a `DeviceId` and then hand off to [`lookup_peer_invite`] — the *same*
+//! function the Device-ID lookup path already uses, not a parallel one. See
+//! `ankai_directory_server::username`'s module doc comment for the
+//! device-scoped limitation and validation rule usernames are subject to.
 
 use ankai_core::directory::DirectoryService;
 use ankai_core::identity::DeviceId;
@@ -67,4 +76,36 @@ pub async fn lookup_peer_invite(
     };
 
     Ok(Some(PeerInvite { addr, key_package }))
+}
+
+/// Claims (or updates) this device's own username against the directory
+/// server. A thin pass-through to `HttpDirectoryClient::claim_username`,
+/// kept here so every directory-network call `client` makes routes through
+/// this module rather than `main.rs` calling `ankai_directory_server`
+/// directly. See `ankai_directory_server::username`'s module doc comment
+/// for the validation rule and device-scoped-not-account-scoped limitation.
+pub async fn claim_own_username(
+    client: &HttpDirectoryClient,
+    device: &DeviceId,
+    username: &str,
+) -> Result<(), ankai_core::Error> {
+    client.claim_username(device, username).await
+}
+
+/// Looks up `username` against the directory server and, if it resolves to
+/// a `DeviceId`, hands off to [`lookup_peer_invite`] — the exact same
+/// function the "look up by Device ID" path already uses — so a
+/// username-sourced peer flows through the identical
+/// lookup-by-DeviceId -> `PeerInvite` path, not a forked one. `Ok(None)`
+/// means either nobody has claimed `username`, or they have but haven't
+/// published enough to connect to yet (same "not found is not an error"
+/// convention as `lookup_peer_invite`).
+pub async fn lookup_peer_invite_by_username(
+    client: &HttpDirectoryClient,
+    username: &str,
+) -> Result<Option<PeerInvite>, ankai_core::Error> {
+    let Some(device_id) = client.lookup_username(username).await? else {
+        return Ok(None);
+    };
+    lookup_peer_invite(client, &device_id).await
 }

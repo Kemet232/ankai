@@ -13,6 +13,15 @@
 //! client rejects any call naming a different device than the one it was
 //! constructed for, rather than silently trying (and failing, since it
 //! doesn't hold that device's key) to sign on its behalf.
+//!
+//! [`HttpDirectoryClient::claim_username`]/[`HttpDirectoryClient::lookup_username`]
+//! are added as inherent methods, not `DirectoryService` trait methods —
+//! usernames (see `crate::username`) are a directory-server-specific
+//! concept `core::directory::DirectoryService` was never shaped around, and
+//! this crate doesn't get to unilaterally extend that trait either.
+//! `claim_username` signs exactly like `publish_key_package`/
+//! `publish_endpoint_addr` do; `lookup_username` is an unauthenticated GET,
+//! matching `key_packages`/`endpoint_addr`'s existing open-read shape.
 
 use ankai_core::directory::DirectoryService;
 use ankai_core::identity::DeviceId;
@@ -185,5 +194,72 @@ impl DirectoryService for HttpDirectoryClient {
         resp.json()
             .await
             .map_err(|e| Error::Directory(format!("failed to decode endpoint_addr response: {e}")))
+    }
+}
+
+impl HttpDirectoryClient {
+    /// Claims (or updates) `device`'s username against the real directory
+    /// server, signed exactly like `publish_key_package`/
+    /// `publish_endpoint_addr`. See `crate::username`'s module doc comment
+    /// for the validation rule and first-come-first-served/same-device-can-
+    /// update semantics this call is subject to server-side; a rejection
+    /// (bad format, or already claimed by a different device) comes back
+    /// as an `Err` whose message includes the server's real response body,
+    /// not just a bare status code.
+    pub async fn claim_username(&self, device: &DeviceId, username: &str) -> Result<(), Error> {
+        self.require_own_device(device)?;
+        let path = paths::username_path(&device.0);
+
+        #[derive(serde::Serialize)]
+        struct ClaimUsernameRequest<'a> {
+            username: &'a str,
+        }
+        let body = serde_json::to_vec(&ClaimUsernameRequest { username })
+            .map_err(|e| Error::Directory(format!("failed to encode username claim: {e}")))?;
+        let headers = self.signed_headers("POST", &path, &body)?;
+
+        let resp = self
+            .http
+            .post(format!("{}{}", self.base_url, path))
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| Error::Directory(format!("claim_username request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(Error::Directory(format!(
+                "claim_username rejected: {status} {detail}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Looks up which `DeviceId` currently claims `username`, or `None` if
+    /// nobody does. Unauthenticated (a plain `GET`), matching
+    /// `key_packages`/`endpoint_addr`'s existing open-read semantics — see
+    /// `crate::app`'s module doc comment.
+    pub async fn lookup_username(&self, username: &str) -> Result<Option<DeviceId>, Error> {
+        let path = paths::username_lookup_path(username);
+        let resp = self
+            .http
+            .get(format!("{}{}", self.base_url, path))
+            .send()
+            .await
+            .map_err(|e| Error::Directory(format!("lookup_username request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(Error::Directory(format!(
+                "lookup_username rejected: {}",
+                resp.status()
+            )));
+        }
+
+        let device_id: Option<String> = resp.json().await.map_err(|e| {
+            Error::Directory(format!("failed to decode lookup_username response: {e}"))
+        })?;
+        Ok(device_id.map(DeviceId))
     }
 }

@@ -1,9 +1,20 @@
 //! The directory server's real HTTP+JSON surface, per
-//! `docs/adr/0008-identity-discovery-service.md`. Four routes, matching
+//! `docs/adr/0008-identity-discovery-service.md`. Four routes matching
 //! `ankai_core::directory::DirectoryService`'s four methods exactly:
 //! publish/lookup a device's `KeyPackage`s, publish/lookup a device's
-//! current `EndpointAddr`. [`router`] builds the `axum::Router`;
-//! `src/main.rs` binds it to a real TCP port.
+//! current `EndpointAddr`. Plus two more, added alongside (not part of that
+//! trait — see `crate::username`'s module doc comment for why usernames
+//! stay a directory-server-only concept for now): claim/lookup a device's
+//! username. [`router`] builds the `axum::Router`; `src/main.rs` binds it
+//! to a real TCP port.
+//!
+//! Username claims (`POST .../username`) go through [`authenticate`], the
+//! exact same signed-request verification every other publish route uses —
+//! no new auth mechanism. Username lookups (`GET /v1/usernames/{username}`)
+//! are unauthenticated, matching `lookup_key_packages`/`lookup_endpoint_addr`'s
+//! existing open-read pattern (see the ADR's Auth section on why lookups
+//! aren't gated here) — resolving a username to a `DeviceId` is no more
+//! sensitive than looking up that `DeviceId`'s `KeyPackage`s directly.
 
 use std::sync::Arc;
 
@@ -11,13 +22,14 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use iroh::EndpointAddr;
 use openmls::key_packages::KeyPackage;
 
 use crate::auth::{self, AuthError};
-use crate::db::{self, Storage, StorageError};
+use crate::db::{self, ClaimUsernameError, Storage, StorageError};
+use crate::username::UsernameError;
 use crate::{now_unix, paths};
 
 #[derive(Debug, thiserror::Error)]
@@ -28,8 +40,19 @@ pub enum ApiError {
     BadBody(String),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Username(#[from] UsernameError),
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+impl From<ClaimUsernameError> for ApiError {
+    fn from(err: ClaimUsernameError) -> Self {
+        match err {
+            ClaimUsernameError::Storage(e) => ApiError::Storage(e),
+            ClaimUsernameError::Username(e) => ApiError::Username(e),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -38,6 +61,11 @@ impl IntoResponse for ApiError {
             ApiError::Auth(AuthError::DeviceKeyMismatch) => StatusCode::FORBIDDEN,
             ApiError::Auth(_) => StatusCode::UNAUTHORIZED,
             ApiError::BadBody(_) => StatusCode::BAD_REQUEST,
+            ApiError::Username(UsernameError::Invalid(_)) => StatusCode::BAD_REQUEST,
+            // Distinct from a bad-signature 401/pinned-key-mismatch 403 —
+            // this is "your request was valid, but someone else already
+            // holds this name," the standard meaning of 409 Conflict.
+            ApiError::Username(UsernameError::AlreadyClaimed) => StatusCode::CONFLICT,
             ApiError::Storage(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
@@ -54,6 +82,8 @@ pub fn router(storage: Arc<Storage>) -> Router {
             paths::ENDPOINT_ADDR_ROUTE,
             post(publish_endpoint_addr).get(lookup_endpoint_addr),
         )
+        .route(paths::USERNAME_ROUTE, post(claim_username))
+        .route(paths::USERNAME_LOOKUP_ROUTE, get(lookup_username))
         .with_state(storage)
 }
 
@@ -166,4 +196,43 @@ async fn lookup_endpoint_addr(
         .transpose()?;
 
     Ok(Json(addr))
+}
+
+/// Request body for `POST /v1/devices/{device_id}/username` — just the
+/// desired username, validated by `crate::username::validate` (via
+/// `Storage::claim_username`) before it's ever written to storage.
+#[derive(Debug, serde::Deserialize)]
+struct ClaimUsernameRequest {
+    username: String,
+}
+
+async fn claim_username(
+    State(storage): State<Arc<Storage>>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let now = now_unix();
+    let path = paths::username_path(&device_id);
+    authenticate(&storage, "POST", &path, &device_id, &headers, &body, now)?;
+
+    let request: ClaimUsernameRequest =
+        serde_json::from_slice(&body).map_err(|e| ApiError::BadBody(e.to_string()))?;
+
+    tokio::task::spawn_blocking(move || storage.claim_username(&device_id, &request.username, now))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))??;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn lookup_username(
+    State(storage): State<Arc<Storage>>,
+    Path(username): Path<String>,
+) -> Result<Json<Option<String>>, ApiError> {
+    let device_id = tokio::task::spawn_blocking(move || storage.lookup_username(&username))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))??;
+
+    Ok(Json(device_id))
 }

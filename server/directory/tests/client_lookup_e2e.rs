@@ -32,6 +32,16 @@
 //! exercising them for real against a real server proves the underlying
 //! path `client` calls into, without needing to drive Slint's event loop
 //! from a test harness.
+//!
+//! Further down, `device_b_finds_device_a_purely_by_username_and_sends_a_real_encrypted_message`
+//! proves the same end-to-end path for usernames (added alongside DeviceId
+//! lookup this session — see `ankai_directory_server::username` and
+//! `client/src/directory.rs::lookup_peer_invite_by_username`): device A
+//! claims a username with a real signed request, device B resolves *only*
+//! that username (never learning A's raw `DeviceId` out-of-band) to a real
+//! `PeerInvite` and sends a real MLS-encrypted message with it — the exact
+//! same rigor bar as the DeviceId case above, not a lighter-weight stand-in
+//! for it.
 
 use std::sync::{Arc, Mutex};
 
@@ -276,5 +286,161 @@ async fn looking_up_a_device_that_never_published_yields_no_invite_not_an_error(
         result.is_none(),
         "an unpublished DeviceId should yield None, not an error — the manual-paste fallback \
          remains the only option for a peer who hasn't (yet) used the directory"
+    );
+}
+
+/// The same two-step resolution `client/src/directory.rs::lookup_peer_invite_by_username`
+/// performs — kept inline here for the same reason
+/// `lookup_peer_invite_via_directory` above is: this crate can't import the
+/// binary-only `client` crate, so this proves the real network path that
+/// function drives, using the same calls and producing the same shape.
+async fn lookup_peer_invite_by_username_via_directory(
+    looker: &HttpDirectoryClient,
+    username: &str,
+) -> Option<PeerInvite> {
+    let device_id = looker
+        .lookup_username(username)
+        .await
+        .expect("lookup_username should succeed against a real running server")?;
+    lookup_peer_invite_via_directory(looker, &device_id).await
+}
+
+#[tokio::test]
+async fn device_b_finds_device_a_purely_by_username_and_sends_a_real_encrypted_message() {
+    let base_url = spawn_test_server().await;
+
+    // --- Device A: claims a username and publishes to the real server,
+    // then just listens. Same setup as the DeviceId-lookup test above, plus
+    // one real signed claim_username call. ---
+    let a = spin_up_installation();
+    let a_node = P2pNode::bind().await.expect("A's node should bind");
+    let a_addr = a_node.addr();
+
+    let a_published_key_package = create_key_package(&a.device, &a.provider)
+        .expect("A should build a real KeyPackage")
+        .key_package
+        .expect("create_key_package always returns Some");
+    a.provider.flush(&a.db).expect("A's flush should succeed");
+
+    let a_directory_client =
+        HttpDirectoryClient::new(base_url.clone(), a.device.id.clone(), a.signer);
+    a_directory_client
+        .claim_username(&a.device.id, "ash_ketchum")
+        .await
+        .expect("A's real signed claim_username should succeed against the real server");
+    a_directory_client
+        .publish_key_package(&a.device.id, a_published_key_package.clone())
+        .await
+        .expect("A's real signed publish_key_package should succeed against the real server");
+    a_directory_client
+        .publish_endpoint_addr(&a.device.id, a_addr.clone())
+        .await
+        .expect("A's real signed publish_endpoint_addr should succeed against the real server");
+
+    // A's real receive side: decrypts (or joins, for the Welcome) whatever
+    // arrives and records genuinely decrypted messages.
+    let a_received = Arc::new(Mutex::new(Vec::<ReceivedMessage>::new()));
+    let a_received_for_loop = a_received.clone();
+    let a_db = a.db;
+    let a_provider = a.provider;
+    let a_accept_task = tokio::spawn(async move {
+        receive_messages(&a_node, move |from, bytes| {
+            match decrypt_incoming(&a_db, &a_provider, from, bytes) {
+                Ok(Some(msg)) => {
+                    a_provider.flush(&a_db).unwrap();
+                    a_received_for_loop.lock().unwrap().push(msg);
+                }
+                Ok(None) => {
+                    a_provider.flush(&a_db).unwrap();
+                }
+                Err(e) => panic!("A failed to process an incoming message: {e}"),
+            }
+        })
+        .await
+        .unwrap();
+    });
+
+    // --- Device B: never received anything from A out-of-band, and never
+    // even learns A's raw DeviceId directly — it only knows A's claimed
+    // username "ash_ketchum" (as if a human had typed it into the "Peer's
+    // username" field client/ui/app.slint gained this session) and
+    // resolves everything else from the real directory server over real
+    // HTTP: username -> DeviceId -> KeyPackage/EndpointAddr. ---
+    let b = spin_up_installation();
+    let b_directory_client =
+        HttpDirectoryClient::new(base_url.clone(), b.device.id.clone(), b.signer);
+
+    let invite = lookup_peer_invite_by_username_via_directory(&b_directory_client, "ash_ketchum")
+        .await
+        .expect("B should find a real PeerInvite for A purely from A's claimed username");
+    assert_eq!(
+        invite.addr, a_addr,
+        "the EndpointAddr B found via the username lookup must be A's real address"
+    );
+    assert_eq!(
+        invite.key_package, a_published_key_package,
+        "the KeyPackage B found via the username lookup must be A's real published one"
+    );
+
+    // Exactly the same PeerInvite shape a DeviceId-sourced (or manually
+    // pasted) one would produce — nothing about the username-sourced path
+    // forks how the invite is represented or consumed downstream.
+    let round_tripped = parse_peer_invite(&format_peer_invite(&invite).unwrap()).unwrap();
+    assert_eq!(round_tripped.addr, invite.addr);
+    assert_eq!(round_tripped.key_package, invite.key_package);
+
+    // B sends a real MLS-encrypted message using *only* what the
+    // username-sourced invite gave it — the real group-setup/encrypt path
+    // from core::messaging, completely unmodified for this new source.
+    let b_node = P2pNode::bind().await.expect("B's node should bind");
+    let payloads = encrypt_and_log_outgoing(
+        &b.db,
+        &b.provider,
+        &b.device,
+        &invite,
+        "hello A, found you by your username",
+    )
+    .expect("B should be able to encrypt a real MLS message to A");
+    b.provider.flush(&b.db).expect("B's flush should succeed");
+    assert_eq!(
+        payloads.len(),
+        2,
+        "first contact should still produce a Welcome plus the application message"
+    );
+
+    for payload in &payloads {
+        send_message(&b_node, invite.addr.clone(), payload)
+            .await
+            .expect("B's real P2P send to A should succeed");
+    }
+
+    let received = a_received.lock().unwrap().clone();
+    assert_eq!(
+        received.len(),
+        1,
+        "A should have decrypted exactly one real application message"
+    );
+    assert_eq!(received[0].text, "hello A, found you by your username");
+    assert_eq!(
+        received[0].from,
+        b_node.addr().id,
+        "A should see the message as having come from B's real EndpointId"
+    );
+
+    a_accept_task.abort();
+    b_node.close().await;
+}
+
+#[tokio::test]
+async fn looking_up_a_username_nobody_claimed_yields_no_invite_not_an_error() {
+    let base_url = spawn_test_server().await;
+    let b = spin_up_installation();
+    let b_directory_client = HttpDirectoryClient::new(base_url, b.device.id.clone(), b.signer);
+
+    let result =
+        lookup_peer_invite_by_username_via_directory(&b_directory_client, "nobody_has_this").await;
+    assert!(
+        result.is_none(),
+        "an unclaimed username should yield None, not an error"
     );
 }

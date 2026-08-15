@@ -135,6 +135,26 @@ export component AppWindow inherits Window {
     in-out property <string> lookup-status: "";
     callback lookup-peer-by-device-id(string);
 
+    // Human-readable, device-scoped usernames (see
+    // ankai_directory_server::username's module doc comment for the
+    // device-scoped-not-account-scoped limitation and the validation rule:
+    // lowercase letters/digits/underscores, 3-20 characters). Only
+    // meaningful when directory-enabled — a username is a directory-server
+    // concept, unlike display-name which is purely local. claimed-username
+    // is loaded from local settings at startup (main.rs saves it there on a
+    // successful claim, purely so the field has something to show on the
+    // next run — the directory server remains the actual source of truth
+    // for who owns it). Peer-username-input feeds
+    // lookup-peer-by-username, which resolves to a DeviceId and then goes
+    // through the exact same lookup-by-DeviceId -> peer-address-input path
+    // as lookup-peer-by-device-id above — not a separate send path.
+    in-out property <string> username-input: "";
+    in property <string> claimed-username: "";
+    in-out property <string> username-status: "";
+    callback claim-username(string);
+    in-out property <string> peer-username-input: "";
+    callback lookup-peer-by-username(string);
+
     // Backed by core::hangouts (see that module's doc comment for what a
     // "Hangout" is and isn't yet — local-only hosting metadata, no real-time
     // sync, no media playback, no participants). main.rs loads the initial
@@ -420,6 +440,34 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    Text {
+                        text: "Or by their username, if they've claimed one:";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        LineEdit {
+                            width: 340px;
+                            placeholder-text: "Peer's username";
+                            text <=> root.peer-username-input;
+                            accepted => {
+                                root.lookup-peer-by-username(root.peer-username-input);
+                            }
+                        }
+
+                        Button {
+                            text: "Look up";
+                            clicked => {
+                                root.lookup-peer-by-username(root.peer-username-input);
+                            }
+                        }
+                    }
+
                     if root.lookup-status != "": Text {
                         text: root.lookup-status;
                         color: Theme.state-busy;
@@ -681,6 +729,57 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.save-display-name(root.display-name);
                         }
+                    }
+                }
+
+                if root.directory-enabled: VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Directory username (experimental — directory server configured)";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    Text {
+                        text: "Unlike display name, this is claimed on the directory server and unique across everyone who uses it — first to claim a name keeps it, and only this device can change it once claimed. Lowercase letters, digits, and underscores only, 3-20 characters. Tied to this device only for now, not a person/account (ANKAI has no multi-device model yet).";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.claimed-username != "": Text {
+                        text: "Currently claimed: " + root.claimed-username;
+                        color: Theme.text-primary;
+                        font-size: 13px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        LineEdit {
+                            width: 240px;
+                            placeholder-text: "e.g. ash_ketchum";
+                            text <=> root.username-input;
+                            accepted => {
+                                root.claim-username(root.username-input);
+                            }
+                        }
+
+                        Button {
+                            text: "Claim";
+                            clicked => {
+                                root.claim-username(root.username-input);
+                            }
+                        }
+                    }
+
+                    if root.username-status != "": Text {
+                        text: root.username-status;
+                        color: Theme.state-busy;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                 }
             }
