@@ -99,11 +99,7 @@
 //!
 //! ## Storage
 //!
-//! Two new tables (migration 9 in this integrated tree — this module was
-//! developed concurrently with `core::anime` in a sibling worktree, where
-//! both independently claimed migration version 8; renumbered here to 9
-//! purely to avoid a version collision when combining them, no schema/logic
-//! change, see `db.rs`): `friend_requests` (pending
+//! Two new tables (migration 8, see `db.rs`): `friend_requests` (pending
 //! *incoming* requests only — there is no "requests I sent" list, see
 //! below) and `friends` (accepted). Both store the same shape of contact
 //! info ([`Friend`]): the peer's `DeviceId`/`AccountId`, its last-known
