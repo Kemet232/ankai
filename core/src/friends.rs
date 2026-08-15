@@ -99,7 +99,7 @@
 //!
 //! ## Storage
 //!
-//! Two new tables (migration 9, see `db.rs`): `friend_requests` (pending
+//! Two new tables (migration 8, see `db.rs`): `friend_requests` (pending
 //! *incoming* requests only — there is no "requests I sent" list, see
 //! below) and `friends` (accepted). Both store the same shape of contact
 //! info ([`Friend`]): the peer's `DeviceId`/`AccountId`, its last-known
