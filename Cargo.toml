@@ -4,6 +4,7 @@ members = [
     "client",
     "core",
     "tools/nat-probe",
+    "tools/webrtc-audio-probe",
 ]
 
 [workspace.package]
@@ -55,3 +56,36 @@ iroh = "1"
 # `macros` for #[tokio::main]/#[tokio::test], `io-util` for the
 # AsyncRead/AsyncWriteExt trait methods iroh's send/recv streams implement.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+# Real-time audio/video media stack, per docs/adr/0003-p2p-networking-stack.md's
+# "Real-time media: WebRTC" decision. Used only by `tools/webrtc-audio-probe`
+# (ADR-0003 spike 2), not by `core`/`client` yet. `webrtc` is the async-friendly
+# wrapper crate; `rtc` (below) is its Sans I/O core, which application code also
+# needs directly for media-engine/codec/SDP/stats types — see webrtc-rs's own
+# examples, which import from both crates side by side. Pinned to the "0.20"
+# line the ADR calls out by name ("start with webrtc-rs v0.20"); 0.20.2 is the
+# actual latest stable at the time this was added (0.21 exists only as an
+# alpha).
+webrtc = "0.20"
+# See `webrtc`'s comment above — webrtc-rs v0.20's Sans I/O core crate,
+# depended on directly for `MediaEngine`/codec-registration/SDP/stats types.
+rtc = "0.20"
+# Real Opus encode/decode for `tools/webrtc-audio-probe`'s synthetic-tone
+# pipeline test (ADR-0003 spike 2) — webrtc-rs's `TrackLocalStaticSample`
+# packetizes already-encoded media, it does not encode audio itself. Safe Rust
+# bindings (MIT/Apache-2.0) over `audiopus_sys` (ISC), which vendors and
+# builds libopus's own C source at compile time (same "vendor + build,
+# no system package required" shape as `rusqlite`'s `bundled-sqlcipher`
+# above) — see this crate's own Cargo.toml doc comment for the one build-time
+# caveat that vendored build hits on modern CMake.
+opus = "0.3"
+# `Sample.data` (rtc_media's encoded-frame type, re-exported as `rtc::media::Sample`)
+# is a `bytes::Bytes`; used directly to wrap Opus-encoded frames without an
+# extra copy through a `Vec<u8>` conversion path. Already in the dependency
+# tree transitively via `webrtc`/`rtc`, so this adds no new crate.
+bytes = "1"
+# `webrtc`'s own `PeerConnectionEventHandler`/`PeerConnection` traits are
+# `#[async_trait]`-based (native async-fn-in-trait isn't dyn-compatible,
+# and both traits are used as `Arc<dyn ...>`), so an `impl
+# PeerConnectionEventHandler` needs the same macro on the impl block.
+# Already in the dependency tree transitively via `webrtc`/`rtc`.
+async-trait = "0.1"

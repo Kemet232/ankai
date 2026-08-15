@@ -1,0 +1,22 @@
+# Workspace-wide cargo config.
+#
+# [env] here is a narrow, single-purpose workaround, not a place to accumulate
+# general settings — see the one entry below for why it exists before adding
+# more.
+
+[env]
+# `tools/webrtc-audio-probe` depends on `opus` -> `audiopus_sys`, which
+# vendors libopus's own C source and builds it via CMake when no system
+# libopus is found via pkg-config (see audiopus_sys's build.rs) — the same
+# "vendor + build at compile time, no system package required" shape as
+# `rusqlite`'s `bundled-sqlcipher` feature already used elsewhere in this
+# workspace. The vendored libopus tree's `CMakeLists.txt` was last touched in
+# 2021 and declares `cmake_minimum_required(VERSION 2.8.6)`; CMake 4.x removed
+# compatibility with `cmake_minimum_required` below 3.5 entirely, so building
+# with any modern CMake fails at the configure step with "Compatibility with
+# CMake < 3.5 has been removed from CMake" unless told otherwise. This is
+# CMake's own documented escape hatch for exactly this situation — see
+# https://cmake.org/cmake/help/latest/envvar/CMAKE_POLICY_VERSION_MINIMUM.html
+# — not a workaround invented here. Harmless to every other crate in this
+# workspace: nothing else here invokes CMake.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
