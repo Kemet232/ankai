@@ -134,6 +134,7 @@ ignore = [
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: unmaintained notice, deep transitive dep via openmls_rust_crypto's libcrux/hax-lib chain; not a vulnerability" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz: unmaintained notice, transitive via Slint's usvg/resvg SVG rendering stack; not a vulnerability" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained notice, transitive via Slint's usvg/resvg/fontdb stack; not a vulnerability" },
+    { id = "RUSTSEC-2026-0150", reason = "audiopus_sys: unmaintained notice (last commit ~5 years ago, maintainer unresponsive), transitive via tools/webrtc-audio-probe's opus dependency (ADR-0003 spike 2); not a vulnerability. The advisory itself is specifically about the vendored libopus tree's CMakeLists.txt predating CMake's removal of pre-3.5 policy support — see this workspace's own .cargo/config.toml CMAKE_POLICY_VERSION_MINIMUM workaround for the same issue, hit independently while building this crate. No maintained alternative Opus binding exists on crates.io as of this writing (see tools/webrtc-audio-probe/Cargo.toml)." },
 ]
 
 # ---------------------------------------------------------------------------

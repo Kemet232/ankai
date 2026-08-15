@@ -460,3 +460,70 @@ several, across genuinely different networks) actually runs `nat-probe`
 in the real world and reports back what it saw — see `PROGRESS.md` for
 that precedent. Until then this line item stays open and this ADR remains
 `Proposed`, not `Accepted`, on spike 1's account same as before.
+
+### Spike 2 status (WebRTC audio/E2EE prototype) — mechanism proven end-to-end on loopback, quality/multi-OS/E2E-through-SFU still unstarted, 2026-08-15
+
+The two-process `webrtc-rs` v0.20 prototype this spike calls for now exists
+at `tools/webrtc-audio-probe/`. Run as two separate processes on the same
+machine (offer/answer roles, manual copy-pasted SDP — see the tool's own
+module doc comment and `--help` output), it builds a real
+`RTCPeerConnection` on each side, exchanges real ICE candidates and a real
+DTLS handshake, and — once connected — encodes a synthetic sine tone to
+real Opus, sends it as real RTP over the DTLS-SRTP-secured transport, and
+decodes what the other side sent. A repeated, clean run confirms both
+sides reach `RTCPeerConnectionState::Connected`; `get_stats()` reports
+`dtls_state=Connected`, cipher `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`,
+`srtp_cipher=SRTP_AEAD_AES_128_GCM` on both sides — i.e., encryption is
+confirmed active, not assumed; and both sides' programmatic audio check
+(RMS energy + zero-crossing frequency estimate against the known tone the
+peer was sending) reports `result=PASS` — offer received the answer's
+660Hz tone back as `estimated_freq_hz=659.3`, answer received the offer's
+440Hz tone back as `estimated_freq_hz=440.3`, both well inside the
+tolerance band. So: SDP negotiation, ICE, DTLS-SRTP, real Opus encode/RTP
+send/RTP receive/Opus decode all work, and are proven to work by
+programmatic checks reading real transport/audio state, not by the tool's
+own say-so.
+
+**How an earlier attempt at this same test appeared to hang, and what
+that turned out to be.** A first pass at running this tool end-to-end (in
+this same environment) had both sides reach `Connecting` but neither ever
+reach `Connected`, timing out after the tool's own 20-second
+`CONNECT_TIMEOUT`. That looked like it could be a real ICE/DTLS bug, or an
+environment-level UDP block. It was neither: it was the manual test
+*harness* relaying the SDP between the two processes, not the tool. This
+prototype's SDP offer/answer is plain text containing literal `\r\n`
+sequences (SDP's own line-ending convention, JSON-escaped as `\r\n`
+characters when the tool serializes the session description to print
+it). The harness used `zsh`'s `echo` builtin to pipe the pasted SDP line
+into the peer process's stdin; `zsh`'s `echo`, unlike `printf`, interprets
+backslash escapes by default, so it silently rewrote those `\r\n`
+sequences into literal carriage-return/newline bytes mid-string. That
+truncated (or otherwise corrupted) the SDP the receiving side actually
+parsed — sometimes failing JSON parsing outright, sometimes leaving just
+enough of the ICE fields intact for ICE to connect while corrupting the
+DTLS fingerprint further down the SDP, which would explain reaching
+`Connecting` (ICE succeeds) but never `Connected` (DTLS never completes
+because the peer's fingerprint didn't check out). Switching the harness
+to `printf '%s\n' "$LINE"` (which does not interpret backslash escapes in
+its arguments) fixed it immediately and reproducibly across repeated
+runs. Nothing in `tools/webrtc-audio-probe/src/main.rs` changed to fix
+this — the bug was never in the tool. This is worth recording here
+because anyone manually relaying this tool's SDP lines through a `zsh`
+(or similarly escape-happy shell) `echo` will hit the identical false
+"connection hangs" symptom.
+
+**This does not close spike 2.** What the spike's own text asks for is
+validating "acceptable echo cancellation and noise suppression on
+ANKAI's target desktop OSes" and proving out "frame-level E2E encryption
+through an SFU without breaking AEC or the jitter buffer." Neither is
+touched here, deliberately, per this tool's own module doc comment:
+subjective audio quality needs a human listening on real hardware in a
+real acoustic environment (a sine-tone loopback test proves the pipeline
+carries audio correctly, not that AEC/NS sound good), frame-level E2E
+through an SFU is real, separate, unstarted work (there is no SFU here —
+this is a direct two-peer test), and only macOS has been run/verified so
+far — Windows/Linux are unstarted. Spike 2 was called out as "the
+highest-risk item in the whole ADR" precisely because of the quality
+question, and that question is still open. This line item stays open and
+this ADR remains `Proposed`, not `Accepted`, on spike 2's account same as
+spike 1's.

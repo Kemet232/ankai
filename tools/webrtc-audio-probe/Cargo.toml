@@ -1,0 +1,30 @@
+[package]
+name = "webrtc-audio-probe"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "webrtc-audio-probe"
+path = "src/main.rs"
+
+[dependencies]
+# The real-media stack this spike exists to validate — see
+# docs/adr/0003-p2p-networking-stack.md, "Spikes to run before this is fully
+# load-bearing," item 2, and this crate's own module doc comment.
+webrtc.workspace = true
+rtc.workspace = true
+# Real Opus encode/decode — webrtc-rs packetizes already-encoded media, it
+# does not encode/decode audio itself.
+opus.workspace = true
+bytes.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+# Random SSRCs for the local audio track/encoding, same pattern webrtc-rs's
+# own examples use (`rand::random::<u32>()`).
+rand.workspace = true
+# `time` on top of the workspace's base feature set: this tool sleeps between
+# encoded frames and times out the offer/answer + connect handshake, neither
+# of which `ankai-core`'s other tokio consumers need.
+tokio = { workspace = true, features = ["time"] }
