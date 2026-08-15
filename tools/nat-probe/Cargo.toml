@@ -1,0 +1,27 @@
+[package]
+name = "nat-probe"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nat-probe"
+path = "src/main.rs"
+
+[dependencies]
+# Real relay/discovery-capable preset (`presets::N0`), deliberately different
+# from `ankai-core::p2p`'s `Minimal` preset — see this crate's module doc
+# comment for why. Same underlying `iroh` crate/feature set as `ankai-core`
+# already depends on, so this does not add new transitive dependencies (or
+# new license-scan surface) beyond what session 5's P2P scaffolding already
+# introduced.
+iroh.workspace = true
+# `time` on top of the workspace's base feature set: this tool wraps
+# `Endpoint::online()` and the connect/ping calls in timeouts so it fails
+# fast instead of hanging forever in a no-relay-reachable environment
+# (sandboxes, offline dev machines) — `ankai-core::p2p` doesn't need this
+# since its `Minimal` preset never waits on a relay in the first place.
+tokio = { workspace = true, features = ["time"] }
+serde.workspace = true
+serde_json.workspace = true
