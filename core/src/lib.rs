@@ -16,6 +16,7 @@ pub mod messaging;
 pub mod mls_provider;
 pub mod p2p;
 pub mod protocol;
+pub mod top8;
 pub mod util;
 
 pub use error::Error;

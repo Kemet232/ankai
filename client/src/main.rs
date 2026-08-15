@@ -71,6 +71,50 @@ fn open_local_db() -> ankai_core::db::Db {
         .expect("failed to open local encrypted database")
 }
 
+/// Recomputes the Profile pane's Top 8 UI state (`featured-communities`/
+/// `unfeatured-communities`) fresh from `core::top8`/`core::communities` and
+/// pushes it into the running `AppWindow`. Called once at startup and again
+/// after every mutating Top 8 callback below — simplest way to keep the two
+/// lists (featured vs. everything else) consistent with each other and with
+/// the real persisted state, without hand-rolling incremental model diffs
+/// for what is, in practice, an infrequent user action.
+fn refresh_top8(app: &AppWindow, db: &ankai_core::db::Db) {
+    let all_communities = ankai_core::communities::list(db).unwrap_or_else(|err| {
+        eprintln!("ankai-client: failed to list communities for top8 refresh: {err}");
+        Vec::new()
+    });
+    let featured = ankai_core::top8::get_top8(db).unwrap_or_else(|err| {
+        eprintln!("ankai-client: failed to load top8: {err}");
+        Vec::new()
+    });
+
+    let featured_ids: std::collections::HashSet<String> =
+        featured.iter().map(|c| c.id.clone()).collect();
+
+    let featured_refs: Vec<CommunityRef> = featured
+        .into_iter()
+        .map(|c| CommunityRef {
+            id: c.id.into(),
+            name: c.name.into(),
+        })
+        .collect();
+    let unfeatured_refs: Vec<CommunityRef> = all_communities
+        .into_iter()
+        .filter(|c| !featured_ids.contains(c.id.as_str()))
+        .map(|c| CommunityRef {
+            id: c.id.into(),
+            name: c.name.into(),
+        })
+        .collect();
+
+    app.set_featured_communities(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        featured_refs,
+    ))));
+    app.set_unfeatured_communities(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        unfeatured_refs,
+    ))));
+}
+
 /// Truncates a `messaging::peer_id_for`-style hex peer id to a short,
 /// display-friendly prefix — the same idea as iroh's own `fmt_short`, for
 /// the string peer ids this module works with instead of raw `EndpointId`s.
@@ -167,6 +211,10 @@ fn main() -> Result<(), slint::PlatformError> {
                 community_id_model.push(community.id.into());
                 if let Some(app) = app_weak.upgrade() {
                     app.set_new_community_name("".into());
+                    // A newly created community isn't featured yet, but it
+                    // should immediately show up as an "add to Top 8"
+                    // candidate on the Profile pane.
+                    refresh_top8(&app, &db_for_communities);
                 }
             }
             Err(err) => eprintln!("ankai-client: failed to create community: {err}"),
@@ -224,6 +272,60 @@ fn main() -> Result<(), slint::PlatformError> {
             Err(err) => {
                 eprintln!("ankai-client: failed to create post in community {community_id}: {err}")
             }
+        }
+    });
+
+    // Top 8 featured communities (core::top8): see that module's doc
+    // comment and app.slint's featured-communities/unfeatured-communities
+    // properties for full scope. Each callback here does the real core
+    // mutation, then recomputes both lists from scratch via refresh_top8 —
+    // same "real callback -> real core call -> real persisted state" shape
+    // as Settings' display-name field and Communities' create button, just
+    // with a full-state refresh instead of an incremental model push since
+    // reordering/removal can touch more than one row at once.
+    refresh_top8(&app, &db);
+
+    let db_for_feature = db.clone();
+    let app_weak_for_feature = app.as_weak();
+    app.on_feature_community(move |community_id| {
+        if let Err(err) = ankai_core::top8::add_to_top8(&db_for_feature, &community_id) {
+            eprintln!("ankai-client: failed to feature community: {err}");
+        }
+        if let Some(app) = app_weak_for_feature.upgrade() {
+            refresh_top8(&app, &db_for_feature);
+        }
+    });
+
+    let db_for_unfeature = db.clone();
+    let app_weak_for_unfeature = app.as_weak();
+    app.on_unfeature_community(move |community_id| {
+        if let Err(err) = ankai_core::top8::remove_from_top8(&db_for_unfeature, &community_id) {
+            eprintln!("ankai-client: failed to unfeature community: {err}");
+        }
+        if let Some(app) = app_weak_for_unfeature.upgrade() {
+            refresh_top8(&app, &db_for_unfeature);
+        }
+    });
+
+    let db_for_move_up = db.clone();
+    let app_weak_for_move_up = app.as_weak();
+    app.on_move_featured_community_up(move |community_id| {
+        if let Err(err) = ankai_core::top8::move_up(&db_for_move_up, &community_id) {
+            eprintln!("ankai-client: failed to move featured community up: {err}");
+        }
+        if let Some(app) = app_weak_for_move_up.upgrade() {
+            refresh_top8(&app, &db_for_move_up);
+        }
+    });
+
+    let db_for_move_down = db.clone();
+    let app_weak_for_move_down = app.as_weak();
+    app.on_move_featured_community_down(move |community_id| {
+        if let Err(err) = ankai_core::top8::move_down(&db_for_move_down, &community_id) {
+            eprintln!("ankai-client: failed to move featured community down: {err}");
+        }
+        if let Some(app) = app_weak_for_move_down.upgrade() {
+            refresh_top8(&app, &db_for_move_down);
         }
     });
 
