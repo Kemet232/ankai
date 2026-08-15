@@ -17,8 +17,7 @@ fn main() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"),
     );
-    let out_dir =
-        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+    let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR not set"));
     let demo_input = manifest_dir.join("ui/floating-panel-demo.slint");
     let demo_output = out_dir.join("floating_panel_demo.rs");
     slint_build::compile_with_output_path(
