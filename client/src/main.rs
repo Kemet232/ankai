@@ -19,6 +19,8 @@
 
 slint::include_modules!();
 
+use slint::Model;
+
 /// Opens (creating if necessary) ANKAI's local encrypted database in this
 /// platform's standard app-data directory, keyed by the device-local
 /// passphrase from `ankai_core::keychain` (OS secure storage, per
@@ -116,6 +118,105 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             Err(err) => eprintln!("ankai-client: failed to create community: {err}"),
         }
+    });
+
+    // P2P messaging (ankai_core::p2p / ankai_core::messaging) — see those
+    // modules' doc comments for what this stub deliberately does not do yet
+    // (no discovery, no E2EE beyond QUIC transport encryption, no
+    // persistence — messages live only in message_log's in-memory model for
+    // this run). Slint's event loop owns the main thread and is not async,
+    // so a dedicated tokio runtime drives the networking; the two talk to
+    // each other via `slint::Weak` (documented `Send`) and
+    // `slint::invoke_from_event_loop`, never by sharing UI model types
+    // across threads.
+    let p2p_runtime = tokio::runtime::Runtime::new().expect("failed to start P2P runtime");
+    let p2p_node = std::sync::Arc::new(
+        p2p_runtime
+            .block_on(ankai_core::p2p::P2pNode::bind())
+            .expect("failed to bind local P2P endpoint"),
+    );
+
+    let own_peer_address = ankai_core::messaging::format_peer_address(&p2p_node.addr())
+        .expect("failed to encode own P2P address");
+    app.set_own_peer_address(own_peer_address.into());
+
+    let message_log_model =
+        std::rc::Rc::new(slint::VecModel::from(Vec::<slint::SharedString>::new()));
+    app.set_message_log(slint::ModelRc::from(message_log_model));
+
+    // Background receive loop, spawned for the lifetime of the app. Each
+    // incoming message is handed to the UI thread via invoke_from_event_loop
+    // rather than touched directly here, since Slint's model types aren't
+    // Send and this closure runs on a tokio worker thread.
+    let node_for_accept = p2p_node.clone();
+    let app_weak_for_accept = app.as_weak();
+    p2p_runtime.spawn(async move {
+        let result = ankai_core::messaging::receive_messages(&node_for_accept, move |msg| {
+            let app_weak = app_weak_for_accept.clone();
+            let line = format!("{}: {}", msg.from.fmt_short(), msg.text);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = app_weak.upgrade() {
+                    if let Some(model) = app
+                        .get_message_log()
+                        .as_any()
+                        .downcast_ref::<slint::VecModel<slint::SharedString>>()
+                    {
+                        model.insert(0, line.into());
+                    }
+                }
+            });
+        })
+        .await;
+        if let Err(err) = result {
+            eprintln!("ankai-client: message receive loop ended: {err}");
+        }
+    });
+
+    let node_for_send = p2p_node.clone();
+    let app_weak_for_send = app.as_weak();
+    let p2p_handle = p2p_runtime.handle().clone();
+    app.on_send_message(move |peer_address_text, message_text| {
+        let message_text = message_text.trim().to_string();
+        if message_text.is_empty() {
+            return;
+        }
+
+        let addr = match ankai_core::messaging::parse_peer_address(&peer_address_text) {
+            Ok(addr) => addr,
+            Err(err) => {
+                if let Some(app) = app_weak_for_send.upgrade() {
+                    app.set_send_status(format!("Couldn't parse peer address: {err}").into());
+                }
+                return;
+            }
+        };
+
+        let node = node_for_send.clone();
+        let app_weak = app_weak_for_send.clone();
+        p2p_handle.spawn(async move {
+            let result = ankai_core::messaging::send_message(&node, addr, &message_text).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(app) = app_weak.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok(()) => {
+                        app.set_send_status("".into());
+                        app.set_message_input("".into());
+                        if let Some(model) = app
+                            .get_message_log()
+                            .as_any()
+                            .downcast_ref::<slint::VecModel<slint::SharedString>>()
+                        {
+                            model.insert(0, format!("you: {message_text}").into());
+                        }
+                    }
+                    Err(err) => {
+                        app.set_send_status(format!("Failed to send: {err}").into());
+                    }
+                }
+            });
+        });
     });
 
     app.run()

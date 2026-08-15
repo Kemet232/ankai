@@ -37,6 +37,7 @@ export component AppWindow inherits Window {
     ];
     property <int> selected-index: 0;
     property <int> profile-index: 0; // index of "Profile" in nav-items, above
+    property <int> messages-index: 1; // index of "Messages" in nav-items, above
     property <int> communities-index: 2; // index of "Communities" in nav-items, above
     property <int> settings-index: 4; // index of "Settings" in nav-items, above
 
@@ -58,6 +59,19 @@ export component AppWindow inherits Window {
     in-out property <[string]> community-names: [];
     in-out property <string> new-community-name: "";
     callback create-community(string);
+
+    // Backed by core::messaging (see that module's doc comment for what this
+    // deliberately is and isn't yet — one pasted peer address at a time, no
+    // discovery, no E2EE, in-memory only). own-peer-address is this device's
+    // own dialable address (set once at startup) for the user to hand to a
+    // peer out-of-band; message-log is most-recent-first and grows both from
+    // send-message and from a background receive loop pushing into it.
+    in property <string> own-peer-address: "";
+    in-out property <string> peer-address-input: "";
+    in-out property <string> message-input: "";
+    in-out property <string> send-status: "";
+    in-out property <[string]> message-log: [];
+    callback send-message(string, string);
 
     HorizontalLayout {
         // ---- Sidebar: persistent nav destinations ----
@@ -111,7 +125,7 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
@@ -162,6 +176,98 @@ export component AppWindow inherits Window {
                         color: Theme.text-primary;
                         font-size: 14px;
                     }
+                }
+            }
+
+            if root.selected-index == root.messages-index: VerticalLayout {
+                padding: 32px;
+                spacing: 16px;
+                alignment: start;
+
+                Text {
+                    text: "Messages";
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "This is a stub: no discovery, no encryption beyond the transport itself. Share your address below with a peer out-of-band, paste theirs in, and send plaintext.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Your address (share this with a peer)";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    LineEdit {
+                        width: 500px;
+                        read-only: true;
+                        text: root.own-peer-address;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Peer's address";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    LineEdit {
+                        width: 500px;
+                        placeholder-text: "Paste a peer's address here";
+                        text <=> root.peer-address-input;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    LineEdit {
+                        width: 340px;
+                        placeholder-text: "Type a message";
+                        text <=> root.message-input;
+                        accepted => {
+                            root.send-message(root.peer-address-input, root.message-input);
+                        }
+                    }
+
+                    Button {
+                        text: "Send";
+                        clicked => {
+                            root.send-message(root.peer-address-input, root.message-input);
+                        }
+                    }
+                }
+
+                if root.send-status != "": Text {
+                    text: root.send-status;
+                    color: Theme.state-busy;
+                    font-size: 12px;
+                }
+
+                Text {
+                    text: "Messages (most recent first, in-memory only)";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                }
+
+                for entry in root.message-log: Text {
+                    text: "• " + entry;
+                    color: Theme.text-secondary;
+                    font-size: 14px;
+                    wrap: word-wrap;
                 }
             }
 
