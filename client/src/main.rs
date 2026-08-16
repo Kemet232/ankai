@@ -31,6 +31,7 @@ mod floating_panel_demo {
 
 mod directory;
 mod images;
+mod playback;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -80,6 +81,7 @@ thread_local! {
     static STREMIO_MEDIA: RefCell<Vec<ankai_core::stremio::MetaPreview>> = const { RefCell::new(Vec::new()) };
     static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
     static STREMIO_CLIENT: RefCell<Option<ankai_core::stremio::AddonClient>> = const { RefCell::new(None) };
+    static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
 }
 
 /// A time-of-day-appropriate greeting prefix for the Home dashboard's
@@ -1776,6 +1778,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status("Loading addon manifest…".into());
             }
+            let image_handle = runtime.clone();
             runtime.spawn(async move {
                 let result = async {
                     let client = ankai_core::stremio::AddonClient::new(&url)?;
@@ -1793,30 +1796,33 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
                     match result {
                         Ok((client, addon_name, catalog_name, media)) => {
-                            let names = media
+                            let cards = media
                                 .iter()
-                                .map(|item| item.name.clone().into())
-                                .collect::<Vec<slint::SharedString>>();
-                            let details = media
-                                .iter()
-                                .map(|item| {
-                                    format!(
+                                .map(|item| StremioMediaRef {
+                                    title: item.name.clone().into(),
+                                    detail: format!(
                                         "{} · {}",
                                         item.media_type,
                                         item.release_info.as_deref().unwrap_or("Unknown release")
                                     )
-                                    .into()
+                                    .into(),
+                                    poster: slint::Image::default(),
+                                    has_poster: false,
                                 })
-                                .collect::<Vec<slint::SharedString>>();
+                                .collect::<Vec<_>>();
+                            let posters = media
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(index, item)| {
+                                    item.poster.clone().map(|url| (index, url))
+                                })
+                                .collect::<Vec<_>>();
                             STREMIO_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
                             STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
                             STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
                             app.set_stremio_addon_name(addon_name.into());
-                            app.set_stremio_media_names(slint::ModelRc::from(std::rc::Rc::new(
-                                slint::VecModel::from(names),
-                            )));
-                            app.set_stremio_media_details(slint::ModelRc::from(std::rc::Rc::new(
-                                slint::VecModel::from(details),
+                            app.set_stremio_media(slint::ModelRc::from(std::rc::Rc::new(
+                                slint::VecModel::from(cards),
                             )));
                             app.set_stremio_stream_names(slint::ModelRc::default());
                             app.set_stremio_selected_title("".into());
@@ -1828,6 +1834,28 @@ fn main() -> Result<(), slint::PlatformError> {
                                 )
                                 .into(),
                             );
+                            for (index, url) in posters {
+                                let app_weak = app.as_weak();
+                                images::load_cover_image(
+                                    url,
+                                    image_handle.clone(),
+                                    app_weak,
+                                    move |app, image| {
+                                        let model = app.get_stremio_media();
+                                        let Some(model) = model
+                                            .as_any()
+                                            .downcast_ref::<slint::VecModel<StremioMediaRef>>()
+                                        else {
+                                            return;
+                                        };
+                                        if let Some(mut row) = model.row_data(index) {
+                                            row.poster = image;
+                                            row.has_poster = true;
+                                            model.set_row_data(index, row);
+                                        }
+                                    },
+                                );
+                            }
                         }
                         Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
                     }
@@ -1901,7 +1929,19 @@ fn main() -> Result<(), slint::PlatformError> {
                 let streams = streams.borrow();
                 match streams.get(index as usize).map(|stream| stream.source()) {
                     Some(Ok(ankai_core::stremio::StreamSource::Direct(url))) => {
-                        format!("Direct stream selected: {url}")
+                        VIDEO_PLAYER.with(|slot| {
+                            let mut slot = slot.borrow_mut();
+                            if slot.is_none() {
+                                match playback::Player::new() {
+                                    Ok(player) => *slot = Some(player),
+                                    Err(err) => return format!("Error: {err}"),
+                                }
+                            }
+                            match slot.as_mut().unwrap().load(url) {
+                                Ok(()) => "Playing direct stream with bundled libmpv.".into(),
+                                Err(err) => format!("Error: {err}"),
+                            }
+                        })
                     }
                     Some(Ok(ankai_core::stremio::StreamSource::BitTorrent { .. })) => {
                         "Torrent stream selected; a torrent resolver is required before playback."

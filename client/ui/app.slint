@@ -106,6 +106,13 @@ export struct AnimeRef {
     has-cover: bool,
 }
 
+export struct StremioMediaRef {
+    title: string,
+    detail: string,
+    poster: image,
+    has-poster: bool,
+}
+
 // One entry in the "Hot Discussions" cross-community feed
 // (ankai_core::forum_posts::list_recent_across_communities) — a post's
 // content plus its real parent community's name, so a mixed feed can still
@@ -911,8 +918,7 @@ export component AppWindow inherits Window {
     in-out property <string> stremio-addon-url: "https://v3-cinemeta.strem.io/manifest.json";
     in-out property <string> stremio-addon-name: "";
     in-out property <string> stremio-status: "Enter an addon URL and load it.";
-    in-out property <[string]> stremio-media-names: [];
-    in-out property <[string]> stremio-media-details: [];
+    in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
     in-out property <string> stremio-selected-title: "";
     callback load-stremio-addon(string);
@@ -1162,6 +1168,15 @@ export component AppWindow inherits Window {
     // the real app). Declared before the HorizontalLayout below so it sits
     // behind everything (Slint draws siblings in declaration order).
     // ---------------------------------------------------------------
+    Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: @image-url("assets/ankai-night-city.png");
+        image-fit: cover;
+    }
+
     Rectangle {
         x: 0px;
         y: 0px;
@@ -1182,7 +1197,7 @@ export component AppWindow inherits Window {
         // backdrop-blur primitive, see that file's header comment), applied
         // here to the real app shell for the first time.
         Rectangle {
-            width: 220px;
+            width: 196px;
             background: Theme.bg-surface-raised.with-alpha(0.82);
             border-width: 1px;
             border-color: Theme.silver.with-alpha(0.16);
@@ -1207,7 +1222,7 @@ export component AppWindow inherits Window {
                 alignment: start;
 
                 Text {
-                    text: "ANKAI";
+                    text: "✦  ANKAI";
                     color: Theme.text-primary;
                     font-size: 20px;
                     font-weight: 700;
@@ -1234,11 +1249,11 @@ export component AppWindow inherits Window {
                     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
                     Text {
-                        x: 16px;
+                        x: 14px;
                         width: parent.width - 32px;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: item;
+                        text: (i == 0 ? "⌂  " : i == 1 ? "◉  " : i == 2 ? "✉  " : i == 3 ? "◇  " : i == 4 ? "▣  " : i == 5 ? "⚙  " : "▶  ") + item;
                         color: root.selected-index == i ? Theme.text-primary : Theme.text-secondary;
                         font-size: 14px;
                         font-weight: root.selected-index == i ? 600 : 400;
@@ -1257,7 +1272,7 @@ export component AppWindow inherits Window {
         // ---- Content pane: swapped based on selected nav item ----
         Rectangle {
             horizontal-stretch: 1;
-            background: Theme.bg-surface;
+            background: Theme.bg-surface.with-alpha(0.72);
 
             if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index && root.selected-index != root.watch-index: Text {
                 x: 32px;
@@ -2893,22 +2908,38 @@ export component AppWindow inherits Window {
                         font-weight: 700;
                     }
 
-                    for name[i] in root.stremio-media-names: Rectangle {
-                        height: 64px;
-                        border-radius: 12px;
-                        background: media-touch.has-hover ? Theme.silver.with-alpha(0.10) : Theme.bg-surface-raised.with-alpha(0.55);
-                        border-width: 1px;
-                        border-color: Theme.silver.with-alpha(0.12);
+                    ScrollView {
+                        height: 252px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            for media[i] in root.stremio-media: Rectangle {
+                                width: 142px;
+                                height: 232px;
+                                border-radius: 12px;
+                                clip: true;
+                                background: media-touch.has-hover ? Theme.accent-violet.with-alpha(0.20) : Theme.bg-surface-raised.with-alpha(0.75);
+                                border-width: 1px;
+                                border-color: media-touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.14);
 
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 3px;
-                            Text { text: name; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
-                            Text { text: root.stremio-media-details[i]; color: Theme.text-secondary; font-size: 11px; }
-                        }
-                        media-touch := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.open-stremio-media(i); }
+                                VerticalLayout {
+                                    spacing: 0px;
+                                    Rectangle {
+                                        height: 174px;
+                                        background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.38) 0%, Theme.bg-void 100%);
+                                        if media.has-poster: Image { source: media.poster; width: parent.width; height: parent.height; image-fit: cover; }
+                                        if !media.has-poster: Text { text: "ANKAI"; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    VerticalLayout {
+                                        padding: 8px;
+                                        spacing: 2px;
+                                        Text { text: media.title; color: Theme.text-primary; font-size: 12px; font-weight: 600; overflow: elide; }
+                                        Text { text: media.detail; color: Theme.text-secondary; font-size: 10px; overflow: elide; }
+                                    }
+                                }
+                                media-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-stremio-media(i); } }
+                            }
                         }
                     }
 

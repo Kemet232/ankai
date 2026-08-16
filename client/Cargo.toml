@@ -66,6 +66,9 @@ image = { version = "0.25", default-features = false, features = [
 # graph. `default-features = false` + `clock` only: this doesn't need
 # chrono's serde/wasm/etc extras, just Local::now().
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Runtime-only libmpv loading. The shared library is shipped beside the app
+# (LGPL build per ADR-0006), never statically linked into this executable.
+libloading = "0.8"
 
 [build-dependencies]
 slint-build = "1.17"
