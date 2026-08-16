@@ -21,6 +21,15 @@ import { LineEdit, Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
+// Fixed-position (non-draggable) glass "window" chrome — see
+// floating-panel.slint's header comment for why this is a separate,
+// smaller component rather than the drag-capable FloatingPanel reused
+// with `dragged` left unwired. Used below on the Home dashboard's
+// section cards and on the Messages/Hangouts panes, matching the human's
+// reference-image MSN-Messenger-style floating-window aesthetic without
+// any actual drag interaction (deliberately dropped mid-project — see
+// PROGRESS.md).
+import { FixedPanel } from "floating-panel.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept

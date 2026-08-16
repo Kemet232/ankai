@@ -10,9 +10,21 @@
 // replacement for it. See floating-panel-demo.slint for a standalone,
 // separately-reachable proof this genuinely works, mirroring how
 // spike-glass-blur.slint is a self-contained demo of its own techniques.
-// NOT wired into the real app shell (ui/app.slint) yet — deliberately
-// deferred to a follow-up so it lands on the real Messages/Hangouts/Home
-// pane content once that work settles, not a moving target.
+//
+// The FULL drag-capable FloatingPanel below is still NOT wired into the
+// real app shell (ui/app.slint) — the human explicitly decided against
+// live drag interaction for the real panes (see PROGRESS.md's "floating
+// window scope changed twice" note), so there is no product need to wire
+// actual dragging in anywhere beyond this standalone demo. What DID land
+// in the real app shell is this file's other export, `FixedPanel` (below,
+// after FloatingPanel) — a lightweight, non-draggable sibling that reuses
+// this component's exact glass "window" visual treatment (background,
+// border, corner radius, glow, specular strip, title bar) but is
+// positioned by normal Slint layout (VerticalLayout/HorizontalLayout
+// stretch) instead of explicit panel-x/panel-y coordinates, and has no
+// TouchArea/dragging state/close button/is-active focus ring at all. See
+// FixedPanel's own doc comment below for why it's a separate component
+// rather than FloatingPanel reused with its drag callback left unwired.
 //
 // Visual treatment matches the established glass-panel family (module-
 // card.slint's ModuleCardItem, spike-glass-blur.slint's glass panel, the
@@ -213,6 +225,74 @@ export component FloatingPanel inherits Rectangle {
                 }
             }
 
+            @children
+        }
+    }
+}
+
+// Fixed-position, non-draggable sibling of FloatingPanel — the component
+// actually wired into the real app shell (ui/app.slint's Home, Messages,
+// and Hangouts panes). Same glass "window" look as FloatingPanel (alpha
+// tint, border, corner radius, glow, specular-highlight strip, title bar
+// with the section/window name), reusing the exact same token values, but
+// deliberately NOT a thin wrapper around FloatingPanel with `dragged`
+// left unhandled — that would still carry FloatingPanel's TouchArea (a
+// real per-frame input-handling cost and a real affordance the human
+// explicitly said they don't want anymore: pointer-down on the title bar
+// would still visually grab it, it would just silently fail to move
+// anywhere) plus panel-x/panel-y/is-active/close/interacted surface area
+// no real call site here uses. A separate, smaller component that only
+// has what real panes need is the honest fixed-layout counterpart to
+// FloatingPanel's real drag-layout counterpart, not a shortcut.
+//
+// Sizing/position: plain Slint layout, same as every other glass card in
+// ui/app.slint (Profile pane's identity header, Home's empty-state
+// cards) — width comes from the parent layout (stretch/fill), height
+// from content unless the caller sets one explicitly. No panel-x/panel-y
+// at all, which is the whole point: "fixed" means "laid out normally, not
+// draggable," not "pinned at hardcoded pixel coordinates."
+export component FixedPanel inherits Rectangle {
+    in property <string> panel-title: "";
+
+    clip: true;
+    border-radius: 18px;
+    background: Theme.glass-tint;
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.2);
+    drop-shadow-color: Theme.bg-void.with-alpha(170.0 / 255.0);
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 8px;
+
+    // Specular highlight strip — same technique as FloatingPanel /
+    // module-card.slint / spike-glass-blur.slint's glass panel.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 44%;
+        background: @linear-gradient(180deg, #ffffff26 0%, #ffffff00 100%);
+    }
+
+    VerticalLayout {
+        Rectangle {
+            height: 34px;
+            background: Theme.bg-surface-raised.with-alpha(0.6);
+
+            Text {
+                x: Theme.space-3;
+                width: parent.width - (2 * Theme.space-3);
+                height: parent.height;
+                text: root.panel-title;
+                color: Theme.text-primary;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            background: transparent;
             @children
         }
     }
