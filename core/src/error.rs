@@ -10,4 +10,6 @@ pub enum Error {
     Keychain(String),
     #[error("network error: {0}")]
     Net(String),
+    #[error("stremio error: {0}")]
+    Stremio(String),
 }
