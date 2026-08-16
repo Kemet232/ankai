@@ -729,6 +729,132 @@ component StatTile inherits Rectangle {
     }
 }
 
+// My Page's "Now Playing" module — backed by core::lastfm's real Last.fm
+// client (see AppWindow's now-playing-state doc comment above for exactly
+// what the four real states mean and where they come from). Renders exactly
+// one of four honest states, matching state verbatim rather than guessing
+// from partial data:
+//   - "not-configured": no Last.fm username saved in Settings yet.
+//   - "idle": a real, successful check confirmed nothing is playing.
+//   - "error": a real network/API failure — shows the real message text.
+//   - "playing": a real track is genuinely playing right now.
+// The horizontal bar under a "playing" track is a decorative pulse, not a
+// real scrubber — Last.fm's API provides no elapsed-time/duration for a
+// now-playing track (see core::lastfm's module doc comment), so there is
+// nothing real to show a position against. It uses an indeterminate
+// side-to-side animation specifically so it doesn't look like it's tracking
+// real playback progress.
+component NowPlayingWidget inherits Rectangle {
+    in property <string> state;
+    in property <string> np-artist;
+    in property <string> np-track;
+    in property <string> np-error;
+
+    border-radius: 14px;
+    background: Theme.bg-surface-raised.with-alpha(0.4);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.14);
+
+    HorizontalLayout {
+        padding: 14px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: root.state == "playing" ? @linear-gradient(135deg, Theme.accent-violet 0%, Theme.accent-cyan 100%) : Theme.silver.with-alpha(0.15);
+
+            Text {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                text: "\u{266B}"; // musical note — a decorative glyph, not real data
+                color: root.state == "playing" ? Theme.bg-void : Theme.text-secondary;
+                font-size: 16px;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 4px;
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: "Now Playing";
+                color: Theme.text-secondary;
+                font-size: 10px;
+                font-weight: 600;
+            }
+
+            if root.state == "not-configured": Text {
+                text: "Connect Last.fm in Settings to show what you're listening to.";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            if root.state == "idle": Text {
+                text: "Nothing playing right now.";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            if root.state == "error": Text {
+                text: "Couldn't reach Last.fm: " + root.np-error;
+                color: Theme.state-offline;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+
+            if root.state == "playing": VerticalLayout {
+                spacing: 6px;
+
+                Text {
+                    text: root.np-track + "  —  " + root.np-artist;
+                    color: Theme.text-primary;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                // Decorative indeterminate pulse — see this component's doc
+                // comment on why this is not a real progress scrubber.
+                Rectangle {
+                    height: 4px;
+                    border-radius: 2px;
+                    background: Theme.silver.with-alpha(0.15);
+
+                    Rectangle {
+                        width: 30%;
+                        height: parent.height;
+                        border-radius: 2px;
+                        background: @linear-gradient(90deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                        x: 0px;
+
+                        animate x {
+                            duration: 1800ms;
+                            easing: ease-in-out;
+                            iteration-count: -1;
+                            direction: alternate;
+                        }
+                        states [
+                            slide when true: {
+                                x: parent.width * 0.7;
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
@@ -922,6 +1048,31 @@ export component AppWindow inherits Window {
     callback claim-username(string);
     in-out property <string> peer-username-input: "";
     callback lookup-peer-by-username(string);
+
+    // "Now Playing" — backed by core::lastfm's real, read-only Last.fm
+    // client (see that module's doc comment for the real API details/
+    // limits). lastfm-username is a local-only setting (same shape as
+    // display-name, persisted via core::db's settings table) distinct from
+    // the directory username above — it's a Last.fm account name, not
+    // anything to do with ANKAI's own directory service. now-playing-state
+    // is always exactly one of four real, distinct states main.rs computes
+    // (never fabricated/blended): "not-configured" (no lastfm-username
+    // saved yet), "idle" (a real, successful check confirmed nothing is
+    // playing right now), "error" (a real network/API failure — see
+    // now-playing-error for the real message), or "playing" (a real track
+    // is genuinely playing right now, per Last.fm's own nowplaying flag —
+    // see now-playing-artist/-track/-album). There is deliberately no
+    // elapsed-time/duration property: Last.fm's API doesn't provide one for
+    // a now-playing track, so this widget's progress bar (see
+    // NowPlayingWidget below) is a decorative pulse, not a real scrubber —
+    // it must never be wired to claim real playback position.
+    in-out property <string> lastfm-username: "";
+    callback save-lastfm-username(string);
+    in property <string> now-playing-state: "not-configured";
+    in property <string> now-playing-artist: "";
+    in property <string> now-playing-track: "";
+    in property <string> now-playing-album: "";
+    in property <string> now-playing-error: "";
 
     // Backed by core::hangouts (see that module's doc comment for what a
     // "Hangout" is and isn't yet — local-only hosting metadata, no real-time
@@ -1806,6 +1957,15 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // ---- Now Playing (see NowPlayingWidget's doc comment
+                    // above for the real state machine backing this) ----
+                    NowPlayingWidget {
+                        state: root.now-playing-state;
+                        np-artist: root.now-playing-artist;
+                        np-track: root.now-playing-track;
+                        np-error: root.now-playing-error;
+                    }
+
                     // ---- My Page's internal tab strip ----
                     HorizontalLayout {
                         spacing: 8px;
@@ -2688,6 +2848,44 @@ export component AppWindow inherits Window {
                         color: Theme.state-busy;
                         font-size: 12px;
                         wrap: word-wrap;
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: "Last.fm username";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    Text {
+                        text: "Shows what you're really listening to right now on My Page (via Last.fm's public API — works if your player scrobbles to Last.fm directly or through a Spotify/Apple Music bridge). Not an ANKAI account; just the Last.fm username whose real \"now playing\" state to display.";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        LineEdit {
+                            width: 240px;
+                            placeholder-text: "e.g. rj";
+                            text <=> root.lastfm-username;
+                            accepted => {
+                                root.save-lastfm-username(root.lastfm-username);
+                            }
+                        }
+
+                        Button {
+                            text: "Save";
+                            clicked => {
+                                root.save-lastfm-username(root.lastfm-username);
+                            }
+                        }
                     }
                 }
             }
