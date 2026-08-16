@@ -80,14 +80,24 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
     static STREMIO_MEDIA: RefCell<Vec<ankai_core::stremio::MetaPreview>> = const { RefCell::new(Vec::new()) };
     static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
-    static STREMIO_CLIENT: RefCell<Option<ankai_core::stremio::AddonClient>> = const { RefCell::new(None) };
-    static STREMIO_CATALOG: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    static STREMIO_ADDONS: RefCell<Vec<StremioAddon>> = const { RefCell::new(Vec::new()) };
+    static STREMIO_MEDIA_SOURCES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+struct StremioAddon {
+    id: String,
+    client: ankai_core::stremio::AddonClient,
+    name: String,
+    catalog: Option<ankai_core::stremio::Catalog>,
+    supports_streams: bool,
 }
 
 fn show_stremio_media(
     app: &AppWindow,
     media: Vec<ankai_core::stremio::MetaPreview>,
+    sources: Vec<usize>,
     image_handle: &tokio::runtime::Handle,
 ) {
     let cards = media
@@ -110,6 +120,7 @@ fn show_stremio_media(
         .filter_map(|(index, item)| item.poster.clone().map(|url| (index, url)))
         .collect::<Vec<_>>();
     STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
+    STREMIO_MEDIA_SOURCES.with(|slot| *slot.borrow_mut() = sources);
     app.set_stremio_media(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
     for (index, url) in posters {
         images::load_cover_image(
@@ -1833,11 +1844,26 @@ fn main() -> Result<(), slint::PlatformError> {
                 let result = async {
                     let client = ankai_core::stremio::AddonClient::new(&url)?;
                     let manifest = client.manifest().await?;
-                    let catalog = manifest.catalogs.first().ok_or_else(|| {
-                        ankai_core::Error::Stremio("addon has no catalogs".into())
-                    })?;
-                    let media = client.catalog(&catalog.media_type, &catalog.id).await?;
-                    Ok::<_, ankai_core::Error>((client, manifest.name, catalog.clone(), media))
+                    let supports_streams =
+                        manifest.resources.iter().any(|resource| match resource {
+                            ankai_core::stremio::Resource::Name(name) => name == "stream",
+                            ankai_core::stremio::Resource::Descriptor { name, .. } => {
+                                name == "stream"
+                            }
+                        });
+                    let catalog = manifest.catalogs.first().cloned();
+                    let media = match &catalog {
+                        Some(catalog) => client.catalog(&catalog.media_type, &catalog.id).await?,
+                        None => Vec::new(),
+                    };
+                    Ok::<_, ankai_core::Error>((
+                        client,
+                        manifest.id,
+                        manifest.name,
+                        catalog.clone(),
+                        supports_streams,
+                        media,
+                    ))
                 }
                 .await;
                 let _ = slint::invoke_from_event_loop(move || {
@@ -1845,22 +1871,65 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     match result {
-                        Ok((client, addon_name, catalog, media)) => {
-                            STREMIO_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
-                            STREMIO_CATALOG.with(|slot| {
-                                *slot.borrow_mut() =
-                                    Some((catalog.media_type.clone(), catalog.id.clone()))
+                        Ok((client, addon_id, addon_name, catalog, supports_streams, media)) => {
+                            let addon_index = STREMIO_ADDONS.with(|slot| {
+                                let mut addons = slot.borrow_mut();
+                                if let Some(index) =
+                                    addons.iter().position(|addon| addon.id == addon_id)
+                                {
+                                    addons[index] = StremioAddon {
+                                        id: addon_id,
+                                        client,
+                                        name: addon_name.clone(),
+                                        catalog,
+                                        supports_streams,
+                                    };
+                                    index
+                                } else {
+                                    addons.push(StremioAddon {
+                                        id: addon_id,
+                                        client,
+                                        name: addon_name.clone(),
+                                        catalog,
+                                        supports_streams,
+                                    });
+                                    addons.len() - 1
+                                }
                             });
                             STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
                             app.set_stremio_addon_name(addon_name.into());
-                            show_stremio_media(&app, media, &image_handle);
+                            let old_media = STREMIO_MEDIA.with(|slot| slot.borrow().clone());
+                            let old_sources =
+                                STREMIO_MEDIA_SOURCES.with(|slot| slot.borrow().clone());
+                            let (mut merged, mut sources): (Vec<_>, Vec<_>) = old_media
+                                .into_iter()
+                                .zip(old_sources)
+                                .filter(|(_, source)| *source != addon_index)
+                                .unzip();
+                            merged.extend(media);
+                            sources.resize(merged.len(), addon_index);
+                            show_stremio_media(&app, merged, sources, &image_handle);
+                            let names = STREMIO_ADDONS.with(|slot| {
+                                slot.borrow()
+                                    .iter()
+                                    .map(|addon| addon.name.clone().into())
+                                    .collect::<Vec<slint::SharedString>>()
+                            });
+                            app.set_stremio_addon_names(slint::ModelRc::from(Rc::new(
+                                slint::VecModel::from(names),
+                            )));
                             app.set_stremio_stream_names(slint::ModelRc::default());
                             app.set_stremio_selected_title("".into());
                             app.set_stremio_status(
                                 format!(
                                     "Loaded {} items from {}.",
                                     STREMIO_MEDIA.with(|s| s.borrow().len()),
-                                    catalog.name.unwrap_or_else(|| "the default catalog".into())
+                                    STREMIO_ADDONS
+                                        .with(|addons| addons.borrow()[addon_index]
+                                            .catalog
+                                            .as_ref()
+                                            .and_then(|catalog| catalog.name.clone()))
+                                        .unwrap_or_else(|| "the default catalog".into())
                                 )
                                 .into(),
                             );
@@ -1877,36 +1946,57 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_search_stremio(move |query| {
             let query = query.trim().to_owned();
-            let client = STREMIO_CLIENT.with(|slot| slot.borrow().clone());
-            let catalog = STREMIO_CATALOG.with(|slot| slot.borrow().clone());
-            let (Some(client), Some((media_type, catalog_id))) = (client, catalog) else {
+            let addons = STREMIO_ADDONS.with(|slot| slot.borrow().clone());
+            if addons.is_empty() {
                 return;
-            };
+            }
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status("Searching…".into());
             }
             let app_weak = app_weak.clone();
             let image_handle = runtime.clone();
             runtime.spawn(async move {
-                let extras = if query.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![("search", query.as_str())]
-                };
-                let result = client
-                    .catalog_with_extra(&media_type, &catalog_id, &extras)
-                    .await;
+                let mut media = Vec::new();
+                let mut sources = Vec::new();
+                let mut errors = Vec::new();
+                for (index, addon) in addons.iter().enumerate() {
+                    let Some(catalog) = &addon.catalog else {
+                        continue;
+                    };
+                    let extras = if query.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![("search", query.as_str())]
+                    };
+                    match addon
+                        .client
+                        .catalog_with_extra(&catalog.media_type, &catalog.id, &extras)
+                        .await
+                    {
+                        Ok(items) => {
+                            sources.extend(std::iter::repeat(index).take(items.len()));
+                            media.extend(items);
+                        }
+                        Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                    }
+                }
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
-                    match result {
-                        Ok(media) => {
-                            let count = media.len();
-                            show_stremio_media(&app, media, &image_handle);
-                            app.set_stremio_status(format!("Found {count} titles.").into());
-                        }
-                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                    if media.is_empty() && !errors.is_empty() {
+                        app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
+                    } else {
+                        let count = media.len();
+                        show_stremio_media(&app, media, sources, &image_handle);
+                        let suffix = if errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" Some addons failed: {}", errors.join(" | "))
+                        };
+                        app.set_stremio_status(
+                            format!("Found {count} titles across all addons.{suffix}").into(),
+                        );
                     }
                 });
             });
@@ -1918,8 +2008,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_open_stremio_media(move |index| {
             let selected = STREMIO_MEDIA.with(|items| items.borrow().get(index as usize).cloned());
-            let client = STREMIO_CLIENT.with(|slot| slot.borrow().clone());
-            let (Some(selected), Some(client)) = (selected, client) else {
+            let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
+            let Some(selected) = selected else {
                 return;
             };
             if let Some(app) = app_weak.upgrade() {
@@ -1928,43 +2018,63 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             let app_weak = app_weak.clone();
             runtime.spawn(async move {
-                let result = client.streams(&selected.media_type, &selected.id).await;
+                let mut streams = Vec::new();
+                let mut errors = Vec::new();
+                for addon in &addons {
+                    if !addon.supports_streams {
+                        continue;
+                    }
+                    match addon
+                        .client
+                        .streams(&selected.media_type, &selected.id)
+                        .await
+                    {
+                        Ok(mut addon_streams) => {
+                            for stream in &mut addon_streams {
+                                if stream.name.is_none() {
+                                    stream.name = Some(addon.name.clone());
+                                }
+                            }
+                            streams.extend(addon_streams);
+                        }
+                        Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                    }
+                }
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
-                    match result {
-                        Ok(streams) => {
-                            let labels = streams
-                                .iter()
-                                .map(|stream| {
-                                    let kind = if stream.url.is_some() {
-                                        "Direct"
-                                    } else if stream.info_hash.is_some() {
-                                        "Torrent"
-                                    } else {
-                                        "Unsupported"
-                                    };
-                                    format!(
-                                        "{} — {}",
-                                        kind,
-                                        stream
-                                            .title
-                                            .as_deref()
-                                            .or(stream.name.as_deref())
-                                            .unwrap_or("Unnamed stream")
-                                    )
-                                    .into()
-                                })
-                                .collect::<Vec<slint::SharedString>>();
-                            let count = streams.len();
-                            STREMIO_STREAMS.with(|slot| *slot.borrow_mut() = streams);
-                            app.set_stremio_stream_names(slint::ModelRc::from(std::rc::Rc::new(
-                                slint::VecModel::from(labels),
-                            )));
-                            app.set_stremio_status(format!("Found {count} streams.").into());
-                        }
-                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                    if streams.is_empty() && !errors.is_empty() {
+                        app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
+                    } else {
+                        let labels = streams
+                            .iter()
+                            .map(|stream| {
+                                let kind = if stream.url.is_some() {
+                                    "Direct"
+                                } else if stream.info_hash.is_some() {
+                                    "Torrent"
+                                } else {
+                                    "Unsupported"
+                                };
+                                format!(
+                                    "{} — {}",
+                                    kind,
+                                    stream
+                                        .title
+                                        .as_deref()
+                                        .or(stream.name.as_deref())
+                                        .unwrap_or("Unnamed stream")
+                                )
+                                .into()
+                            })
+                            .collect::<Vec<slint::SharedString>>();
+                        let count = streams.len();
+                        STREMIO_STREAMS.with(|slot| *slot.borrow_mut() = streams);
+                        app.set_stremio_stream_names(slint::ModelRc::from(std::rc::Rc::new(
+                            slint::VecModel::from(labels),
+                        )));
+                        app.set_stremio_status(format!("Found {count} streams.").into());
                     }
                 });
             });
