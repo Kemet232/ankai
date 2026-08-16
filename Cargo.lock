@@ -259,6 +259,7 @@ dependencies = [
  "openmls_traits",
  "rand 0.9.5",
  "reqwest",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",

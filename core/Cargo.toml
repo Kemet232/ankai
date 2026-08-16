@@ -50,3 +50,8 @@ tokio = { workspace = true, features = ["time"] }
 # `server/directory`-only dependency, promoted to workspace-shared once
 # this became a multi-consumer dependency).
 reqwest.workspace = true
+# Letterboxd exposes a documented public RSS feed rather than an open review
+# API. `core::letterboxd` parses that XML locally; this crate was already in
+# the workspace lockfile transitively, and is intentionally used without an
+# HTML scraper because the integration never requests arbitrary page HTML.
+roxmltree = "0.21"
