@@ -114,7 +114,11 @@ fn load_library() -> Result<Library, String> {
         candidates.push(dir.join("../lib/libmpv.so.2"));
     }
     #[cfg(target_os = "macos")]
-    candidates.push("libmpv.dylib".into());
+    candidates.extend([
+        "/opt/homebrew/lib/libmpv.dylib".into(),
+        "/usr/local/lib/libmpv.dylib".into(),
+        "libmpv.dylib".into(),
+    ]);
     #[cfg(target_os = "windows")]
     candidates.push("mpv-2.dll".into());
     #[cfg(target_os = "linux")]
@@ -143,4 +147,19 @@ unsafe fn check(code: c_int, error_string: MpvErrorString) -> Result<(), String>
     }
     let message = CStr::from_ptr(error_string(code)).to_string_lossy();
     Err(format!("libmpv error: {message}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "opens a native video window and calls a public sample URL"]
+    fn plays_a_real_https_stream() {
+        let mut player = Player::new().expect("libmpv should load");
+        player
+            .load("https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")
+            .expect("libmpv should accept a direct HTTPS stream");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
 }

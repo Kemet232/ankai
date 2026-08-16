@@ -879,12 +879,12 @@ export component AppWindow inherits Window {
 
     property <[string]> nav-items: [
         "Home",
+        "Discover",
         "My Page",
         "Messages",
         "Communities",
         "Hangouts",
         "Settings",
-        "Watch",
     ];
 
     // Accent colors cycled across Top 8 module cards (see the Profile pane
@@ -905,23 +905,25 @@ export component AppWindow inherits Window {
     // this explicitly at startup for robustness against future reordering.
     in-out property <int> selected-index: 0;
     out property <int> home-index: 0; // index of "Home" in nav-items, above
-    property <int> profile-index: 1; // index of "My Page" in nav-items, above (kept as `profile-index` in code for continuity with existing wiring)
-    property <int> messages-index: 2; // index of "Messages" in nav-items, above
-    property <int> communities-index: 3; // index of "Communities" in nav-items, above
-    property <int> hangouts-index: 4; // index of "Hangouts" in nav-items, above
-    property <int> settings-index: 5; // index of "Settings" in nav-items, above
-    property <int> watch-index: 6;
+    property <int> watch-index: 1;
+    property <int> profile-index: 2;
+    property <int> messages-index: 3;
+    property <int> communities-index: 4;
+    property <int> hangouts-index: 5;
+    property <int> settings-index: 6;
 
     // Stremio addon browser. All values are populated by live calls through
     // ankai_core::stremio; the URL remains editable because configured addons
     // commonly encode their configuration in the manifest path.
     in-out property <string> stremio-addon-url: "https://v3-cinemeta.strem.io/manifest.json";
     in-out property <string> stremio-addon-name: "";
+    in-out property <string> stremio-search-query: "";
     in-out property <string> stremio-status: "Enter an addon URL and load it.";
     in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
     in-out property <string> stremio-selected-title: "";
     callback load-stremio-addon(string);
+    callback search-stremio(string);
     callback open-stremio-media(int);
     callback activate-stremio-stream(int);
 
@@ -1253,7 +1255,7 @@ export component AppWindow inherits Window {
                         width: parent.width - 32px;
                         height: parent.height;
                         vertical-alignment: center;
-                        text: (i == 0 ? "⌂  " : i == 1 ? "◉  " : i == 2 ? "✉  " : i == 3 ? "◇  " : i == 4 ? "▣  " : i == 5 ? "⚙  " : "▶  ") + item;
+                        text: (i == 0 ? "⌂  " : i == 1 ? "◉  " : i == 2 ? "♙  " : i == 3 ? "✉  " : i == 4 ? "◇  " : i == 5 ? "▣  " : "⚙  ") + item;
                         color: root.selected-index == i ? Theme.text-primary : Theme.text-secondary;
                         font-size: 14px;
                         font-weight: root.selected-index == i ? 600 : 400;
@@ -2865,7 +2867,7 @@ export component AppWindow inherits Window {
                     alignment: start;
 
                     Text {
-                        text: "Watch with Stremio addons";
+                        text: "Discover";
                         color: Theme.text-primary;
                         font-size: 22px;
                         font-weight: 700;
@@ -2877,6 +2879,20 @@ export component AppWindow inherits Window {
                         font-size: 12px;
                         wrap: word-wrap;
                     }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.stremio-search-query;
+                            placeholder-text: "Search movies, series, anime…";
+                            accepted => { root.search-stremio(root.stremio-search-query); }
+                        }
+                        Button { text: "Search"; clicked => { root.search-stremio(root.stremio-search-query); } }
+                    }
+
+                    Text { text: "Addon source"; color: Theme.text-secondary; font-size: 10px; }
 
                     HorizontalLayout {
                         spacing: 8px;

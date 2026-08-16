@@ -81,7 +81,57 @@ thread_local! {
     static STREMIO_MEDIA: RefCell<Vec<ankai_core::stremio::MetaPreview>> = const { RefCell::new(Vec::new()) };
     static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
     static STREMIO_CLIENT: RefCell<Option<ankai_core::stremio::AddonClient>> = const { RefCell::new(None) };
+    static STREMIO_CATALOG: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
+}
+
+fn show_stremio_media(
+    app: &AppWindow,
+    media: Vec<ankai_core::stremio::MetaPreview>,
+    image_handle: &tokio::runtime::Handle,
+) {
+    let cards = media
+        .iter()
+        .map(|item| StremioMediaRef {
+            title: item.name.clone().into(),
+            detail: format!(
+                "{} · {}",
+                item.media_type,
+                item.release_info.as_deref().unwrap_or("Unknown release")
+            )
+            .into(),
+            poster: slint::Image::default(),
+            has_poster: false,
+        })
+        .collect::<Vec<_>>();
+    let posters = media
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item.poster.clone().map(|url| (index, url)))
+        .collect::<Vec<_>>();
+    STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
+    app.set_stremio_media(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
+    for (index, url) in posters {
+        images::load_cover_image(
+            url,
+            image_handle.clone(),
+            app.as_weak(),
+            move |app, image| {
+                let model = app.get_stremio_media();
+                let Some(model) = model
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<StremioMediaRef>>()
+                else {
+                    return;
+                };
+                if let Some(mut row) = model.row_data(index) {
+                    row.poster = image;
+                    row.has_poster = true;
+                    model.set_row_data(index, row);
+                }
+            },
+        );
+    }
 }
 
 /// A time-of-day-appropriate greeting prefix for the Home dashboard's
@@ -1787,7 +1837,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         ankai_core::Error::Stremio("addon has no catalogs".into())
                     })?;
                     let media = client.catalog(&catalog.media_type, &catalog.id).await?;
-                    Ok::<_, ankai_core::Error>((client, manifest.name, catalog.name.clone(), media))
+                    Ok::<_, ankai_core::Error>((client, manifest.name, catalog.clone(), media))
                 }
                 .await;
                 let _ = slint::invoke_from_event_loop(move || {
@@ -1795,67 +1845,66 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     match result {
-                        Ok((client, addon_name, catalog_name, media)) => {
-                            let cards = media
-                                .iter()
-                                .map(|item| StremioMediaRef {
-                                    title: item.name.clone().into(),
-                                    detail: format!(
-                                        "{} · {}",
-                                        item.media_type,
-                                        item.release_info.as_deref().unwrap_or("Unknown release")
-                                    )
-                                    .into(),
-                                    poster: slint::Image::default(),
-                                    has_poster: false,
-                                })
-                                .collect::<Vec<_>>();
-                            let posters = media
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(index, item)| {
-                                    item.poster.clone().map(|url| (index, url))
-                                })
-                                .collect::<Vec<_>>();
+                        Ok((client, addon_name, catalog, media)) => {
                             STREMIO_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
-                            STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
+                            STREMIO_CATALOG.with(|slot| {
+                                *slot.borrow_mut() =
+                                    Some((catalog.media_type.clone(), catalog.id.clone()))
+                            });
                             STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
                             app.set_stremio_addon_name(addon_name.into());
-                            app.set_stremio_media(slint::ModelRc::from(std::rc::Rc::new(
-                                slint::VecModel::from(cards),
-                            )));
+                            show_stremio_media(&app, media, &image_handle);
                             app.set_stremio_stream_names(slint::ModelRc::default());
                             app.set_stremio_selected_title("".into());
                             app.set_stremio_status(
                                 format!(
                                     "Loaded {} items from {}.",
                                     STREMIO_MEDIA.with(|s| s.borrow().len()),
-                                    catalog_name.unwrap_or_else(|| "the default catalog".into())
+                                    catalog.name.unwrap_or_else(|| "the default catalog".into())
                                 )
                                 .into(),
                             );
-                            for (index, url) in posters {
-                                let app_weak = app.as_weak();
-                                images::load_cover_image(
-                                    url,
-                                    image_handle.clone(),
-                                    app_weak,
-                                    move |app, image| {
-                                        let model = app.get_stremio_media();
-                                        let Some(model) = model
-                                            .as_any()
-                                            .downcast_ref::<slint::VecModel<StremioMediaRef>>()
-                                        else {
-                                            return;
-                                        };
-                                        if let Some(mut row) = model.row_data(index) {
-                                            row.poster = image;
-                                            row.has_poster = true;
-                                            model.set_row_data(index, row);
-                                        }
-                                    },
-                                );
-                            }
+                        }
+                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_search_stremio(move |query| {
+            let query = query.trim().to_owned();
+            let client = STREMIO_CLIENT.with(|slot| slot.borrow().clone());
+            let catalog = STREMIO_CATALOG.with(|slot| slot.borrow().clone());
+            let (Some(client), Some((media_type, catalog_id))) = (client, catalog) else {
+                return;
+            };
+            if let Some(app) = app_weak.upgrade() {
+                app.set_stremio_status("Searching…".into());
+            }
+            let app_weak = app_weak.clone();
+            let image_handle = runtime.clone();
+            runtime.spawn(async move {
+                let extras = if query.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![("search", query.as_str())]
+                };
+                let result = client
+                    .catalog_with_extra(&media_type, &catalog_id, &extras)
+                    .await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    match result {
+                        Ok(media) => {
+                            let count = media.len();
+                            show_stremio_media(&app, media, &image_handle);
+                            app.set_stremio_status(format!("Found {count} titles.").into());
                         }
                         Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
                     }
@@ -1956,6 +2005,11 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+
+    // Cinemeta is the public, zero-configuration default. Loading it at
+    // startup makes Discover useful immediately; users can still replace the
+    // URL with any configured addon manifest.
+    app.invoke_load_stremio_addon(app.get_stremio_addon_url());
 
     // Home dashboard: recent posts and friends are plain synchronous local-
     // DB reads (like the rest of this app's startup loads above); trending/

@@ -57,6 +57,7 @@ reqwest.workspace = true
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
+    "webp",
 ] }
 # Real local-clock time-of-day for the Home dashboard's greeting ("good
 # morning"/"good afternoon"/"good evening" — see app.slint's
