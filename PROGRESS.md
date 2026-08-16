@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-16 (session 16)
+Last updated: 2026-08-16 (session 19)
 
 ## What ANKAI is
 
@@ -68,32 +68,35 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Usernames for the directory service | done — a device can claim a short name (lowercase alphanumeric/underscore, 3-20 chars) via the directory server instead of sharing a raw Device ID; device-scoped (not account-scoped — flagged for revisit once real multi-device/account support exists), first-come-first-served with the same signed-request ownership pinning the server already uses for device keys. Wired end-to-end: claim in Settings, look a peer up by username in Messages. Real full-stack test: device B finds device A purely by username and sends a real MLS-encrypted message through a real running server | `server/directory/src/username.rs`, `client/src/directory.rs`, `client/src/main.rs` |
 | Real "Liquid Y2K" visual design applied (shared shell + Profile pane) | done — the validated glass-panel design system (`docs/design/tokens.md`, proven in `client/ui/spike-glass-blur.slint`, gated on two ADR-0002 spikes that closed back in session 3 but were never actually applied to the real app until now) is live on the sidebar/window chrome and the Profile pane: glass-tinted panels, glowing active-nav pill, avatar-initial header card, de-emphasized ID chips, and the Top 8 list rebuilt as real accent-cycled glass module cards with custom icon buttons instead of generic OS buttons. Messages/Communities/Hangouts/Settings pane *content* untouched this pass (shared chrome only) — human asked to see one screen done properly before the rest follow | `client/ui/app.slint` |
 | Anime metadata + watchlist (`core::anime`) | done — real AniList GraphQL integration (search/trending/popular, unauthenticated public read, no API key needed — confirmed via live requests, real rate limit is 30/min not the commonly-cited ~90/min) plus a real local watchlist (watching/completed/planned/dropped, episode progress). Real `#[ignore]`d live-network test; caught AniList having a real live outage mid-session and reported that honestly instead of faking a pass | `core/src/anime.rs`, `core/tests/anilist_live.rs` |
-| Episode/movie resume persistence | **Phase 5 backend complete; player/UI wiring pending** (session 17) — migration 10 adds an encrypted `playback_progress` table keyed by provider/media/optional episode. Validated finite position/duration upserts, movie and episode keys, newest-first resumable listing, completion, and clearing are covered by five focused tests; the full core suite passes 80 tests with one live test ignored. The player still needs to save periodically/on close and the Home/My Page surfaces still need Continue Watching cards | `core/src/playback_progress.rs`, `core/src/db.rs` |
+| Episode/movie resume persistence | **Phase 5 complete** (session 18) — migrations 10/11 add encrypted provider/media/episode progress plus validated title/poster/direct-stream metadata. The player resumes after file-load, autosaves every five seconds and on close/EOF, marks near-end playback complete, and Home renders real poster/progress Continue Watching cards that reopen the exact encrypted direct URL at the saved timestamp. Older rows without a direct URL route back to Discover for re-resolution instead of pretending they are immediately playable | `core/src/playback_progress.rs`, `core/src/db.rs`, `client/src/main.rs`, `client/ui/home-dashboard.slint` |
 | Cross-community recent-activity feed | done — `core::forum_posts::list_recent_across_communities`: real posts pulled from every local community into one most-recent-first feed, each correctly tagged with its real community name — the data source for "Hot Discussions" | `core/src/forum_posts.rs` |
 | Real friends system + on-demand presence (`core::friends`) | done — real P2P friend-request/accept flow (signed, real crypto, rides the existing P2P transport as a lightweight non-MLS message kind since a request has to work *before* any conversation/group exists), a real `friends`/`friend_requests` DB schema, and genuine presence: `check_presence` makes a real ~3s-timeout connection attempt right now rather than returning a stored flag — proven by a test that closes a node mid-test and watches the same call flip from online to offline. Device-scoped, not account-scoped (same honest limitation as Top 8/usernames) | `core/src/friends.rs` |
-| MyAnimeList forum discussions (`core::mal_forums`) | done — real read-only client (boards/topics/topic-posts), Client-ID-only auth (no OAuth login needed — confirmed empirically), reads the real credential from an env var at runtime, never hardcoded. Real live-network test against MAL's actual servers | `core/src/mal_forums.rs` |
-| Home dashboard (new screen) | **Phase 2 complete (session 17)** — extracted into a responsive, reusable `HomeDashboard` with wide/compact layouts; neon poster-led hero and horizontal Popular carousel; real AniList images/data, friends/presence, local discussions/Hangouts, and MAL topics; explicit loading/empty/error/retry states; hover/pressed/focus semantics; every visible action routes, retries, changes persisted watch state, or opens the real MAL topic. The older inline layout is retained only as an unreachable one-pass fallback pending mechanical deletion | `client/ui/home-dashboard.slint`, `client/ui/app.slint`, `client/src/main.rs` |
-| My Page redesign (tabs) | **precision pass in session 14**: removed a fabricated always-on "Early Adopter" header badge, replaced with a real presence indicator (you're trivially online because this client is the one running — an honest claim, not a network one) plus your real claimed username if you have one; restructured into the reference's side-by-side module rows (Top 8 + Currently Watching, then Guestbook preview + My Charms) instead of a stacked column. Currently Watching now shows real cover art. Real friends list + real pending-request Accept/Decline; Guestbook and My Charms stay honest, clearly-labeled placeholders (no real networked-write path / no real unlock system exist yet); Stats tab shows real counts | `client/ui/app.slint`, `client/src/main.rs` |
-| Real in-memory remote image loading (`client::images`) | done — real anime cover art fetched from AniList's own CDN via `reqwest`, decoded via the `image` crate, handed to Slint as a `slint::Image` built from the decoded RGBA buffer. No disk cache, ever (explicit human instruction) — a process-lifetime in-memory `HashMap<url, slint::Image>` only. Wired into Home's Trending Now hero, Popular Right Now, and My Page's Currently Watching. Two real bugs fixed during integration: a Slint `ImageFit` compile error from a `cover` property name colliding with the `ImageFit` enum's own `cover` value, and a `Send`-safety bug (the non-`Send` `slint::Image` can't be built on a background tokio task and handed to `invoke_from_event_loop` — fixed by only sending raw RGBA bytes across the thread boundary and building the `slint::Image` back on the UI thread) | `client/src/images.rs`, `client/ui/app.slint`, `client/src/main.rs` |
-| MAL Forum Discussions real post previews | done — each topic card now shows a real excerpt from its actual first post (`core::mal_forums::get_topic_posts`, one extra fetch per topic, loaded progressively), not just title/reply-count. Real MAL post bodies are raw phpBB-style BBCode; a small client-side formatter (not core — matches `core::mal_forums`'s own "rendering post bodies is a UI-layer concern" note) strips tags, drops `[img]...[/img]` content and bare image URLs (both were observed leaking full CDN URLs into the preview text on a real live topic before this was caught), decodes HTML entities, and truncates | `client/src/main.rs` |
-| Jikan anime API | **bundled zero-config core complete; Discover shelf wiring pending** (session 17) — typed public Jikan v4 client for SFW search, top anime, current season, full detail and paginated episodes; models MAL ids/titles/synopsis/score/status/genres/studios/JPEG+WebP posters/trailers; validates input and surfaces 429/Retry-After/non-2xx errors. No user key or install is required. Jikan is read-only and cannot mutate a MAL list | `core/src/jikan.rs` |
-| Letterboxd feed replacement | **supported backend complete; Home replacement wiring pending** (session 17) — Letterboxd's full API is request-only and currently excludes private/personal projects, so ANKAI uses only the officially exposed public member RSS URL. Typed entries include title/year/rating, bounded sanitized review excerpt, validated HTTPS link/poster and publication metadata; username path injection is rejected. No arbitrary Letterboxd HTML scraping | `core/src/letterboxd.rs` |
+| MyAnimeList forum discussions (`core::mal_forums`) | **retired and deleted by user request** (session 18) — client, credentials, fixtures/live tests, Home panel and the old unreachable inline Home copy were removed. No MAL forum/network/account behavior remains. Only read-only anime ratings sourced through Jikan remain | `core/src/lib.rs`, `client/ui/home-dashboard.slint`, `client/ui/app.slint`, `client/src/main.rs` |
+| Home dashboard (new screen) | **Phase 2 complete and legacy copy removed** (session 18) — responsive neon hero/carousels, real AniList images/data, friends/presence, local discussions/Hangouts, durable Continue Watching, and a configured public Letterboxd-member diary. Every visible action routes, retries, toggles persisted watch state, resumes playback, or opens its exact external entry | `client/ui/home-dashboard.slint`, `client/ui/app.slint`, `client/src/main.rs` |
+| My Page redesign (tabs) | **precision pass completed in session 19** — real presence/claimed username, Top 8, Currently Watching, real friends/pending requests and device-local Stats remain. The nonfunctional Guestbook tab/card and fabricated always-on charm were removed instead of shipping clickable placeholders. Custom tab/Top-8/friend controls now have keyboard focus, visible focus rings and screen-reader actions | `client/ui/app.slint`, `client/src/main.rs` |
+| Real in-memory remote image loading (`client::images`) | **hardened in session 19** — HTTPS/public-DNS validation and connector pinning, 5s connect/15s total timeout, streamed 8 MiB limit, 8192-dimension/32M-pixel/160 MiB decode budgets, 1600px downsampling, in-flight request coalescing and a 64 MiB/128-entry decoded LRU. Images still never touch disk. Non-`Send` Slint images are constructed only after returning to the UI thread | `client/src/images.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| MAL Forum Discussions real post previews | **retired and deleted** (session 18) — superseded by the supported public Letterboxd-member RSS diary and Nyaa's per-upload comment links | `core/src/letterboxd.rs`, `core/src/nyaa.rs` |
+| Jikan anime API | **bundled rating-only reachable UI** (session 19) — the typed zero-config core client remains available, but the product surface deliberately exposes only title association + community score. Synopsis/type/year/episode/status/posters and all MAL account/forum/write affordances are absent; artwork and playable metadata come from Stremio/Kitsu providers | `core/src/jikan.rs`, `client/ui/anime-discovery.slint`, `client/src/main.rs`, `client/ui/app.slint` |
+| Letterboxd feed replacement | **Home replacement complete** (session 18) — uses only one configured member's officially exposed public RSS diary, with persisted username, live poster/rating/review entries and exact external links. No global-feed claim, arbitrary HTML scraping, private activity, or write access | `core/src/letterboxd.rs`, `client/ui/letterboxd-feed.slint`, `client/ui/home-dashboard.slint`, `client/src/main.rs` |
+| Nyaa anime upload comments | **complete within the honest RSS boundary** (session 18) — secure bounded anime RSS search exposes per-upload size/swarm/trust/remake/comment counts. Title selection searches releases automatically; the responsive panel opens the exact validated `https://nyaa.si/view/{id}` page for comments. ANKAI does not fetch comment bodies or claim a title-wide Nyaa thread | `core/src/nyaa.rs`, `client/ui/nyaa-releases.slint`, `client/src/main.rs`, `client/ui/app.slint` |
 | `client/build.rs` rerun-if-changed bug | **fixed** — the build script only ever listed two floating-panel-demo files in `cargo:rerun-if-changed`, and printing any such line replaces cargo's default "rerun on any file change" fallback with "only rerun for what's listed." Edits to `app.slint`/`theme.slint` could silently stop triggering Slint regeneration on an incremental build once a target directory already had cached output — caught for real when a color-palette-only edit compiled clean but rendered the old colors. Fixed by globbing every real `ui/*.slint` file into its own rerun-if-changed line | `client/build.rs` |
 | Color palette rework (pink/violet, matching the reference) | done — the reference mockup uses a hot pink/magenta accent plus blue-violet, barely any cyan; ANKAI's palette leaned cyan/violet/gold. Real colors sampled directly from the reference image via pixel-level histogram analysis (not guessed): `#E82888` (a "like" count badge) → `theme.slint`'s new `accent-pink` (`#F0459A`, lightened for AA contrast), and `#6C4CD0` (primary buttons) → deepened `accent-violet` (`#8B6CF0` → `#8363E3`). `accent-cyan` usages replaced app-wide (nav pill, section labels, hero glow, avatar gradients, tab pills, accent-cycle arrays, Now Playing widget) except where cyan was already paired with violet in a gradient | `client/ui/theme.slint`, `client/ui/app.slint` |
 | Last.fm "Now Playing" backend (`core::lastfm`) | done — real, read-only client for Last.fm's public `user.getrecenttracks` endpoint (API-key-only, no OAuth needed for this call — confirmed live). Returns `Ok(Some(NowPlaying))` only when Last.fm's own `nowplaying` flag is genuinely set, `Ok(None)` for an honest "nothing playing" (including zero scrobble history), `Err` for a real failure — never fabricated. No elapsed/duration data exists on this endpoint, so the My Page widget's progress bar is an explicitly-decorative indeterminate pulse, not a real scrubber. Wired via a `slint::Timer` periodic refresh (not one-shot); Last.fm username is a local-only Settings field, separate from the API key. Real live test (`cargo test -p ankai-core --test lastfm_live -- --ignored`) confirmed against a real public account and a real nonexistent-username 404 | `core/src/lastfm.rs`, `core/tests/lastfm_live.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. Not wired into the real app directly (see next row — a non-draggable sibling was wired in instead) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 | Fixed-position glass panels wired onto Home/Messages/Hangouts | done (session 15) — new `FixedPanel` component (non-draggable sibling of `FloatingPanel`, same glass tint/border/glow/title-bar styling, laid out via normal Slint stretch/fill instead of free-floating coordinates). Wraps Home's Friend Activity/Popular Right Now/Hot Discussions/Watch Parties/MAL Forum Discussions sections; Messages split into "Connect a Peer" + "Conversation" panels (pane now scrollable); Hangouts split into "Create a Hangout" + "Your Hangouts" panels (also now scrollable, with an honest empty state). Trending Now hero left as-is (full-bleed cover art, already has equivalent glass-card styling). No drag mechanism wired onto any real pane, per standing instruction | `client/ui/floating-panel.slint`, `client/ui/app.slint` |
-| Stremio addon discovery | **Phase 3 complete (session 17)** — typed live manifest/catalog/meta/stream client; configured manifest paths preserved; Cinemeta and Anime Kitsu are bundled zero-config providers (custom addons coexist); search chooses each provider's real search-capable catalog; results merge across enabled providers with in-memory WebP/JPEG poster loading. Selecting a title opens a real poster-led detail surface with description/genres/cast, episode thumbnails, provider stream choices, and episode-specific stream lookup | `core/src/stremio.rs`, `client/ui/title-detail.slint`, `client/src/main.rs`, `client/ui/app.slint` |
+| Stremio addon discovery | **Phase 3 complete and hardened (session 19)** — typed live manifest/catalog/meta/stream client; configured paths preserved; Cinemeta and Anime Kitsu bundled; multi-provider search/detail/episodes/streams work. Public addons are HTTPS-only with no credentials/local/private targets, DNS results are filtered+pinned, redirects/body/items/strings are bounded, and direct playback rejects local/file/data/concat/unexpected schemes. Cinemeta's real 307 catalog redirect has one exact HTTPS host exception covered by a live contract test | `core/src/stremio.rs`, `client/ui/title-detail.slint`, `client/src/main.rs`, `client/ui/app.slint` |
 | Stremio addon management | **Phase 3 complete (session 17)** — `core::addons` persists a versioned ordered registry in SQLCipher-backed settings: canonical configured URL, metadata/logo, content types/resource roles, enable state, priority and health. The polished manager now installs, refreshes, enables/disables, reorders and removes custom providers; built-in Cinemeta/Anime Kitsu can be disabled but not removed; all registry operations immediately refresh the live query set. Configured path variants remain distinct while equivalent base/manifest URLs deduplicate | `core/src/addons.rs`, `client/ui/addon-manager.slint`, `client/src/main.rs` |
-| libmpv playback | **Phase 4 complete for the in-app cinema player** (session 17) — bundled libmpv renders inside the ANKAI window with a responsive neon `PlayerOverlay`; typed event/state polling drives real duration/position/buffering/pause/mute/volume/speed/seeking/EOF/error UI; working seek/±10, volume/mute, speed presets, audio/subtitle track selection, fullscreen, retry, keyboard shortcuts, accessible actions, and auto-hiding chrome. Seven playback tests pass. The default player is intentionally full-window cinema; `render_to_fbo` is available for Phase 6's smaller Hangout surface. Windows/Linux release packaging and final LGPL artifact QA remain unverified | `client/src/playback.rs`, `client/ui/player-overlay.slint`, `client/src/main.rs`, `scripts/bundle-libmpv.sh` |
-| Animated loading experience | done (session 16) — original full-proportion violet/pink virtual-idol mascot generated for ANKAI and animated in Slint with a looping bounce/sway/glow while addon manifests, searches, and stream lists load | `client/ui/assets/ankai-loading-idol.png`, `client/ui/app.slint` |
+| libmpv playback | **Phase 4 renderer and controls complete** (session 19) — typed events/state and complete cinema controls plus a real Retina-aware OpenGL texture/FBO bridge imported into Slint's bounded player well. GL state is restored around mpv, resized textures retire safely after frame presentation, first successful rendered media gates video-ready, renderer errors stay in the overlay, buffered duration is not fabricated, and close exits fullscreen. The no-install packaging pipeline now fails closed on LGPL attestation/dependency closure and probes the packaged loader; real signed/notarized per-OS artifacts remain a release gate | `client/src/playback.rs`, `client/ui/player-overlay.slint`, `client/src/main.rs`, `scripts/bundle-libmpv.sh`, `scripts/verify-libmpv-bundle.sh`, `docs/releasing-libmpv.md` |
+| Hangout cinema surface | **Phase 6 bounded rendering integrated; networking sync still incomplete** (session 19) — saved Hangouts render the active libmpv frame inside the clipped room player rather than behind the whole window, with the full transport/track/error UI. Rooms remain truthfully local-only with no fake participants/messages and unavailable chat disabled; real membership/invites/synchronization/voice remain future work | `client/ui/hangout-player-surface.slint`, `client/ui/app.slint`, `client/src/playback.rs`, `client/src/main.rs` |
+| Animated loading experience | **upgraded and motion-safe** (session 19) — original full-proportion violet/pink virtual-idol asset performs an eight-step dance phrase with honest indeterminate status and screen-reader text. A persisted Reduce Motion setting now propagates through the shared Theme: every animated Slint surface uses zero-duration transitions and stops choreography while retaining visible state | `client/ui/assets/ankai-loading-idol.png`, `client/ui/loading-idol.slint`, `client/ui/theme.slint`, `client/ui/app.slint` |
+| Startup resilience | **Phase 7 automated gate complete** (session 19) — `client` has no fatal startup `expect` paths. DB/keychain/runtime failures return actionable platform errors; MLS identity/P2P bind/key-package/invite failures disable only social networking with an honest in-app status. Addons, catalogs, ratings, images, watch state, resume and libmpv remain usable; local friend/message history still loads | `client/src/main.rs`, `client/ui/app.slint`, `scripts/check-release-readiness.sh`, `docs/qa/release-readiness.md` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
 `cargo run -p client -- --spike` (or `ANKAI_SPIKE_DEBUG=1`) — it is not
 the default UI anymore.
 
-## Critical product audit (session 16)
+## Critical product audit (refreshed session 19)
 
 ANKAI now demonstrates many real subsystems, but it is not yet a coherent
 shippable social product. Its strongest differentiators are the native visual
@@ -104,25 +107,19 @@ loops that make users return are still discontinuous.
 
 ### Highest-impact gaps
 
-1. **The core user loop is fragmented.** Discovering a title, adding it to a
-   watchlist, starting playback, inviting friends, entering a Hangout, and
-   discussing the episode are separate surfaces with little shared context.
-   The next product milestone should be one end-to-end title detail screen
-   that connects all of them.
-2. **Playback is an engine integration, not yet a player.** Add elapsed time,
-   duration/seek, volume/mute, fullscreen, buffering/error state, subtitle and
-   audio-track selection, episode navigation, resume position, keyboard
-   shortcuts, and mpv property/event observation. Torrent streams still need
-   the explicit resolver boundary; do not present them as playable before one
-   exists.
-3. **Addon management is session-only and under-governed.** Persist installed
-   addon URLs, provide enable/disable/remove/reorder, show declared resources
-   and content types, distinguish catalog/metadata/stream/subtitle roles, add
-   per-addon health/error state, and introduce an explicit network-permission
-   prompt. User-supplied addon URLs currently create a broad outbound-network
-   capability; localhost/private-network access needs a deliberate policy so
-   self-hosted addons remain possible without silently enabling SSRF-style
-   behavior.
+1. **The core loop now reaches playback but not people.** Discovery, title
+   detail, direct-stream playback and durable resume are connected. Inviting a
+   friend into that exact title/episode, sharing source context and returning
+   to a scoped discussion still remain separate product loops.
+2. **The player is real; its remaining gaps are advanced ones.** Full-window
+   cinema, bounded Hangout FBO rendering, controls, error states and resume work.
+   Next/previous-episode actions, subtitle-delay UI, torrent resolution and real
+   signed/notarized multi-OS LGPL artifacts remain.
+3. **Addon input is hardened; distribution governance is unfinished.** The
+   registry persists and the public network boundary now enforces HTTPS/public
+   pinned DNS, exact redirects, response budgets and safe direct-stream schemes.
+   A future private/LAN-addon mode needs an explicit per-host permission prompt;
+   a public addon directory still needs review, attribution and abuse policy.
 4. **Identity is not an account system.** Device-scoped IDs/usernames/friends
    cannot deliver multi-device continuity, recovery, account portability, or
    reliable discovery. This is the largest architectural product dependency
@@ -135,36 +132,40 @@ loops that make users return are still discontinuous.
    invites, host authority, synchronized playback state, reconnect behavior,
    voice/chat integration, and clear behavior when participants use different
    stream sources.
-7. **Data resilience is thin.** Third-party reads are mostly live-only with no
-   pagination, rate-limit coordination, stale-while-revalidate cache, retry
-   policy, cancellation, or offline rendering. Images have a process cache but
-   no bounded eviction. Slow calls can outlive a changed screen/query.
-8. **Release engineering is unfinished.** The project can load a development
-   Homebrew libmpv, and has a bundle-copy hook, but CI does not yet build and
-   attest LGPL-only libmpv/FFmpeg artifacts for macOS, Windows, and Linux.
-   Code signing, notarization, updater behavior, crash reporting, migrations,
-   and reproducible release manifests are not established.
+7. **Data resilience still needs offline and rate-limit work.** Network and
+   decoded-image budgets, a bounded memory LRU, request coalescing and
+   last-request-wins guards now exist. Third-party text reads remain live-only
+   without stale-while-revalidate/offline catalogs, coordinated rate limits or
+   durable pagination.
+8. **Release engineering has a fail-closed pipeline, not final artifacts.** The
+   bundler now requires hash-bound LGPL mpv/FFmpeg attestation, copies the native
+   dependency closure, rewrites loader paths, inventories licenses and performs
+   a real packaged-loader probe. Clean Linux/Windows matrix proof, a reviewed
+   production prefix, Developer ID/notarization, Authenticode/Linux signing,
+   updater behavior and crash reporting remain.
 9. **Trust, safety, and legal controls lag extension capability.** Before a
    public addon/provider directory, ANKAI needs source attribution, permission
    review, block/report paths, content-policy enforcement, malicious-manifest
    handling, URL/redirect limits, and a clear distinction between public
    protocol compatibility and endorsement of particular content sources.
-10. **Accessibility and performance need re-validation after the redesign.**
-    Earlier Slint spikes passed, but the new background, large remote-image
-    grids, animated loader, 60fps video redraw, and overlay controls materially
-    changed the workload and focus structure. Re-run keyboard-only, VoiceOver,
-    reduced-motion, contrast, low-end GPU, memory, and long-session tests.
+10. **Accessibility implementation improved; manual validation is still due.**
+    Primary navigation, Home, title-detail, Profile and player custom controls
+    now expose focus/keyboard/screen-reader actions; compact shell widths and a
+    global persisted reduced-motion mode landed. Re-run keyboard-only,
+    VoiceOver/NVDA, 200% text, contrast, low-end GPU, memory and long-session
+    tests on packaged native builds.
 
 ### Recommended execution order
 
-1. Finish the player UX and title-detail/episode flow.
-2. Persist and govern addons; add cancellation, caching, pagination, and errors.
-3. Turn Hangouts into a real synchronized playback room using the finished
-   player boundary.
-4. Complete conversation navigation and community membership/moderation.
-5. Decide and ADR the real account/multi-device/recovery system.
-6. Build reproducible signed cross-platform releases, then repeat performance,
-   accessibility, security, and licensing validation before any public beta.
+1. Produce clean signed macOS/Windows/Linux artifacts with the libmpv verifier
+   as a mandatory CI gate.
+2. Add a dedicated DB/keychain recovery screen instead of returning a platform
+   error, plus tested backup/restore for encrypted local state.
+3. Add episode-next/previous behavior, subtitle-delay UI and a torrent resolver.
+4. Turn the honest local-only Hangout shell into a synchronized playback room.
+5. Complete conversation navigation and community membership/moderation.
+6. Decide and ADR the real account/multi-device/recovery system, then repeat
+   performance, accessibility, security and licensing validation before beta.
 
 ## Immediate next steps (in order)
 
