@@ -38,6 +38,9 @@ use std::rc::Rc;
 
 use slint::Model;
 
+const CINEMETA_MANIFEST_URL: &str = "https://v3-cinemeta.strem.io/manifest.json";
+const ANIME_KITSU_MANIFEST_URL: &str = "https://anime-kitsu.strem.fun/manifest.json";
+
 /// This device's `Db`/`AnkaiMlsProvider` handles, looked up by the P2P
 /// receive loop's UI-thread callback (see [`MESSAGING_HANDLES`]) rather
 /// than captured directly inside it.
@@ -82,16 +85,18 @@ thread_local! {
     static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
     static STREMIO_ADDONS: RefCell<Vec<StremioAddon>> = const { RefCell::new(Vec::new()) };
     static STREMIO_MEDIA_SOURCES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static STREMIO_EPISODES: RefCell<Vec<ankai_core::stremio::Video>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone)]
 struct StremioAddon {
-    id: String,
+    manifest_url: String,
     client: ankai_core::stremio::AddonClient,
     name: String,
-    catalog: Option<ankai_core::stremio::Catalog>,
+    catalogs: Vec<ankai_core::stremio::Catalog>,
     supports_streams: bool,
+    supports_meta: bool,
 }
 
 fn show_stremio_media(
@@ -142,6 +147,220 @@ fn show_stremio_media(
                 }
             },
         );
+    }
+}
+
+fn show_stremio_meta(
+    app: &AppWindow,
+    meta: &ankai_core::stremio::Meta,
+    image_handle: &tokio::runtime::Handle,
+) {
+    app.set_stremio_selected_title(meta.name.clone().into());
+    app.set_stremio_selected_description(meta.description.clone().unwrap_or_default().into());
+    app.set_stremio_selected_meta_line(
+        format!(
+            "{}{}",
+            meta.media_type,
+            if meta.genres.is_empty() {
+                String::new()
+            } else {
+                format!("  ·  {}", meta.genres.join("  ·  "))
+            }
+        )
+        .into(),
+    );
+    app.set_stremio_selected_cast(meta.cast.join(", ").into());
+
+    let episode_cards = meta
+        .videos
+        .iter()
+        .map(|episode| StremioEpisodeRef {
+            title: episode
+                .title
+                .clone()
+                .unwrap_or_else(|| match (episode.season, episode.episode) {
+                    (Some(season), Some(number)) => format!("S{season:02}E{number:02}"),
+                    (_, Some(number)) => format!("Episode {number}"),
+                    _ => "Episode".into(),
+                })
+                .into(),
+            detail: match (episode.season, episode.episode, episode.released.as_deref()) {
+                (Some(season), Some(number), Some(released)) => {
+                    format!("S{season:02}E{number:02}  ·  {released}")
+                }
+                (Some(season), Some(number), None) => {
+                    format!("Season {season}  ·  Episode {number}")
+                }
+                (_, _, Some(released)) => released.to_owned(),
+                _ => String::new(),
+            }
+            .into(),
+            thumbnail: slint::Image::default(),
+            has_thumbnail: false,
+        })
+        .collect::<Vec<_>>();
+    let thumbnails = meta
+        .videos
+        .iter()
+        .enumerate()
+        .filter_map(|(index, episode)| episode.thumbnail.clone().map(|url| (index, url)))
+        .collect::<Vec<_>>();
+    STREMIO_EPISODES.with(|slot| *slot.borrow_mut() = meta.videos.clone());
+    app.set_stremio_episodes(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        episode_cards,
+    ))));
+
+    for (index, url) in thumbnails {
+        images::load_cover_image(
+            url,
+            image_handle.clone(),
+            app.as_weak(),
+            move |app, image| {
+                let model = app.get_stremio_episodes();
+                let Some(model) = model
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<StremioEpisodeRef>>()
+                else {
+                    return;
+                };
+                if let Some(mut row) = model.row_data(index) {
+                    row.thumbnail = image;
+                    row.has_thumbnail = true;
+                    model.set_row_data(index, row);
+                }
+            },
+        );
+    }
+}
+
+fn refresh_addon_manager(
+    app: &AppWindow,
+    db: &ankai_core::db::Db,
+    image_handle: &tokio::runtime::Handle,
+) {
+    match ankai_core::addons::list(db) {
+        Ok(addons) => {
+            let total = addons.len();
+            let logo_urls = addons
+                .iter()
+                .enumerate()
+                .filter_map(|(index, addon)| addon.logo.clone().map(|url| (index, url)))
+                .collect::<Vec<_>>();
+            let cards = addons
+                .into_iter()
+                .enumerate()
+                .map(|(index, addon)| {
+                    let mut roles = Vec::new();
+                    if addon.roles.catalog {
+                        roles.push("Catalog");
+                    }
+                    if addon.roles.meta {
+                        roles.push("Metadata");
+                    }
+                    if addon.roles.stream {
+                        roles.push("Streams");
+                    }
+                    if addon.roles.subtitles {
+                        roles.push("Subtitles");
+                    }
+                    let (health_state, health_message) = match addon.health.state {
+                        ankai_core::addons::AddonHealthState::Healthy => {
+                            ("healthy", "Manifest checked successfully".to_owned())
+                        }
+                        ankai_core::addons::AddonHealthState::Failing => (
+                            "failing",
+                            addon
+                                .health
+                                .last_error
+                                .clone()
+                                .unwrap_or_else(|| "Latest manifest check failed".into()),
+                        ),
+                        ankai_core::addons::AddonHealthState::Unknown => {
+                            ("unknown", "Not checked in this session".to_owned())
+                        }
+                    };
+                    let is_builtin = matches!(
+                        addon.manifest_url.as_str(),
+                        CINEMETA_MANIFEST_URL | ANIME_KITSU_MANIFEST_URL
+                    );
+                    AddonCard {
+                        id: addon.manifest_url.clone().into(),
+                        name: if is_builtin {
+                            format!("{}  ·  Built in", addon.name).into()
+                        } else {
+                            addon.name.into()
+                        },
+                        version: addon.version.into(),
+                        manifest_url: addon.manifest_url.into(),
+                        logo: slint::Image::default(),
+                        has_logo: false,
+                        resource_roles: if roles.is_empty() {
+                            "No declared resources".into()
+                        } else {
+                            roles.join("  ·  ").into()
+                        },
+                        media_types: addon.types.join("  ·  ").into(),
+                        enabled: addon.enabled,
+                        health_state: health_state.into(),
+                        health_message: health_message.into(),
+                        priority: addon.priority as i32 + 1,
+                        can_move_up: index > 0,
+                        can_move_down: index + 1 < total,
+                        removable: !is_builtin,
+                    }
+                })
+                .collect::<Vec<_>>();
+            app.set_installed_addons(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
+            app.set_addon_manager_state("ready".into());
+            app.set_addon_manager_error("".into());
+
+            for (index, url) in logo_urls {
+                images::load_cover_image(
+                    url,
+                    image_handle.clone(),
+                    app.as_weak(),
+                    move |app, image| {
+                        let model = app.get_installed_addons();
+                        let Some(model) =
+                            model.as_any().downcast_ref::<slint::VecModel<AddonCard>>()
+                        else {
+                            return;
+                        };
+                        if let Some(mut row) = model.row_data(index) {
+                            row.logo = image;
+                            row.has_logo = true;
+                            model.set_row_data(index, row);
+                        }
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            app.set_addon_manager_state("error".into());
+            app.set_addon_manager_error(error.to_string().into());
+        }
+    }
+}
+
+fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
+    STREMIO_ADDONS.with(|slot| slot.borrow_mut().clear());
+    STREMIO_MEDIA.with(|slot| slot.borrow_mut().clear());
+    STREMIO_MEDIA_SOURCES.with(|slot| slot.borrow_mut().clear());
+    STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
+    STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
+    app.set_stremio_media(slint::ModelRc::default());
+    app.set_stremio_stream_names(slint::ModelRc::default());
+    app.set_stremio_episodes(slint::ModelRc::default());
+    app.set_stremio_addon_names(slint::ModelRc::default());
+    app.set_stremio_selected_title("".into());
+
+    match ankai_core::addons::list(db) {
+        Ok(addons) => {
+            for addon in addons.into_iter().filter(|addon| addon.enabled) {
+                app.invoke_load_stremio_addon(addon.manifest_url.into());
+            }
+        }
+        Err(error) => app.set_stremio_status(format!("Couldn't reload addons: {error}").into()),
     }
 }
 
@@ -1909,6 +2128,7 @@ fn main() -> Result<(), slint::PlatformError> {
             runtime.spawn(async move {
                 let result = async {
                     let client = ankai_core::stremio::AddonClient::new(&url)?;
+                    let manifest_url = client.manifest_url()?;
                     let manifest = client.manifest().await?;
                     let supports_streams =
                         manifest.resources.iter().any(|resource| match resource {
@@ -1917,17 +2137,20 @@ fn main() -> Result<(), slint::PlatformError> {
                                 name == "stream"
                             }
                         });
-                    let catalog = manifest.catalogs.first().cloned();
-                    let media = match &catalog {
+                    let supports_meta =
+                        ankai_core::addons::ResourceRoles::from_manifest(&manifest).meta;
+                    let catalogs = manifest.catalogs.clone();
+                    let media = match catalogs.first() {
                         Some(catalog) => client.catalog(&catalog.media_type, &catalog.id).await?,
                         None => Vec::new(),
                     };
                     Ok::<_, ankai_core::Error>((
                         client,
-                        manifest.id,
-                        manifest.name,
-                        catalog.clone(),
+                        manifest_url,
+                        manifest,
+                        catalogs,
                         supports_streams,
+                        supports_meta,
                         media,
                     ))
                 }
@@ -1938,27 +2161,72 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
                     app.set_stremio_loading(false);
                     match result {
-                        Ok((client, addon_id, addon_name, catalog, supports_streams, media)) => {
+                        Ok((
+                            client,
+                            manifest_url,
+                            manifest,
+                            catalogs,
+                            supports_streams,
+                            supports_meta,
+                            media,
+                        )) => {
+                            let addon_name = manifest.name.clone();
+                            let persisted = MESSAGING_HANDLES.with(|handles| {
+                                let handles = handles.borrow();
+                                let db = &handles
+                                    .as_ref()
+                                    .expect("messaging handles initialized before addon callbacks")
+                                    .db;
+                                let exists = ankai_core::addons::list(db)?
+                                    .iter()
+                                    .any(|addon| addon.manifest_url == manifest_url);
+                                if exists {
+                                    ankai_core::addons::refresh_manifest(
+                                        db,
+                                        &manifest_url,
+                                        &manifest,
+                                    )
+                                } else {
+                                    ankai_core::addons::add(db, &manifest_url, &manifest)
+                                }
+                            });
+                            match persisted {
+                                Ok(_) => MESSAGING_HANDLES.with(|handles| {
+                                    let handles = handles.borrow();
+                                    refresh_addon_manager(
+                                        &app,
+                                        &handles.as_ref().expect("addon registry initialized").db,
+                                        &image_handle,
+                                    );
+                                }),
+                                Err(error) => app.set_stremio_status(
+                                    format!("Loaded {addon_name}, but couldn't save it: {error}")
+                                        .into(),
+                                ),
+                            }
                             let addon_index = STREMIO_ADDONS.with(|slot| {
                                 let mut addons = slot.borrow_mut();
-                                if let Some(index) =
-                                    addons.iter().position(|addon| addon.id == addon_id)
+                                if let Some(index) = addons
+                                    .iter()
+                                    .position(|addon| addon.manifest_url == manifest_url)
                                 {
                                     addons[index] = StremioAddon {
-                                        id: addon_id,
+                                        manifest_url,
                                         client,
                                         name: addon_name.clone(),
-                                        catalog,
+                                        catalogs,
                                         supports_streams,
+                                        supports_meta,
                                     };
                                     index
                                 } else {
                                     addons.push(StremioAddon {
-                                        id: addon_id,
+                                        manifest_url,
                                         client,
                                         name: addon_name.clone(),
-                                        catalog,
+                                        catalogs,
                                         supports_streams,
+                                        supports_meta,
                                     });
                                     addons.len() - 1
                                 }
@@ -1993,8 +2261,8 @@ fn main() -> Result<(), slint::PlatformError> {
                                     STREMIO_MEDIA.with(|s| s.borrow().len()),
                                     STREMIO_ADDONS
                                         .with(|addons| addons.borrow()[addon_index]
-                                            .catalog
-                                            .as_ref()
+                                            .catalogs
+                                            .first()
                                             .and_then(|catalog| catalog.name.clone()))
                                         .unwrap_or_else(|| "the default catalog".into())
                                 )
@@ -2028,7 +2296,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut sources = Vec::new();
                 let mut errors = Vec::new();
                 for (index, addon) in addons.iter().enumerate() {
-                    let Some(catalog) = &addon.catalog else {
+                    let catalog = if query.is_empty() {
+                        addon.catalogs.first()
+                    } else {
+                        addon
+                            .catalogs
+                            .iter()
+                            .find(|catalog| {
+                                catalog.extra.iter().any(|extra| extra.name == "search")
+                            })
+                            .or_else(|| addon.catalogs.first())
+                    };
+                    let Some(catalog) = catalog else {
                         continue;
                     };
                     let extras = if query.is_empty() {
@@ -2083,14 +2362,43 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_selected_title(selected.name.clone().into());
+                app.set_stremio_selected_description(
+                    selected.description.clone().unwrap_or_default().into(),
+                );
+                app.set_stremio_selected_meta_line(
+                    format!(
+                        "{}{}",
+                        selected.media_type,
+                        selected
+                            .release_info
+                            .as_deref()
+                            .map(|release| format!("  ·  {release}"))
+                            .unwrap_or_default()
+                    )
+                    .into(),
+                );
+                app.set_stremio_selected_cast("".into());
+                app.set_stremio_episodes(slint::ModelRc::default());
+                if let Some(card) = app.get_stremio_media().row_data(index as usize) {
+                    app.set_stremio_selected_poster(card.poster);
+                    app.set_stremio_selected_has_poster(card.has_poster);
+                }
                 app.set_stremio_status("Loading streams…".into());
                 app.set_stremio_loading(true);
             }
             let app_weak = app_weak.clone();
+            let image_handle = runtime.clone();
             runtime.spawn(async move {
                 let mut streams = Vec::new();
                 let mut errors = Vec::new();
+                let mut selected_meta = None;
                 for addon in &addons {
+                    if selected_meta.is_none() && addon.supports_meta {
+                        match addon.client.meta(&selected.media_type, &selected.id).await {
+                            Ok(meta) => selected_meta = Some(meta),
+                            Err(err) => errors.push(format!("{} metadata: {err}", addon.name)),
+                        }
+                    }
                     if !addon.supports_streams {
                         continue;
                     }
@@ -2115,6 +2423,11 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     app.set_stremio_loading(false);
+                    if let Some(meta) = selected_meta.as_ref() {
+                        show_stremio_meta(&app, meta, &image_handle);
+                    } else {
+                        STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
+                    }
                     if streams.is_empty() && !errors.is_empty() {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
@@ -2147,6 +2460,85 @@ fn main() -> Result<(), slint::PlatformError> {
                         )));
                         app.set_stremio_status(format!("Found {count} streams.").into());
                     }
+                });
+            });
+        });
+    }
+
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_open_stremio_episode(move |index| {
+            let episode =
+                STREMIO_EPISODES.with(|episodes| episodes.borrow().get(index as usize).cloned());
+            let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
+            let Some(episode) = episode else {
+                return;
+            };
+            if let Some(app) = app_weak.upgrade() {
+                app.set_stremio_loading(true);
+                app.set_stremio_stream_names(slint::ModelRc::default());
+                app.set_stremio_status(
+                    format!(
+                        "Loading streams for {}…",
+                        episode.title.as_deref().unwrap_or("this episode")
+                    )
+                    .into(),
+                );
+            }
+            let app_weak = app_weak.clone();
+            runtime.spawn(async move {
+                let mut streams = Vec::new();
+                let mut errors = Vec::new();
+                for addon in addons.iter().filter(|addon| addon.supports_streams) {
+                    match addon.client.streams("series", &episode.id).await {
+                        Ok(mut addon_streams) => {
+                            for stream in &mut addon_streams {
+                                if stream.name.is_none() {
+                                    stream.name = Some(addon.name.clone());
+                                }
+                            }
+                            streams.extend(addon_streams);
+                        }
+                        Err(error) => errors.push(format!("{}: {error}", addon.name)),
+                    }
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    app.set_stremio_loading(false);
+                    let labels = streams
+                        .iter()
+                        .map(|stream| {
+                            let kind = if stream.url.is_some() {
+                                "Direct"
+                            } else if stream.info_hash.is_some() {
+                                "Torrent"
+                            } else {
+                                "Unsupported"
+                            };
+                            format!(
+                                "{kind} — {}",
+                                stream
+                                    .title
+                                    .as_deref()
+                                    .or(stream.name.as_deref())
+                                    .unwrap_or("Unnamed stream")
+                            )
+                            .into()
+                        })
+                        .collect::<Vec<slint::SharedString>>();
+                    let count = streams.len();
+                    STREMIO_STREAMS.with(|slot| *slot.borrow_mut() = streams);
+                    app.set_stremio_stream_names(slint::ModelRc::from(Rc::new(
+                        slint::VecModel::from(labels),
+                    )));
+                    app.set_stremio_status(if count == 0 && !errors.is_empty() {
+                        format!("No episode stream loaded: {}", errors.join(" | ")).into()
+                    } else {
+                        format!("Found {count} episode streams.").into()
+                    });
                 });
             });
         });
@@ -2272,10 +2664,153 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Cinemeta is the public, zero-configuration default. Loading it at
-    // startup makes Discover useful immediately; users can still replace the
-    // URL with any configured addon manifest.
-    app.invoke_load_stremio_addon(app.get_stremio_addon_url());
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_refresh_addon_registry(move || {
+            if let Some(app) = app_weak.upgrade() {
+                refresh_addon_manager(&app, &db, &image_handle);
+            }
+        });
+    }
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_toggle_installed_addon(move |manifest_url, enabled| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match ankai_core::addons::set_enabled(&db, &manifest_url, enabled) {
+                Ok(_) => {
+                    refresh_addon_manager(&app, &db, &image_handle);
+                    reload_enabled_addons(&app, &db);
+                }
+                Err(error) => {
+                    app.set_stremio_status(format!("Couldn't update addon: {error}").into())
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_refresh_installed_addon(move |manifest_url| {
+            if let Some(app) = app_weak.upgrade() {
+                app.invoke_load_stremio_addon(manifest_url);
+            }
+        });
+    }
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_move_installed_addon_up(move |manifest_url| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let result = ankai_core::addons::list(&db).and_then(|addons| {
+                let index = addons
+                    .iter()
+                    .position(|addon| manifest_url == addon.manifest_url)
+                    .ok_or_else(|| ankai_core::Error::Stremio("addon is not installed".into()))?;
+                ankai_core::addons::move_to(&db, &manifest_url, index.saturating_sub(1))
+            });
+            match result {
+                Ok(_) => {
+                    refresh_addon_manager(&app, &db, &image_handle);
+                    reload_enabled_addons(&app, &db);
+                }
+                Err(error) => {
+                    app.set_stremio_status(format!("Couldn't reorder addon: {error}").into())
+                }
+            }
+        });
+    }
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_move_installed_addon_down(move |manifest_url| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let result = ankai_core::addons::list(&db).and_then(|addons| {
+                let index = addons
+                    .iter()
+                    .position(|addon| manifest_url == addon.manifest_url)
+                    .ok_or_else(|| ankai_core::Error::Stremio("addon is not installed".into()))?;
+                let target = (index + 1).min(addons.len().saturating_sub(1));
+                ankai_core::addons::move_to(&db, &manifest_url, target)
+            });
+            match result {
+                Ok(_) => {
+                    refresh_addon_manager(&app, &db, &image_handle);
+                    reload_enabled_addons(&app, &db);
+                }
+                Err(error) => {
+                    app.set_stremio_status(format!("Couldn't reorder addon: {error}").into())
+                }
+            }
+        });
+    }
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_remove_installed_addon(move |manifest_url| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            if matches!(
+                manifest_url.as_str(),
+                CINEMETA_MANIFEST_URL | ANIME_KITSU_MANIFEST_URL
+            ) {
+                app.set_shell_notice("Bundled providers can be disabled, but not removed.".into());
+                return;
+            }
+            match ankai_core::addons::remove(&db, &manifest_url) {
+                Ok(_) => {
+                    refresh_addon_manager(&app, &db, &image_handle);
+                    reload_enabled_addons(&app, &db);
+                }
+                Err(error) => {
+                    app.set_stremio_status(format!("Couldn't remove addon: {error}").into())
+                }
+            }
+        });
+    }
+
+    // Restore every enabled installed addon. Cinemeta and Anime Kitsu are
+    // bundled zero-configuration catalog/metadata providers; custom addons
+    // remain ordered alongside them and configured URL paths are preserved.
+    let installed_addons = ankai_core::addons::list(&db).unwrap_or_else(|error| {
+        app.set_stremio_status(format!("Couldn't read installed addons: {error}").into());
+        Vec::new()
+    });
+    refresh_addon_manager(&app, &db, p2p_runtime.handle());
+    let missing_builtins = [CINEMETA_MANIFEST_URL, ANIME_KITSU_MANIFEST_URL]
+        .into_iter()
+        .filter(|manifest_url| {
+            !installed_addons
+                .iter()
+                .any(|addon| addon.manifest_url == *manifest_url)
+        })
+        .collect::<Vec<_>>();
+    let has_enabled_addon = installed_addons.iter().any(|addon| addon.enabled);
+    for manifest_url in &missing_builtins {
+        app.invoke_load_stremio_addon((*manifest_url).into());
+    }
+    for addon in installed_addons.into_iter().filter(|addon| addon.enabled) {
+        app.invoke_load_stremio_addon(addon.manifest_url.into());
+    }
+    if !missing_builtins.is_empty() {
+        app.set_stremio_status("Starting bundled Cinemeta and Anime Kitsu…".into());
+    } else if !has_enabled_addon {
+        // The registry may contain only disabled providers. Discover remains
+        // honest and empty until the user enables one in the manager.
+        app.set_stremio_status("All installed addons are disabled.".into());
+    }
 
     // Home dashboard: recent posts and friends are plain synchronous local-
     // DB reads (like the rest of this app's startup loads above); trending/

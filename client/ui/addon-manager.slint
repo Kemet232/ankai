@@ -1,0 +1,754 @@
+// ANKAI Stremio add-on manager
+//
+// Presentation-only component for the persisted add-on registry. Rust owns
+// validation, network I/O, persistence, ordering, and logo decoding; this
+// file owns the complete visual state machine and emits one callback for
+// every user action.
+
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct AddonCard {
+    id: string,
+    name: string,
+    version: string,
+    manifest-url: string,
+    logo: image,
+    has-logo: bool,
+    resource-roles: string,
+    media-types: string,
+    enabled: bool,
+    health-state: string,
+    health-message: string,
+    priority: int,
+    can-move-up: bool,
+    can-move-down: bool,
+    removable: bool,
+}
+
+component ManagerAction inherits Rectangle {
+    in property <string> label;
+    in property <string> icon: "";
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    in property <length> button-width: 104px;
+    callback activated();
+
+    width: root.button-width;
+    height: 40px;
+    border-radius: 12px;
+    opacity: root.enabled ? 1 : 0.42;
+    background: !root.enabled
+        ? Theme.bg-surface-raised.with-alpha(0.32)
+        : touch.pressed
+            ? (root.danger ? Theme.state-busy.with-alpha(0.34) : Theme.accent-violet.with-alpha(0.40))
+            : touch.has-hover || keyboard-focus.has-focus
+                ? (root.danger
+                    ? Theme.state-busy.with-alpha(0.22)
+                    : root.primary
+                        ? @linear-gradient(110deg, Theme.accent-pink 0%, Theme.accent-violet 100%)
+                        : Theme.accent-violet.with-alpha(0.20))
+                : root.primary
+                    ? @linear-gradient(110deg, Theme.accent-violet 0%, Theme.accent-pink.with-alpha(0.82) 100%)
+                    : Theme.bg-surface-raised.with-alpha(0.74);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? Theme.accent-cyan
+        : root.danger
+            ? Theme.state-busy.with-alpha(0.46)
+            : root.primary
+                ? Theme.accent-pink.with-alpha(0.66)
+                : Theme.silver.with-alpha(0.18);
+    drop-shadow-color: root.primary ? Theme.accent-pink.with-alpha(0.22) : transparent;
+    drop-shadow-blur: root.primary && (touch.has-hover || keyboard-focus.has-focus) ? 18px : root.primary ? 8px : 0px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled && !root.busy;
+    accessible-action-default => {
+        if (root.enabled && !root.busy) { root.activated(); }
+    }
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+    animate drop-shadow-blur { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: 13px;
+        padding-right: 13px;
+        spacing: 7px;
+        alignment: center;
+
+        if root.icon != "" && !root.busy: Text {
+            text: root.icon;
+            color: root.danger ? Theme.state-busy : Theme.text-primary;
+            font-size: 14px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+
+        if root.busy: Rectangle {
+            width: 11px;
+            height: 11px;
+            border-radius: 6px;
+            border-width: 2px;
+            border-color: Theme.text-primary.with-alpha(0.68);
+        }
+
+        Text {
+            text: root.busy ? "Working…" : root.label;
+            color: root.danger ? Theme.state-busy : Theme.text-primary;
+            font-size: 12px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        key-pressed(event) => {
+            if (root.enabled && !root.busy && (event.text == Key.Return || event.text == " ")) {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && !root.busy;
+        mouse-cursor: root.enabled && !root.busy ? pointer : default;
+        clicked => {
+            keyboard-focus.focus();
+            root.activated();
+        }
+    }
+}
+
+component ManagerIconAction inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    callback activated();
+
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    opacity: root.enabled ? 1 : 0.34;
+    background: !root.enabled
+        ? transparent
+        : touch.pressed
+            ? (root.danger ? Theme.state-busy.with-alpha(0.34) : Theme.accent-violet.with-alpha(0.34))
+            : touch.has-hover || keyboard-focus.has-focus
+                ? (root.danger ? Theme.state-busy.with-alpha(0.20) : Theme.accent-violet.with-alpha(0.20))
+                : Theme.bg-void.with-alpha(0.30);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? Theme.accent-cyan
+        : root.danger
+            ? Theme.state-busy.with-alpha(0.38)
+            : Theme.silver.with-alpha(0.14);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.activated(); }
+    }
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.glyph;
+        color: root.danger ? Theme.state-busy : touch.has-hover || keyboard-focus.has-focus ? Theme.text-primary : Theme.text-secondary;
+        font-size: 15px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    keyboard-focus := FocusScope {
+        key-pressed(event) => {
+            if (root.enabled && (event.text == Key.Return || event.text == " ")) {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            keyboard-focus.focus();
+            root.activated();
+        }
+    }
+}
+
+component StatusPill inherits Rectangle {
+    in property <string> state;
+    in property <string> detail;
+
+    width: 116px;
+    height: 28px;
+    border-radius: 14px;
+    background: root.state == "healthy"
+        ? Theme.state-online.with-alpha(0.12)
+        : root.state == "failing"
+            ? Theme.state-busy.with-alpha(0.14)
+            : Theme.state-away.with-alpha(0.12);
+    border-width: 1px;
+    border-color: root.state == "healthy"
+        ? Theme.state-online.with-alpha(0.36)
+        : root.state == "failing"
+            ? Theme.state-busy.with-alpha(0.42)
+            : Theme.state-away.with-alpha(0.34);
+    accessible-role: text;
+    accessible-label: root.detail == "" ? root.state : root.state + ": " + root.detail;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 7px;
+        alignment: center;
+
+        Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 4px;
+            background: root.state == "healthy"
+                ? Theme.state-online
+                : root.state == "failing"
+                    ? Theme.state-busy
+                    : Theme.state-away;
+        }
+
+        Text {
+            text: root.state == "healthy" ? "Healthy" : root.state == "failing" ? "Needs attention" : "Not checked";
+            color: root.state == "healthy"
+                ? Theme.state-online
+                : root.state == "failing"
+                    ? Theme.state-busy
+                    : Theme.state-away;
+            font-size: 10px;
+            font-weight: 700;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component InfoTag inherits Rectangle {
+    in property <string> label;
+    in property <color> tint: Theme.accent-violet;
+
+    height: 27px;
+    horizontal-stretch: 1;
+    border-radius: 9px;
+    background: root.tint.with-alpha(0.10);
+    border-width: 1px;
+    border-color: root.tint.with-alpha(0.24);
+
+    Text {
+        text: root.label;
+        color: root.label == "" ? Theme.text-secondary.with-alpha(0.72) : Theme.text-secondary;
+        font-size: 10px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+component InstalledAddonCard inherits Rectangle {
+    in property <AddonCard> addon;
+    in property <bool> actions-enabled: true;
+    callback toggle(string, bool);
+    callback refresh(string);
+    callback move-up(string);
+    callback move-down(string);
+    callback remove(string);
+
+    height: 214px;
+    border-radius: 18px;
+    background: root.addon.enabled
+        ? @linear-gradient(125deg, Theme.bg-surface-raised.with-alpha(0.92) 0%, Theme.bg-surface.with-alpha(0.84) 100%)
+        : Theme.bg-surface.with-alpha(0.62);
+    border-width: 1px;
+    border-color: root.addon.health-state == "failing"
+        ? Theme.state-busy.with-alpha(0.46)
+        : card-touch.has-hover
+            ? Theme.accent-violet.with-alpha(0.52)
+            : Theme.silver.with-alpha(0.15);
+    opacity: root.addon.enabled ? 1 : 0.72;
+    drop-shadow-color: card-touch.has-hover ? Theme.accent-violet.with-alpha(0.16) : Theme.bg-void.with-alpha(0.32);
+    drop-shadow-blur: card-touch.has-hover ? 16px : 8px;
+    drop-shadow-offset-y: 3px;
+
+    animate border-color { duration: 140ms; }
+    animate drop-shadow-blur { duration: 140ms; }
+    animate opacity { duration: 140ms; }
+
+    // Kept behind the card's actual controls in paint/hit-test order. It
+    // exists only to drive the card-level hover elevation.
+    card-touch := TouchArea {
+        mouse-cursor: default;
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 18px;
+        width: 3px;
+        height: parent.height - 36px;
+        border-radius: 2px;
+        background: root.addon.health-state == "failing"
+            ? Theme.state-busy
+            : root.addon.enabled
+                ? Theme.accent-pink
+                : Theme.state-offline;
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 11px;
+
+        HorizontalLayout {
+            height: 58px;
+            spacing: 12px;
+
+            Rectangle {
+                width: 54px;
+                height: 54px;
+                border-radius: 15px;
+                clip: true;
+                background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.38) 0%, Theme.accent-pink.with-alpha(0.18) 100%);
+                border-width: 1px;
+                border-color: Theme.silver.with-alpha(0.18);
+
+                if root.addon.has-logo: Image {
+                    source: root.addon.logo;
+                    image-fit: contain;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                if !root.addon.has-logo: Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "✦";
+                    color: Theme.text-primary;
+                    font-size: 23px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 3px;
+                horizontal-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.addon.name;
+                        color: Theme.text-primary;
+                        font-size: 15px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.addon.version == "" ? "" : "v" + root.addon.version;
+                        color: Theme.accent-cyan;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: root.addon.manifest-url;
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+
+            StatusPill {
+                state: root.addon.health-state;
+                detail: root.addon.health-message;
+            }
+        }
+
+        HorizontalLayout {
+            height: 27px;
+            spacing: 8px;
+            InfoTag {
+                label: root.addon.resource-roles == "" ? "No declared resources" : root.addon.resource-roles;
+                tint: Theme.accent-pink;
+            }
+            InfoTag {
+                label: root.addon.media-types == "" ? "No media types" : root.addon.media-types;
+                tint: Theme.accent-cyan;
+            }
+        }
+
+        if root.addon.health-state == "failing" && root.addon.health-message != "": Text {
+            height: 16px;
+            text: root.addon.health-message;
+            color: Theme.state-busy;
+            font-size: 10px;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+
+            ManagerAction {
+                label: root.addon.enabled ? "Enabled" : "Disabled";
+                icon: root.addon.enabled ? "✓" : "○";
+                button-width: 105px;
+                enabled: root.actions-enabled;
+                activated => { root.toggle(root.addon.id, !root.addon.enabled); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            Text {
+                text: "Priority " + root.addon.priority;
+                color: Theme.text-secondary;
+                font-size: 10px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            ManagerIconAction {
+                glyph: "↑";
+                label: "Move " + root.addon.name + " up";
+                enabled: root.actions-enabled && root.addon.can-move-up;
+                activated => { root.move-up(root.addon.id); }
+            }
+            ManagerIconAction {
+                glyph: "↓";
+                label: "Move " + root.addon.name + " down";
+                enabled: root.actions-enabled && root.addon.can-move-down;
+                activated => { root.move-down(root.addon.id); }
+            }
+            ManagerIconAction {
+                glyph: "↻";
+                label: "Refresh " + root.addon.name;
+                enabled: root.actions-enabled;
+                activated => { root.refresh(root.addon.id); }
+            }
+            ManagerIconAction {
+                glyph: "×";
+                label: "Remove " + root.addon.name;
+                danger: true;
+                enabled: root.actions-enabled && root.addon.removable;
+                activated => { root.remove(root.addon.id); }
+            }
+        }
+    }
+
+}
+
+export component AddonManager inherits Rectangle {
+    in property <[AddonCard]> addons;
+    in-out property <string> manifest-url;
+    // "loading", "ready", or "error". Any other value is treated as
+    // loading so callers never flash an empty manager before initial load.
+    in property <string> state: "loading";
+    in property <string> error-message;
+    in property <bool> install-busy: false;
+    in property <bool> actions-enabled: true;
+
+    callback install(string);
+    callback retry();
+    callback toggle(string, bool);
+    callback refresh(string);
+    callback move-up(string);
+    callback move-down(string);
+    callback remove(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 18px;
+
+        Rectangle {
+            height: 118px;
+            border-radius: 20px;
+            background: @linear-gradient(110deg, Theme.bg-surface-raised.with-alpha(0.92) 0%, Theme.accent-violet.with-alpha(0.16) 64%, Theme.accent-pink.with-alpha(0.09) 100%);
+            border-width: 1px;
+            border-color: Theme.silver.with-alpha(0.18);
+            drop-shadow-color: Theme.bg-void.with-alpha(0.38);
+            drop-shadow-blur: 16px;
+            drop-shadow-offset-y: 4px;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 11px;
+
+                HorizontalLayout {
+                    height: 27px;
+                    spacing: 10px;
+                    Text {
+                        text: "ADD-ON LIBRARY";
+                        color: Theme.accent-pink;
+                        font-size: 11px;
+                        font-weight: 800;
+                        letter-spacing: 1.1px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "Public Stremio manifests · no sign-in needed";
+                        color: Theme.text-secondary;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 44px;
+                    spacing: 10px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-radius: 13px;
+                        background: Theme.bg-void.with-alpha(0.48);
+                        border-width: manifest-edit.has-focus ? 2px : 1px;
+                        border-color: manifest-edit.has-focus ? Theme.accent-cyan : Theme.silver.with-alpha(0.16);
+
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            Text {
+                                text: "◇";
+                                color: Theme.accent-cyan;
+                                font-size: 15px;
+                                vertical-alignment: center;
+                            }
+                            manifest-edit := LineEdit {
+                                horizontal-stretch: 1;
+                                text <=> root.manifest-url;
+                                placeholder-text: "https://example-addon.test/manifest.json";
+                                accessible-label: "Stremio add-on manifest URL";
+                                enabled: !root.install-busy;
+                                accepted => {
+                                    if (root.manifest-url != "" && !root.install-busy) {
+                                        root.install(root.manifest-url);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ManagerAction {
+                        label: "Install add-on";
+                        icon: "+";
+                        primary: true;
+                        busy: root.install-busy;
+                        enabled: root.manifest-url != "";
+                        button-width: 136px;
+                        activated => { root.install(root.manifest-url); }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 32px;
+            background: transparent;
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: "Installed add-ons";
+                    color: Theme.text-primary;
+                    font-size: 17px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 28px;
+                    height: 22px;
+                    border-radius: 11px;
+                    background: Theme.accent-violet.with-alpha(0.19);
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.addons.length;
+                        color: Theme.accent-cyan;
+                        font-size: 10px;
+                        font-weight: 800;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: "Top add-ons are queried first";
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.state != "ready" && root.state != "error": Rectangle {
+            vertical-stretch: 1;
+            min-height: 230px;
+            border-radius: 20px;
+            background: Theme.bg-surface-raised.with-alpha(0.58);
+            border-width: 1px;
+            border-color: Theme.silver.with-alpha(0.12);
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 14px;
+                Rectangle {
+                    width: 58px;
+                    height: 58px;
+                    border-radius: 29px;
+                    background: Theme.accent-violet.with-alpha(0.18);
+                    border-width: 2px;
+                    border-color: Theme.accent-pink.with-alpha(0.46);
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: "✦";
+                        color: Theme.accent-pink;
+                        font-size: 24px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: "Loading your add-ons…";
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Checking saved manifests and their current health";
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        if root.state == "error": Rectangle {
+            vertical-stretch: 1;
+            min-height: 230px;
+            border-radius: 20px;
+            background: Theme.state-busy.with-alpha(0.07);
+            border-width: 1px;
+            border-color: Theme.state-busy.with-alpha(0.30);
+
+            VerticalLayout {
+                padding: 32px;
+                alignment: center;
+                spacing: 13px;
+                Text {
+                    text: "!";
+                    color: Theme.state-busy;
+                    font-size: 28px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Couldn’t load the add-on library";
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.error-message == "" ? "The local add-on registry is unavailable." : root.error-message;
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                ManagerAction {
+                    label: "Try again";
+                    icon: "↻";
+                    primary: true;
+                    button-width: 116px;
+                    activated => { root.retry(); }
+                }
+            }
+        }
+
+        if root.state == "ready" && root.addons.length == 0: Rectangle {
+            vertical-stretch: 1;
+            min-height: 230px;
+            border-radius: 20px;
+            background: Theme.bg-surface-raised.with-alpha(0.58);
+            border-width: 1px;
+            border-color: Theme.silver.with-alpha(0.12);
+
+            VerticalLayout {
+                padding: 32px;
+                alignment: center;
+                spacing: 12px;
+                Text {
+                    text: "◇";
+                    color: Theme.accent-violet;
+                    font-size: 34px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Your add-on library is empty";
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Paste a public manifest URL above. Cinemeta is a good first source for catalogs and metadata.";
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.state == "ready" && root.addons.length > 0: ScrollView {
+            vertical-stretch: 1;
+            min-height: 230px;
+            viewport-width: self.width;
+
+            VerticalLayout {
+                spacing: 12px;
+                padding-right: 8px;
+
+                for addon in root.addons: InstalledAddonCard {
+                    addon: addon;
+                    actions-enabled: root.actions-enabled;
+                    toggle(id, enabled) => { root.toggle(id, enabled); }
+                    refresh(id) => { root.refresh(id); }
+                    move-up(id) => { root.move-up(id); }
+                    move-down(id) => { root.move-down(id); }
+                    remove(id) => { root.remove(id); }
+                }
+            }
+        }
+    }
+}

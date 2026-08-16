@@ -1,0 +1,227 @@
+// Focused Stremio title detail surface used by Discover.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct StremioEpisodeRef {
+    title: string,
+    detail: string,
+    thumbnail: image,
+    has-thumbnail: bool,
+}
+
+component DetailButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback activated();
+    height: 38px;
+    min-width: 92px;
+    border-radius: 12px;
+    background: root.primary
+        ? (touch.pressed ? Theme.accent-pink.with-alpha(0.68) : @linear-gradient(110deg, Theme.accent-violet 0%, Theme.accent-pink 100%))
+        : touch.has-hover ? Theme.silver.with-alpha(0.13) : Theme.bg-surface-raised.with-alpha(0.72);
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.18);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+    Text {
+        text: root.label;
+        color: Theme.text-primary;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.activated(); }
+    }
+}
+
+export component TitleDetail inherits Rectangle {
+    in property <string> title: "";
+    in property <string> meta-line: "";
+    in property <string> description: "";
+    in property <string> cast-line: "";
+    in property <image> poster;
+    in property <bool> has-poster: false;
+    in property <[StremioEpisodeRef]> episodes: [];
+    in property <[string]> streams: [];
+    in property <bool> loading: false;
+    in property <string> status: "";
+    callback close();
+    callback choose-episode(int);
+    callback play-stream(int);
+
+    height: 500px;
+    border-radius: 22px;
+    clip: true;
+    background: @linear-gradient(125deg, #11152EE8 0%, #171438F0 58%, #0D1A30F0 100%);
+    border-width: 1px;
+    border-color: Theme.accent-violet.with-alpha(0.46);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.65);
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 8px;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 88px;
+        background: @linear-gradient(180deg, Theme.accent-violet.with-alpha(0.18) 0%, transparent 100%);
+    }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 16px;
+
+        HorizontalLayout {
+            height: 244px;
+            spacing: 20px;
+
+            Rectangle {
+                width: 156px;
+                border-radius: 16px;
+                clip: true;
+                background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.42) 0%, Theme.bg-void 100%);
+                border-width: 1px;
+                border-color: Theme.silver.with-alpha(0.18);
+                if root.has-poster: Image {
+                    source: root.poster;
+                    width: parent.width;
+                    height: parent.height;
+                    image-fit: cover;
+                }
+                if !root.has-poster: Text {
+                    text: "ANKAI";
+                    color: Theme.text-secondary;
+                    font-size: 18px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 9px;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: root.title;
+                        color: Theme.text-primary;
+                        font-size: 25px;
+                        font-weight: 800;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    DetailButton { width: 76px; label: "Close"; activated => { root.close(); } }
+                }
+
+                Text {
+                    text: root.meta-line;
+                    color: Theme.accent-pink;
+                    font-size: 11px;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.description == "" ? "No description was supplied by this addon." : root.description;
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                    overflow: elide;
+                }
+
+                if root.cast-line != "": Text {
+                    text: "Cast  ·  " + root.cast-line;
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+
+                if root.loading: Text {
+                    text: "✦  Asking enabled providers…";
+                    color: Theme.accent-violet;
+                    font-size: 11px;
+                }
+                if !root.loading && root.status != "": Text {
+                    text: root.status;
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.episodes.length > 0: VerticalLayout {
+            height: 112px;
+            spacing: 7px;
+            Text { text: "EPISODES"; color: Theme.text-secondary; font-size: 9px; font-weight: 800; letter-spacing: 1.1px; }
+            ScrollView {
+                vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: as-needed;
+                HorizontalLayout {
+                    spacing: 9px;
+                    padding-right: 8px;
+                    for episode[i] in root.episodes: Rectangle {
+                        width: 184px;
+                        height: 76px;
+                        border-radius: 12px;
+                        clip: true;
+                        background: episode-touch.has-hover ? Theme.accent-violet.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.68);
+                        border-width: 1px;
+                        border-color: episode-touch.has-hover ? Theme.accent-pink.with-alpha(0.5) : Theme.silver.with-alpha(0.14);
+                        HorizontalLayout {
+                            spacing: 9px;
+                            Rectangle {
+                                width: 68px;
+                                background: Theme.bg-void.with-alpha(0.65);
+                                if episode.has-thumbnail: Image { source: episode.thumbnail; width: parent.width; height: parent.height; image-fit: cover; }
+                            }
+                            VerticalLayout {
+                                padding-top: 10px;
+                                padding-bottom: 10px;
+                                spacing: 3px;
+                                Text { text: episode.title; color: Theme.text-primary; font-size: 11px; font-weight: 700; overflow: elide; }
+                                Text { text: episode.detail; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
+                            }
+                        }
+                        accessible-role: button;
+                        accessible-label: episode.title;
+                        accessible-action-default => { root.choose-episode(i); }
+                        episode-touch := TouchArea { mouse-cursor: pointer; clicked => { root.choose-episode(i); } }
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 7px;
+            Text { text: "PLAY FROM"; color: Theme.text-secondary; font-size: 9px; font-weight: 800; letter-spacing: 1.1px; }
+            if !root.loading && root.streams.length == 0: Text {
+                text: "No playable stream was returned. Try another enabled provider.";
+                color: Theme.text-secondary;
+                font-size: 11px;
+            }
+            ScrollView {
+                height: 48px;
+                vertical-scrollbar-policy: always-off;
+                horizontal-scrollbar-policy: as-needed;
+                HorizontalLayout {
+                    spacing: 9px;
+                    padding-right: 8px;
+                    for stream[i] in root.streams: DetailButton {
+                        label: stream;
+                        primary: i == 0;
+                        activated => { root.play-stream(i); }
+                    }
+                }
+            }
+        }
+    }
+}

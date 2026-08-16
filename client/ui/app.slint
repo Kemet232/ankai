@@ -32,6 +32,8 @@ export { SpikeGlassBlurWindow }
 import { FixedPanel } from "floating-panel.slint";
 import { AppNavButton, TopCommandBar } from "shell-components.slint";
 import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, MalTopicRef } from "home-dashboard.slint";
+import { TitleDetail, StremioEpisodeRef } from "title-detail.slint";
+import { AddonManager, AddonCard } from "addon-manager.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -907,10 +909,26 @@ export component AppWindow inherits Window {
     in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
     in-out property <string> stremio-selected-title: "";
+    in-out property <string> stremio-selected-meta-line: "";
+    in-out property <string> stremio-selected-description: "";
+    in-out property <string> stremio-selected-cast: "";
+    in-out property <image> stremio-selected-poster;
+    in-out property <bool> stremio-selected-has-poster: false;
+    in-out property <[StremioEpisodeRef]> stremio-episodes: [];
+    in-out property <[AddonCard]> installed-addons: [];
+    in-out property <string> addon-manager-state: "ready";
+    in-out property <string> addon-manager-error: "";
     callback load-stremio-addon(string);
     callback search-stremio(string);
     callback open-stremio-media(int);
+    callback open-stremio-episode(int);
     callback activate-stremio-stream(int);
+    callback toggle-installed-addon(string, bool);
+    callback refresh-installed-addon(string);
+    callback move-installed-addon-up(string);
+    callback move-installed-addon-down(string);
+    callback remove-installed-addon(string);
+    callback refresh-addon-registry();
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
     // screen/persistence" step) — main.rs loads the saved value into this
@@ -2927,28 +2945,21 @@ export component AppWindow inherits Window {
                         Button { text: "Search"; clicked => { root.search-stremio(root.stremio-search-query); } }
                     }
 
-                    Text { text: "Addon source"; color: Theme.text-secondary; font-size: 10px; }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            horizontal-stretch: 1;
-                            text <=> root.stremio-addon-url;
-                            placeholder-text: "https://addon.example/manifest.json";
-                            accepted => { root.load-stremio-addon(root.stremio-addon-url); }
-                        }
-                        Button {
-                            text: "Add addon";
-                            clicked => { root.load-stremio-addon(root.stremio-addon-url); }
-                        }
-                    }
-
-                    if root.stremio-addon-names.length > 0: HorizontalLayout {
-                        spacing: 8px;
-                        Text { text: "Loaded addons"; color: Theme.text-secondary; font-size: 11px; }
-                        for addon in root.stremio-addon-names: Text { text: "• " + addon; color: Theme.accent-violet; font-size: 11px; }
+                    AddonManager {
+                        height: 520px;
+                        addons: root.installed-addons;
+                        manifest-url <=> root.stremio-addon-url;
+                        state: root.addon-manager-state;
+                        error-message: root.addon-manager-error;
+                        install-busy: root.stremio-loading;
+                        actions-enabled: !root.stremio-loading;
+                        install(url) => { root.load-stremio-addon(url); }
+                        retry => { root.refresh-addon-registry(); }
+                        toggle(id, enabled) => { root.toggle-installed-addon(id, enabled); }
+                        refresh(id) => { root.refresh-installed-addon(id); }
+                        move-up(id) => { root.move-installed-addon-up(id); }
+                        move-down(id) => { root.move-installed-addon-down(id); }
+                        remove(id) => { root.remove-installed-addon(id); }
                     }
 
                     Text {
@@ -2965,7 +2976,7 @@ export component AppWindow inherits Window {
                         font-weight: 700;
                     }
 
-                    ScrollView {
+                    if root.stremio-selected-title == "": ScrollView {
                         height: 252px;
                         horizontal-stretch: 1;
                         HorizontalLayout {
@@ -3000,17 +3011,27 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    if root.stremio-selected-title != "": Text {
-                        text: "Streams for " + root.stremio-selected-title;
-                        color: Theme.text-primary;
-                        font-size: 17px;
-                        font-weight: 700;
+                    if root.stremio-selected-title != "": TitleDetail {
+                        width: parent.width;
+                        title: root.stremio-selected-title;
+                        meta-line: root.stremio-selected-meta-line;
+                        description: root.stremio-selected-description;
+                        cast-line: root.stremio-selected-cast;
+                        poster: root.stremio-selected-poster;
+                        has-poster: root.stremio-selected-has-poster;
+                        episodes: root.stremio-episodes;
+                        streams: root.stremio-stream-names;
+                        loading: root.stremio-loading;
+                        status: root.stremio-status;
+                        close => {
+                            root.stremio-selected-title = "";
+                            root.stremio-stream-names = [];
+                            root.stremio-episodes = [];
+                        }
+                        choose-episode(index) => { root.open-stremio-episode(index); }
+                        play-stream(index) => { root.activate-stremio-stream(index); }
                     }
 
-                    for stream[i] in root.stremio-stream-names: Button {
-                        text: stream;
-                        clicked => { root.activate-stremio-stream(i); }
-                    }
                 }
             }
 
