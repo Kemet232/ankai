@@ -70,6 +70,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Runtime-only libmpv loading. The shared library is shipped beside the app
 # (LGPL build per ADR-0006), never statically linked into this executable.
 libloading = "0.8"
+libc = "0.2"
 
 [build-dependencies]
 slint-build = "1.17"

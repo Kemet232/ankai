@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-16 (session 15)
+Last updated: 2026-08-16 (session 16)
 
 ## What ANKAI is
 
@@ -79,11 +79,87 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Last.fm "Now Playing" backend (`core::lastfm`) | done — real, read-only client for Last.fm's public `user.getrecenttracks` endpoint (API-key-only, no OAuth needed for this call — confirmed live). Returns `Ok(Some(NowPlaying))` only when Last.fm's own `nowplaying` flag is genuinely set, `Ok(None)` for an honest "nothing playing" (including zero scrobble history), `Err` for a real failure — never fabricated. No elapsed/duration data exists on this endpoint, so the My Page widget's progress bar is an explicitly-decorative indeterminate pulse, not a real scrubber. Wired via a `slint::Timer` periodic refresh (not one-shot); Last.fm username is a local-only Settings field, separate from the API key. Real live test (`cargo test -p ankai-core --test lastfm_live -- --ignored`) confirmed against a real public account and a real nonexistent-username 404 | `core/src/lastfm.rs`, `core/tests/lastfm_live.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. Not wired into the real app directly (see next row — a non-draggable sibling was wired in instead) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 | Fixed-position glass panels wired onto Home/Messages/Hangouts | done (session 15) — new `FixedPanel` component (non-draggable sibling of `FloatingPanel`, same glass tint/border/glow/title-bar styling, laid out via normal Slint stretch/fill instead of free-floating coordinates). Wraps Home's Friend Activity/Popular Right Now/Hot Discussions/Watch Parties/MAL Forum Discussions sections; Messages split into "Connect a Peer" + "Conversation" panels (pane now scrollable); Hangouts split into "Create a Hangout" + "Your Hangouts" panels (also now scrollable, with an honest empty state). Trending Now hero left as-is (full-bleed cover art, already has equivalent glass-card styling). No drag mechanism wired onto any real pane, per standing instruction | `client/ui/floating-panel.slint`, `client/ui/app.slint` |
+| Stremio addon discovery | done (session 16) — typed live manifest/catalog/meta/stream client; configured manifest paths preserved; multiple catalog and stream-only addons can be loaded together; searches merge catalog providers and stream selection queries every compatible stream provider; WebP poster art loads into Slint in memory | `core/src/stremio.rs`, `client/src/main.rs`, `client/ui/app.slint` |
+| libmpv playback | **embedded render path working on macOS; product controls incomplete** (session 16) — dynamically loads libmpv, uses `vo=libmpv`, shares Slint/FemtoVG's current OpenGL context through `mpv_render_context_create`, renders into the app framebuffer before Slint draws its controls, and passed a real public HTTPS MP4 smoke run. Direct streams play in-app. Current controls are only play/pause/close; no seek bar, volume, track/subtitle selector, fullscreen, playback event/property observation, or recovery UI. Windows/Linux render path and the LGPL release artifact remain unverified | `client/src/playback.rs`, `client/src/main.rs`, `scripts/bundle-libmpv.sh` |
+| Animated loading experience | done (session 16) — original full-proportion violet/pink virtual-idol mascot generated for ANKAI and animated in Slint with a looping bounce/sway/glow while addon manifests, searches, and stream lists load | `client/ui/assets/ankai-loading-idol.png`, `client/ui/app.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
 `cargo run -p client -- --spike` (or `ANKAI_SPIKE_DEBUG=1`) — it is not
 the default UI anymore.
+
+## Critical product audit (session 16)
+
+ANKAI now demonstrates many real subsystems, but it is not yet a coherent
+shippable social product. Its strongest differentiators are the native visual
+identity, local-first encrypted architecture, combined anime discovery/social
+surface, and now real in-app media playback. Its main weakness is breadth:
+many features exist as technically honest vertical slices, while the everyday
+loops that make users return are still discontinuous.
+
+### Highest-impact gaps
+
+1. **The core user loop is fragmented.** Discovering a title, adding it to a
+   watchlist, starting playback, inviting friends, entering a Hangout, and
+   discussing the episode are separate surfaces with little shared context.
+   The next product milestone should be one end-to-end title detail screen
+   that connects all of them.
+2. **Playback is an engine integration, not yet a player.** Add elapsed time,
+   duration/seek, volume/mute, fullscreen, buffering/error state, subtitle and
+   audio-track selection, episode navigation, resume position, keyboard
+   shortcuts, and mpv property/event observation. Torrent streams still need
+   the explicit resolver boundary; do not present them as playable before one
+   exists.
+3. **Addon management is session-only and under-governed.** Persist installed
+   addon URLs, provide enable/disable/remove/reorder, show declared resources
+   and content types, distinguish catalog/metadata/stream/subtitle roles, add
+   per-addon health/error state, and introduce an explicit network-permission
+   prompt. User-supplied addon URLs currently create a broad outbound-network
+   capability; localhost/private-network access needs a deliberate policy so
+   self-hosted addons remain possible without silently enabling SSRF-style
+   behavior.
+4. **Identity is not an account system.** Device-scoped IDs/usernames/friends
+   cannot deliver multi-device continuity, recovery, account portability, or
+   reliable discovery. This is the largest architectural product dependency
+   and must be designed together with the E2EE recovery model.
+5. **Messaging/community depth is below the visual promise.** There is no
+   conversation list, unread state, delivery/read state, attachments, replies,
+   editing, moderation workflow, blocks, reports, or real community membership.
+   The polished shell currently makes these omissions more noticeable.
+6. **Hangouts are still labels, not watch parties.** They need membership,
+   invites, host authority, synchronized playback state, reconnect behavior,
+   voice/chat integration, and clear behavior when participants use different
+   stream sources.
+7. **Data resilience is thin.** Third-party reads are mostly live-only with no
+   pagination, rate-limit coordination, stale-while-revalidate cache, retry
+   policy, cancellation, or offline rendering. Images have a process cache but
+   no bounded eviction. Slow calls can outlive a changed screen/query.
+8. **Release engineering is unfinished.** The project can load a development
+   Homebrew libmpv, and has a bundle-copy hook, but CI does not yet build and
+   attest LGPL-only libmpv/FFmpeg artifacts for macOS, Windows, and Linux.
+   Code signing, notarization, updater behavior, crash reporting, migrations,
+   and reproducible release manifests are not established.
+9. **Trust, safety, and legal controls lag extension capability.** Before a
+   public addon/provider directory, ANKAI needs source attribution, permission
+   review, block/report paths, content-policy enforcement, malicious-manifest
+   handling, URL/redirect limits, and a clear distinction between public
+   protocol compatibility and endorsement of particular content sources.
+10. **Accessibility and performance need re-validation after the redesign.**
+    Earlier Slint spikes passed, but the new background, large remote-image
+    grids, animated loader, 60fps video redraw, and overlay controls materially
+    changed the workload and focus structure. Re-run keyboard-only, VoiceOver,
+    reduced-motion, contrast, low-end GPU, memory, and long-session tests.
+
+### Recommended execution order
+
+1. Finish the player UX and title-detail/episode flow.
+2. Persist and govern addons; add cancellation, caching, pagination, and errors.
+3. Turn Hangouts into a real synchronized playback room using the finished
+   player boundary.
+4. Complete conversation navigation and community membership/moderation.
+5. Decide and ADR the real account/multi-device/recovery system.
+6. Build reproducible signed cross-platform releases, then repeat performance,
+   accessibility, security, and licensing validation before any public beta.
 
 ## Immediate next steps (in order)
 

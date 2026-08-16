@@ -875,7 +875,13 @@ export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
     preferred-height: 640px;
-    background: Theme.bg-void;
+    background: root.player-active ? transparent : Theme.bg-void;
+    in-out property <bool> player-active: false;
+    in-out property <string> player-title: "";
+    callback toggle-player-pause();
+    callback close-player();
+    callback player-frame();
+    Timer { interval: 16ms; running: root.player-active; triggered => { root.player-frame(); } }
 
     property <[string]> nav-items: [
         "Home",
@@ -920,6 +926,8 @@ export component AppWindow inherits Window {
     in-out property <[string]> stremio-addon-names: [];
     in-out property <string> stremio-search-query: "";
     in-out property <string> stremio-status: "Enter an addon URL and load it.";
+    in-out property <bool> stremio-loading: false;
+    property <bool> loading-dance-beat: false;
     in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
     in-out property <string> stremio-selected-title: "";
@@ -1178,6 +1186,7 @@ export component AppWindow inherits Window {
         height: parent.height;
         source: @image-url("assets/ankai-night-city.png");
         image-fit: cover;
+        visible: !root.player-active;
     }
 
     Rectangle {
@@ -1275,7 +1284,7 @@ export component AppWindow inherits Window {
         // ---- Content pane: swapped based on selected nav item ----
         Rectangle {
             horizontal-stretch: 1;
-            background: Theme.bg-surface.with-alpha(0.72);
+            background: root.player-active ? transparent : Theme.bg-surface.with-alpha(0.72);
 
             if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index && root.selected-index != root.watch-index: Text {
                 x: 32px;
@@ -2857,7 +2866,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.watch-index: ScrollView {
+            if root.selected-index == root.watch-index && !root.player-active: ScrollView {
                 width: parent.width;
                 height: parent.height;
 
@@ -2976,6 +2985,23 @@ export component AppWindow inherits Window {
                     for stream[i] in root.stremio-stream-names: Button {
                         text: stream;
                         clicked => { root.activate-stremio-stream(i); }
+                    }
+                }
+            }
+
+            if root.player-active: Rectangle {
+                background: transparent;
+                Rectangle {
+                    x: 24px; y: parent.height - 74px; width: parent.width - 48px; height: 54px;
+                    border-radius: 18px;
+                    background: Theme.bg-surface-raised.with-alpha(0.86);
+                    border-width: 1px;
+                    border-color: Theme.silver.with-alpha(0.20);
+                    HorizontalLayout {
+                        padding: 10px; spacing: 12px;
+                        Text { text: root.player-title; color: Theme.text-primary; font-size: 13px; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                        Button { text: "Play / Pause"; clicked => { root.toggle-player-pause(); } }
+                        Button { text: "Close"; clicked => { root.close-player(); } }
                     }
                 }
             }
@@ -3108,6 +3134,52 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    if root.stremio-loading: Rectangle {
+        x: 0px; y: 0px; width: parent.width; height: parent.height;
+        background: Theme.bg-void.with-alpha(0.78);
+
+        Rectangle {
+            width: 300px; height: 390px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: 24px;
+            clip: true;
+            background: Theme.bg-surface-raised;
+            border-width: 1px;
+            border-color: Theme.accent-violet.with-alpha(0.65);
+            drop-shadow-color: Theme.accent-pink.with-alpha(root.loading-dance-beat ? 0.55 : 0.24);
+            drop-shadow-blur: root.loading-dance-beat ? 42px : 22px;
+
+            Image {
+                width: 260px;
+                height: 310px;
+                x: 20px + (root.loading-dance-beat ? 7px : -7px);
+                y: root.loading-dance-beat ? 2px : 12px;
+                source: @image-url("assets/ankai-loading-idol.png");
+                image-fit: contain;
+                transform-rotation: root.loading-dance-beat ? 2deg : -2deg;
+                animate x { duration: 260ms; easing: ease-in-out; }
+                animate y { duration: 260ms; easing: ease-in-out; }
+                animate transform-rotation { duration: 260ms; easing: ease-in-out; }
+            }
+
+            Text {
+                x: 20px; y: 334px; width: parent.width - 40px;
+                text: root.stremio-status;
+                color: Theme.text-primary;
+                font-size: 13px;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        Timer {
+            interval: 280ms;
+            running: root.stremio-loading;
+            triggered => { root.loading-dance-beat = !root.loading-dance-beat; }
         }
     }
 }

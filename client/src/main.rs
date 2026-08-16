@@ -965,17 +965,15 @@ fn spawn_lastfm_refresh(
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // Prefer the Skia renderer for full-effects mode per ADR-0002. If Skia
-    // can't be selected (missing at compile time, or backend init fails at
-    // runtime on this machine), fall back to Slint's default backend
-    // selection (FemtoVG/OpenGL, then software) rather than hard-erroring —
-    // this mirrors the "Potato mode" fallback path the ADR calls for.
+    // libmpv's render API and Slint share this OpenGL context. FemtoVG is the
+    // stable OpenGL renderer in Slint 1.17 and exposes it through the rendering
+    // notifier; Skia may select Metal on macOS and cannot be shared with mpv.
     if let Err(err) = slint::BackendSelector::new()
-        .renderer_name("skia".into())
+        .renderer_name("femtovg".into())
         .select()
     {
         eprintln!(
-            "ankai-client: Skia renderer unavailable ({err}); falling back to Slint's default backend/renderer selection."
+            "ankai-client: FemtoVG renderer unavailable ({err}); falling back to Slint's default backend/renderer selection."
         );
     }
 
@@ -1027,6 +1025,58 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let app = AppWindow::new()?;
+
+    {
+        let app_weak = app.as_weak();
+        app.window()
+            .set_rendering_notifier(move |state, graphics_api| {
+                let Some(app) = app_weak.upgrade() else {
+                    return;
+                };
+                match (state, graphics_api) {
+                    (
+                        slint::RenderingState::RenderingSetup,
+                        slint::GraphicsAPI::NativeOpenGL { .. },
+                    ) => {
+                        let result = playback::Player::new().and_then(|mut player| {
+                            player.setup_opengl()?;
+                            if let Ok(url) = std::env::var("ANKAI_PLAYBACK_TEST_URL") {
+                                player.load(&url)?;
+                                app.set_player_title("Embedded playback test".into());
+                                app.set_player_active(true);
+                            }
+                            VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
+                            Ok(())
+                        });
+                        if let Err(error) = result {
+                            app.set_stremio_status(format!("Error: {error}").into());
+                        }
+                    }
+                    (
+                        slint::RenderingState::BeforeRendering,
+                        slint::GraphicsAPI::NativeOpenGL { .. },
+                    ) if app.get_player_active() => {
+                        let size = app.window().size();
+                        VIDEO_PLAYER.with(|slot| {
+                            if let Some(player) = slot.borrow_mut().as_mut() {
+                                if let Err(error) =
+                                    player.render(size.width as i32, size.height as i32)
+                                {
+                                    app.set_stremio_status(format!("Error: {error}").into());
+                                }
+                            }
+                        });
+                    }
+                    (slint::RenderingState::RenderingTeardown, _) => {
+                        VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = None)
+                    }
+                    _ => {}
+                }
+            })
+            .map_err(|error| {
+                slint::PlatformError::Other(format!("failed to install video renderer: {error}"))
+            })?;
+    }
     app.set_account_id(device.account.0.clone().into());
     app.set_device_id(device.id.0.clone().into());
 
@@ -1838,6 +1888,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let app_weak = app_weak.clone();
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status("Loading addon manifest…".into());
+                app.set_stremio_loading(true);
             }
             let image_handle = runtime.clone();
             runtime.spawn(async move {
@@ -1870,6 +1921,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
+                    app.set_stremio_loading(false);
                     match result {
                         Ok((client, addon_id, addon_name, catalog, supports_streams, media)) => {
                             let addon_index = STREMIO_ADDONS.with(|slot| {
@@ -1952,6 +2004,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status("Searching…".into());
+                app.set_stremio_loading(true);
             }
             let app_weak = app_weak.clone();
             let image_handle = runtime.clone();
@@ -1984,6 +2037,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
+                    app.set_stremio_loading(false);
                     if media.is_empty() && !errors.is_empty() {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
@@ -2015,6 +2069,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_selected_title(selected.name.clone().into());
                 app.set_stremio_status("Loading streams…".into());
+                app.set_stremio_loading(true);
             }
             let app_weak = app_weak.clone();
             runtime.spawn(async move {
@@ -2044,6 +2099,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
+                    app.set_stremio_loading(false);
                     if streams.is_empty() && !errors.is_empty() {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
@@ -2084,34 +2140,75 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app_weak = app.as_weak();
         app.on_activate_stremio_stream(move |index| {
-            let message = STREMIO_STREAMS.with(|streams| {
+            let (message, playing) = STREMIO_STREAMS.with(|streams| {
                 let streams = streams.borrow();
                 match streams.get(index as usize).map(|stream| stream.source()) {
                     Some(Ok(ankai_core::stremio::StreamSource::Direct(url))) => {
                         VIDEO_PLAYER.with(|slot| {
                             let mut slot = slot.borrow_mut();
-                            if slot.is_none() {
-                                match playback::Player::new() {
-                                    Ok(player) => *slot = Some(player),
-                                    Err(err) => return format!("Error: {err}"),
-                                }
-                            }
-                            match slot.as_mut().unwrap().load(url) {
-                                Ok(()) => "Playing direct stream with bundled libmpv.".into(),
-                                Err(err) => format!("Error: {err}"),
+                            let Some(player) = slot.as_mut() else {
+                                return (
+                                    "Error: embedded video renderer is unavailable.".into(),
+                                    false,
+                                );
+                            };
+                            match player.load(url) {
+                                Ok(()) => ("Playing in ANKAI with libmpv.".into(), true),
+                                Err(err) => (format!("Error: {err}"), false),
                             }
                         })
                     }
-                    Some(Ok(ankai_core::stremio::StreamSource::BitTorrent { .. })) => {
+                    Some(Ok(ankai_core::stremio::StreamSource::BitTorrent { .. })) => (
                         "Torrent stream selected; a torrent resolver is required before playback."
-                            .into()
-                    }
-                    Some(Err(err)) => format!("Error: {err}"),
-                    None => "Error: stream is no longer available.".into(),
+                            .into(),
+                        false,
+                    ),
+                    Some(Err(err)) => (format!("Error: {err}"), false),
+                    None => ("Error: stream is no longer available.".into(), false),
                 }
             });
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status(message.into());
+                if playing {
+                    app.set_player_title(app.get_stremio_selected_title());
+                    app.set_player_active(true);
+                    app.window().request_redraw();
+                }
+            }
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_toggle_player_pause(move || {
+            VIDEO_PLAYER.with(|slot| {
+                if let Some(player) = slot.borrow_mut().as_mut() {
+                    let _ = player.toggle_pause();
+                }
+            });
+            if let Some(app) = app_weak.upgrade() {
+                app.window().request_redraw();
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_close_player(move || {
+            VIDEO_PLAYER.with(|slot| {
+                if let Some(player) = slot.borrow_mut().as_mut() {
+                    let _ = player.stop();
+                }
+            });
+            if let Some(app) = app_weak.upgrade() {
+                app.set_player_active(false);
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_frame(move || {
+            if let Some(app) = app_weak.upgrade() {
+                app.window().request_redraw();
             }
         });
     }
