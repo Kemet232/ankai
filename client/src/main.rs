@@ -531,12 +531,149 @@ fn mal_topic_to_ref(topic: ankai_core::mal_forums::ForumTopic) -> MalTopicRef {
         "replies"
     };
     MalTopicRef {
+        id: topic.id as i32,
         title: topic.title.into(),
         snippet: format!(
             "{} {replies_word} · started by {}",
             topic.number_of_posts, topic.created_by.name
         )
         .into(),
+        preview: "".into(),
+    }
+}
+
+/// Decodes numeric HTML character references (`&#68;`/`&#x44;`) into their
+/// real characters. Real MAL post bodies were observed to encode non-ASCII
+/// characters this way (in addition to the small set of named entities
+/// `bbcode_preview` decodes directly) — a malformed/unrecognized reference is
+/// left as-is rather than dropped, since a real preview showing raw markup
+/// is better than one silently losing real text.
+fn decode_numeric_html_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("&#") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let (is_hex, digits_start) = if after.starts_with(['x', 'X']) {
+            (true, 1)
+        } else {
+            (false, 0)
+        };
+        let digits_part = &after[digits_start..];
+        let digit_len = digits_part
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(digits_part.len());
+        let has_semicolon = digits_part[digit_len..].starts_with(';');
+        let code_point = if digit_len > 0 {
+            u32::from_str_radix(&digits_part[..digit_len], if is_hex { 16 } else { 10 }).ok()
+        } else {
+            None
+        };
+        match (code_point.and_then(char::from_u32), has_semicolon) {
+            (Some(ch), true) => {
+                out.push(ch);
+                rest = &digits_part[digit_len + 1..];
+            }
+            _ => {
+                out.push_str("&#");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Strips MAL's real raw phpBB-style BBCode post body down to a short plain-
+/// text preview — not a real BBCode renderer (see `core::mal_forums`'s "No
+/// rendering of forum post bodies" doc comment: converting that markup to
+/// displayable text is explicitly left to the UI layer, not core). Drops
+/// anything between `[`/`]` (tags like `[b]`, `[url=...]`, `[/list]`),
+/// decodes the handful of HTML entities real MAL post bodies were observed
+/// to contain, collapses all whitespace/newlines to single spaces, and
+/// truncates to `max_chars` real characters (not bytes) with a trailing
+/// ellipsis.
+fn bbcode_preview(body: &str, max_chars: usize) -> String {
+    let mut stripped = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    // Real MAL post bodies were observed to use `[img]<raw url>[/img]` with
+    // the URL as bare tag *content*, not an attribute — stripping only the
+    // brackets (as every other tag needs) would leak the whole URL as
+    // visible text, which happened for real the first time this ran against
+    // a live topic. So `[img]`/`[/img]` content is dropped entirely, not
+    // just the brackets.
+    let mut skip_until_closing_img = false;
+    while let Some(ch) = chars.next() {
+        if ch == '[' {
+            let mut tag = String::new();
+            for c in chars.by_ref() {
+                if c == ']' {
+                    break;
+                }
+                tag.push(c);
+            }
+            match tag.to_ascii_lowercase().as_str() {
+                "img" => skip_until_closing_img = true,
+                "/img" => skip_until_closing_img = false,
+                _ => {}
+            }
+        } else if !skip_until_closing_img {
+            stripped.push(ch);
+        }
+    }
+    let decoded = decode_numeric_html_entities(&stripped)
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#039;", "'")
+        .replace("&ntilde;", "ñ")
+        .replace("&Ntilde;", "Ñ")
+        .replace("&ccedil;", "ç")
+        .replace("&Ccedil;", "Ç")
+        .replace("&eacute;", "é")
+        .replace("&egrave;", "è")
+        .replace("&uuml;", "ü")
+        .replace("&ouml;", "ö")
+        .replace("&auml;", "ä")
+        .replace("&nbsp;", " ")
+        .replace("<br />", " ");
+    // Real MAL post bodies were also observed to contain bare image URLs
+    // with no `[img]` wrapper at all (confirmed live: a real topic's first
+    // post was literally "AWC 2026: https://i.imgur.com/....png
+    // https://i.imgur.com/....png ..."), so a whole raw URL as one
+    // "word" is dropped too, not just BBCode-tagged ones.
+    let collapsed = decoded
+        .split_whitespace()
+        .filter(|word| !word.starts_with("http://") && !word.starts_with("https://"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.chars().count() <= max_chars {
+        collapsed
+    } else {
+        let truncated: String = collapsed.chars().take(max_chars).collect();
+        format!("{}…", truncated.trim_end())
+    }
+}
+
+/// Updates a single MAL topic row's real first-post preview in place, once
+/// it finishes loading — matched by topic id, same "reload can race an
+/// in-flight fetch, tolerate it" shape as `set_anime_cover`.
+fn set_mal_topic_preview(model: slint::ModelRc<MalTopicRef>, id: i32, preview: String) {
+    let Some(vec_model) = model
+        .as_any()
+        .downcast_ref::<slint::VecModel<MalTopicRef>>()
+    else {
+        return;
+    };
+    for i in 0..vec_model.row_count() {
+        if let Some(mut row) = vec_model.row_data(i) {
+            if row.id == id {
+                row.preview = preview.into();
+                vec_model.set_row_data(i, row);
+                break;
+            }
+        }
     }
 }
 
@@ -551,9 +688,17 @@ fn mal_topic_to_ref(topic: ankai_core::mal_forums::ForumTopic) -> MalTopicRef {
 /// any other real failure (network error, MAL outage) is shown close to
 /// verbatim.
 fn spawn_mal_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
+    let handle_for_previews = handle.clone();
+    let app_weak_for_previews = app_weak.clone();
     handle.spawn(async move {
         let result =
             ankai_core::mal_forums::list_topics_in_board(MAL_ANIME_DISCUSSION_BOARD_ID, 8).await;
+        // Collected before `result` moves into the closure below — used to
+        // kick off the real per-topic preview fetches afterward.
+        let topic_ids: Vec<i64> = match &result {
+            Ok(topics) => topics.iter().map(|t| t.id).collect(),
+            Err(_) => Vec::new(),
+        };
         let _ = slint::invoke_from_event_loop(move || {
             let Some(app) = app_weak.upgrade() else {
                 return;
@@ -578,6 +723,31 @@ fn spawn_mal_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWi
                 }
             }
         });
+
+        // Real first-post preview text loads progressively after the topic
+        // list itself is already on screen — same "don't block the initial
+        // render on N extra network calls" shape cover-art loading already
+        // uses. One real `get_topic_posts` fetch per topic; a failed fetch
+        // just leaves that topic's preview blank, not an error state.
+        for topic_id in topic_ids {
+            let app_weak = app_weak_for_previews.clone();
+            handle_for_previews.spawn(async move {
+                if let Ok(details) = ankai_core::mal_forums::get_topic_posts(topic_id, 1).await {
+                    if let Some(first_post) = details.posts.first() {
+                        let preview = bbcode_preview(&first_post.body, 140);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(app) = app_weak.upgrade() {
+                                set_mal_topic_preview(
+                                    app.get_mal_topics(),
+                                    topic_id as i32,
+                                    preview,
+                                );
+                            }
+                        });
+                    }
+                }
+            });
+        }
     });
 }
 

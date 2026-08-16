@@ -128,8 +128,16 @@ export struct FriendRef {
 // (Client-ID-only auth; a real honest error, not fabricated data, if
 // MAL_CLIENT_ID isn't set in the environment at runtime).
 export struct MalTopicRef {
+    id: int,
     title: string,
     snippet: string,
+    // Real excerpt from the topic's real first post (MAL's raw BBCode body,
+    // stripped/truncated for display — see client::main's bbcode_preview
+    // doc comment and core::mal_forums's "No rendering of forum post
+    // bodies" note on why that stripping lives in the client, not core).
+    // Loads progressively after the topic list itself is on screen, same
+    // shape as cover-art loading; starts empty, not an error state.
+    preview: string,
 }
 
 // ---------------------------------------------------------------------
@@ -1206,12 +1214,31 @@ export component AppWindow inherits Window {
                         Rectangle {
                             horizontal-stretch: 65;
                             border-radius: 20px;
-                            background: @linear-gradient(135deg, Theme.accent-violet.with-alpha(0.4) 0%, Theme.bg-surface-raised.with-alpha(0.88) 55%, Theme.accent-cyan.with-alpha(0.2) 100%);
+                            background: Theme.bg-surface-raised.with-alpha(0.88);
                             border-width: 1px;
                             border-color: Theme.silver.with-alpha(0.22);
                             drop-shadow-color: Theme.bg-void.with-alpha(0.5);
                             drop-shadow-blur: 20px;
                             drop-shadow-offset-y: 6px;
+                            clip: true;
+
+                            // Real cover art (see AnimeRef's doc comment) as the
+                            // hero card's full-bleed background, matching the
+                            // reference image's look — the gradient wash below
+                            // sits on top of this so the title text stays
+                            // readable, rather than replacing the art entirely.
+                            if root.trending-anime.length > 0 && root.trending-anime[0].has-cover: Image {
+                                source: root.trending-anime[0].cover;
+                                width: 100%;
+                                height: 100%;
+                                image-fit: cover;
+                            }
+
+                            Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: @linear-gradient(135deg, Theme.accent-violet.with-alpha(0.55) 0%, Theme.bg-surface-raised.with-alpha(0.55) 55%, Theme.accent-cyan.with-alpha(0.25) 100%);
+                            }
 
                             if root.trending-anime.length == 0: VerticalLayout {
                                 padding: 24px;
@@ -1596,7 +1623,7 @@ export component AppWindow inherits Window {
 
                                     for entry[i] in root.mal-topics: HomeCardItem {
                                         title-text: entry.title;
-                                        subtitle-text: entry.snippet;
+                                        subtitle-text: entry.preview == "" ? entry.snippet : entry.snippet + "\n" + entry.preview;
                                         accent: root.top8-accent-cycle[Math.mod(i, 4)];
                                     }
                                 }
