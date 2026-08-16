@@ -21,6 +21,15 @@ import { LineEdit, Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
+// Fixed-position (non-draggable) glass "window" chrome — see
+// floating-panel.slint's header comment for why this is a separate,
+// smaller component rather than the drag-capable FloatingPanel reused
+// with `dragged` left unwired. Used below on the Home dashboard's
+// section cards and on the Messages/Hangouts panes, matching the human's
+// reference-image MSN-Messenger-style floating-window aesthetic without
+// any actual drag interaction (deliberately dropped mid-project — see
+// PROGRESS.md).
+import { FixedPanel } from "floating-panel.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -1472,26 +1481,70 @@ export component AppWindow inherits Window {
                         }
 
                         // Friend Activity (~35%): real friends + real
-                        // on-demand presence, narrower and scrollable.
-                        VerticalLayout {
+                        // on-demand presence, narrower and scrollable, in
+                        // a fixed (non-draggable) glass "window" — see
+                        // FixedPanel's doc comment in floating-panel.slint.
+                        FixedPanel {
                             horizontal-stretch: 35;
+                            panel-title: "Friend Activity";
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
+
+                                Text {
+                                    text: "Real live connectivity check per friend, not a cached status.";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+
+                                if root.friends.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
+
+                                    VerticalLayout {
+                                        padding: 16px;
+
+                                        Text {
+                                            text: "You haven't added any friends yet.";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+
+                                if root.friends.length > 0: ScrollView {
+                                    vertical-stretch: 1;
+                                    vertical-scrollbar-policy: as-needed;
+                                    horizontal-scrollbar-policy: always-off;
+
+                                    VerticalLayout {
+                                        spacing: 10px;
+                                        alignment: start;
+
+                                        for entry in root.friends: HomeFriendCardItem {
+                                            label-text: entry.account-id;
+                                            online: entry.online;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Popular Right Now (real AniList data, horizontal-scrolling row) ----
+                    FixedPanel {
+                        panel-title: "Popular Right Now";
+
+                        VerticalLayout {
+                            padding: 12px;
                             spacing: 10px;
 
-                            Text {
-                                text: "Friend Activity";
-                                color: Theme.text-primary;
-                                font-size: 16px;
-                                font-weight: 700;
-                            }
-
-                            Text {
-                                text: "Real live connectivity check per friend, not a cached status.";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                            }
-
-                            if root.friends.length == 0: Rectangle {
+                            if root.popular-anime.length == 0: Rectangle {
                                 border-radius: 14px;
                                 background: Theme.bg-surface-raised.with-alpha(0.4);
                                 border-width: 1px;
@@ -1501,7 +1554,7 @@ export component AppWindow inherits Window {
                                     padding: 16px;
 
                                     Text {
-                                        text: "You haven't added any friends yet.";
+                                        text: "No popular-anime data loaded yet.";
                                         color: Theme.text-secondary;
                                         font-size: 13px;
                                         wrap: word-wrap;
@@ -1509,77 +1562,31 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            if root.friends.length > 0: ScrollView {
-                                vertical-stretch: 1;
-                                vertical-scrollbar-policy: as-needed;
-                                horizontal-scrollbar-policy: always-off;
+                            // Compact fixed-width cards in a real horizontally-
+                            // scrolling row (ScrollView with the vertical
+                            // scrollbar switched off and the horizontal one
+                            // left as-needed — Slint's real ScrollView API, not
+                            // a vertical list turned sideways) — replaces the
+                            // old full-width vertical stack for this section.
+                            if root.popular-anime.length > 0: ScrollView {
+                                height: 100px;
+                                vertical-scrollbar-policy: always-off;
+                                horizontal-scrollbar-policy: as-needed;
 
-                                VerticalLayout {
+                                HorizontalLayout {
+                                    padding-right: 8px;
                                     spacing: 10px;
                                     alignment: start;
 
-                                    for entry in root.friends: HomeFriendCardItem {
-                                        label-text: entry.account-id;
-                                        online: entry.online;
+                                    for entry[i] in root.popular-anime: HomeCardItem {
+                                        width: 220px;
+                                        height: 72px;
+                                        title-text: entry.title;
+                                        subtitle-text: entry.score;
+                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        cover-image: entry.cover;
+                                        has-cover: entry.has-cover;
                                     }
-                                }
-                            }
-                        }
-                    }
-
-                    // ---- Popular Right Now (real AniList data, horizontal-scrolling row) ----
-                    VerticalLayout {
-                        spacing: 10px;
-
-                        Text {
-                            text: "Popular Right Now";
-                            color: Theme.text-primary;
-                            font-size: 16px;
-                            font-weight: 700;
-                        }
-
-                        if root.popular-anime.length == 0: Rectangle {
-                            border-radius: 14px;
-                            background: Theme.bg-surface-raised.with-alpha(0.4);
-                            border-width: 1px;
-                            border-color: Theme.silver.with-alpha(0.12);
-
-                            VerticalLayout {
-                                padding: 16px;
-
-                                Text {
-                                    text: "No popular-anime data loaded yet.";
-                                    color: Theme.text-secondary;
-                                    font-size: 13px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-
-                        // Compact fixed-width cards in a real horizontally-
-                        // scrolling row (ScrollView with the vertical
-                        // scrollbar switched off and the horizontal one
-                        // left as-needed — Slint's real ScrollView API, not
-                        // a vertical list turned sideways) — replaces the
-                        // old full-width vertical stack for this section.
-                        if root.popular-anime.length > 0: ScrollView {
-                            height: 100px;
-                            vertical-scrollbar-policy: always-off;
-                            horizontal-scrollbar-policy: as-needed;
-
-                            HorizontalLayout {
-                                padding-right: 8px;
-                                spacing: 10px;
-                                alignment: start;
-
-                                for entry[i] in root.popular-anime: HomeCardItem {
-                                    width: 220px;
-                                    height: 72px;
-                                    title-text: entry.title;
-                                    subtitle-text: entry.score;
-                                    accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                    cover-image: entry.cover;
-                                    has-cover: entry.has-cover;
                                 }
                             }
                         }
@@ -1591,55 +1598,53 @@ export component AppWindow inherits Window {
                         height: 300px;
 
                         // Hot Discussions (real cross-community posts).
-                        VerticalLayout {
+                        FixedPanel {
                             horizontal-stretch: 1;
-                            spacing: 10px;
+                            panel-title: "Hot Discussions";
 
-                            Text {
-                                text: "Hot Discussions";
-                                color: Theme.text-primary;
-                                font-size: 16px;
-                                font-weight: 700;
-                            }
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
 
-                            Text {
-                                text: "Recent posts across every community you're in.";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                            }
+                                Text {
+                                    text: "Recent posts across every community you're in.";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
 
-                            if root.recent-posts.length == 0: Rectangle {
-                                border-radius: 14px;
-                                background: Theme.bg-surface-raised.with-alpha(0.4);
-                                border-width: 1px;
-                                border-color: Theme.silver.with-alpha(0.12);
+                                if root.recent-posts.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
 
-                                VerticalLayout {
-                                    padding: 16px;
+                                    VerticalLayout {
+                                        padding: 16px;
 
-                                    Text {
-                                        text: "No posts yet — start a discussion in a community to see it here.";
-                                        color: Theme.text-secondary;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
+                                        Text {
+                                            text: "No posts yet — start a discussion in a community to see it here.";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
                                     }
                                 }
-                            }
 
-                            if root.recent-posts.length > 0: ScrollView {
-                                vertical-stretch: 1;
-                                vertical-scrollbar-policy: as-needed;
-                                horizontal-scrollbar-policy: always-off;
+                                if root.recent-posts.length > 0: ScrollView {
+                                    vertical-stretch: 1;
+                                    vertical-scrollbar-policy: as-needed;
+                                    horizontal-scrollbar-policy: always-off;
 
-                                VerticalLayout {
-                                    spacing: 10px;
-                                    alignment: start;
+                                    VerticalLayout {
+                                        spacing: 10px;
+                                        alignment: start;
 
-                                    for entry[i] in root.recent-posts: HomeCardItem {
-                                        title-text: entry.community-name;
-                                        subtitle-text: entry.content;
-                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        for entry[i] in root.recent-posts: HomeCardItem {
+                                            title-text: entry.community-name;
+                                            subtitle-text: entry.content;
+                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        }
                                     }
                                 }
                             }
@@ -1651,54 +1656,52 @@ export component AppWindow inherits Window {
                         // below), not relabeled as other people's live
                         // watch parties, even though the column header
                         // matches the reference mockup's label.
-                        VerticalLayout {
+                        FixedPanel {
                             horizontal-stretch: 1;
-                            spacing: 10px;
+                            panel-title: "Watch Parties";
 
-                            Text {
-                                text: "Watch Parties";
-                                color: Theme.text-primary;
-                                font-size: 16px;
-                                font-weight: 700;
-                            }
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
 
-                            Text {
-                                text: "Hangouts you've created on this device. There's no real-time sync yet, so this deliberately isn't labeled as other people's live watch parties.";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                            }
+                                Text {
+                                    text: "Hangouts you've created on this device. There's no real-time sync yet, so this deliberately isn't labeled as other people's live watch parties.";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
 
-                            if root.hangout-names.length == 0: Rectangle {
-                                border-radius: 14px;
-                                background: Theme.bg-surface-raised.with-alpha(0.4);
-                                border-width: 1px;
-                                border-color: Theme.silver.with-alpha(0.12);
+                                if root.hangout-names.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
 
-                                VerticalLayout {
-                                    padding: 16px;
+                                    VerticalLayout {
+                                        padding: 16px;
 
-                                    Text {
-                                        text: "You haven't created any Hangouts yet.";
-                                        color: Theme.text-secondary;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
+                                        Text {
+                                            text: "You haven't created any Hangouts yet.";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
                                     }
                                 }
-                            }
 
-                            if root.hangout-names.length > 0: ScrollView {
-                                vertical-stretch: 1;
-                                vertical-scrollbar-policy: as-needed;
-                                horizontal-scrollbar-policy: always-off;
+                                if root.hangout-names.length > 0: ScrollView {
+                                    vertical-stretch: 1;
+                                    vertical-scrollbar-policy: as-needed;
+                                    horizontal-scrollbar-policy: always-off;
 
-                                VerticalLayout {
-                                    spacing: 10px;
-                                    alignment: start;
+                                    VerticalLayout {
+                                        spacing: 10px;
+                                        alignment: start;
 
-                                    for name[i] in root.hangout-names: HomeCardItem {
-                                        title-text: name;
-                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        for name[i] in root.hangout-names: HomeCardItem {
+                                            title-text: name;
+                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        }
                                     }
                                 }
                             }
@@ -1709,73 +1712,71 @@ export component AppWindow inherits Window {
                         // screen for the first time this pass), replacing
                         // the reference mockup's out-of-scope "Around the
                         // Web" (Reddit) column.
-                        VerticalLayout {
+                        FixedPanel {
                             horizontal-stretch: 1;
-                            spacing: 10px;
+                            panel-title: "MAL Forum Discussions";
 
-                            Text {
-                                text: "MAL Forum Discussions";
-                                color: Theme.text-primary;
-                                font-size: 16px;
-                                font-weight: 700;
-                            }
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 10px;
 
-                            Text {
-                                text: "Recent topics from MyAnimeList's real \"Anime Discussion\" forum board.";
-                                color: Theme.text-secondary;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                            }
+                                Text {
+                                    text: "Recent topics from MyAnimeList's real \"Anime Discussion\" forum board.";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
 
-                            if root.mal-status != "": Rectangle {
-                                border-radius: 14px;
-                                background: Theme.state-busy.with-alpha(0.12);
-                                border-width: 1px;
-                                border-color: Theme.state-busy.with-alpha(0.35);
+                                if root.mal-status != "": Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.state-busy.with-alpha(0.12);
+                                    border-width: 1px;
+                                    border-color: Theme.state-busy.with-alpha(0.35);
 
-                                VerticalLayout {
-                                    padding: 16px;
+                                    VerticalLayout {
+                                        padding: 16px;
 
-                                    Text {
-                                        text: root.mal-status;
-                                        color: Theme.text-secondary;
-                                        font-size: 12px;
-                                        wrap: word-wrap;
+                                        Text {
+                                            text: root.mal-status;
+                                            color: Theme.text-secondary;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                        }
                                     }
                                 }
-                            }
 
-                            if root.mal-status == "" && root.mal-topics.length == 0: Rectangle {
-                                border-radius: 14px;
-                                background: Theme.bg-surface-raised.with-alpha(0.4);
-                                border-width: 1px;
-                                border-color: Theme.silver.with-alpha(0.12);
+                                if root.mal-status == "" && root.mal-topics.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
 
-                                VerticalLayout {
-                                    padding: 16px;
+                                    VerticalLayout {
+                                        padding: 16px;
 
-                                    Text {
-                                        text: "Loading MAL forum topics…";
-                                        color: Theme.text-secondary;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
+                                        Text {
+                                            text: "Loading MAL forum topics…";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
                                     }
                                 }
-                            }
 
-                            if root.mal-status == "" && root.mal-topics.length > 0: ScrollView {
-                                vertical-stretch: 1;
-                                vertical-scrollbar-policy: as-needed;
-                                horizontal-scrollbar-policy: always-off;
+                                if root.mal-status == "" && root.mal-topics.length > 0: ScrollView {
+                                    vertical-stretch: 1;
+                                    vertical-scrollbar-policy: as-needed;
+                                    horizontal-scrollbar-policy: always-off;
 
-                                VerticalLayout {
-                                    spacing: 10px;
-                                    alignment: start;
+                                    VerticalLayout {
+                                        spacing: 10px;
+                                        alignment: start;
 
-                                    for entry[i] in root.mal-topics: HomeCardItem {
-                                        title-text: entry.title;
-                                        subtitle-text: entry.preview == "" ? entry.snippet : entry.snippet + "\n" + entry.preview;
-                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        for entry[i] in root.mal-topics: HomeCardItem {
+                                            title-text: entry.title;
+                                            subtitle-text: entry.preview == "" ? entry.snippet : entry.snippet + "\n" + entry.preview;
+                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        }
                                     }
                                 }
                             }
@@ -2426,162 +2427,193 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.messages-index: VerticalLayout {
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
-
-                Text {
-                    text: "Messages";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                Text {
-                    text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
+            if root.selected-index == root.messages-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
 
                 VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Your invite (address + MLS key package — share this with a peer)";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    LineEdit {
-                        width: 500px;
-                        read-only: true;
-                        text: root.own-peer-address;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Peer's invite";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    LineEdit {
-                        width: 500px;
-                        placeholder-text: "Paste a peer's invite here";
-                        text <=> root.peer-address-input;
-                    }
-                }
-
-                if root.directory-enabled: VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Or, look up a peer by their Device ID (experimental — directory server configured)";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            width: 340px;
-                            placeholder-text: "Peer's Device ID (hex)";
-                            text <=> root.peer-device-id-input;
-                            accepted => {
-                                root.lookup-peer-by-device-id(root.peer-device-id-input);
-                            }
-                        }
-
-                        Button {
-                            text: "Look up";
-                            clicked => {
-                                root.lookup-peer-by-device-id(root.peer-device-id-input);
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: "Or by their username, if they've claimed one:";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            width: 340px;
-                            placeholder-text: "Peer's username";
-                            text <=> root.peer-username-input;
-                            accepted => {
-                                root.lookup-peer-by-username(root.peer-username-input);
-                            }
-                        }
-
-                        Button {
-                            text: "Look up";
-                            clicked => {
-                                root.lookup-peer-by-username(root.peer-username-input);
-                            }
-                        }
-                    }
-
-                    if root.lookup-status != "": Text {
-                        text: root.lookup-status;
-                        color: Theme.state-busy;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    LineEdit {
-                        width: 340px;
-                        placeholder-text: "Type a message";
-                        text <=> root.message-input;
-                        accepted => {
-                            root.send-message(root.peer-address-input, root.message-input);
+                    Text {
+                        text: "Messages";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // ---- Connect a Peer: fixed (non-draggable) glass
+                    // "window", matching the reference image's floating-
+                    // window look — see FixedPanel's doc comment in
+                    // floating-panel.slint. ----
+                    FixedPanel {
+                        panel-title: "Connect a Peer";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Your invite (address + MLS key package — share this with a peer)";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                LineEdit {
+                                    width: 500px;
+                                    read-only: true;
+                                    text: root.own-peer-address;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Peer's invite";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                LineEdit {
+                                    width: 500px;
+                                    placeholder-text: "Paste a peer's invite here";
+                                    text <=> root.peer-address-input;
+                                }
+                            }
+
+                            if root.directory-enabled: VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Or, look up a peer by their Device ID (experimental — directory server configured)";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    LineEdit {
+                                        width: 340px;
+                                        placeholder-text: "Peer's Device ID (hex)";
+                                        text <=> root.peer-device-id-input;
+                                        accepted => {
+                                            root.lookup-peer-by-device-id(root.peer-device-id-input);
+                                        }
+                                    }
+
+                                    Button {
+                                        text: "Look up";
+                                        clicked => {
+                                            root.lookup-peer-by-device-id(root.peer-device-id-input);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Or by their username, if they've claimed one:";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    LineEdit {
+                                        width: 340px;
+                                        placeholder-text: "Peer's username";
+                                        text <=> root.peer-username-input;
+                                        accepted => {
+                                            root.lookup-peer-by-username(root.peer-username-input);
+                                        }
+                                    }
+
+                                    Button {
+                                        text: "Look up";
+                                        clicked => {
+                                            root.lookup-peer-by-username(root.peer-username-input);
+                                        }
+                                    }
+                                }
+
+                                if root.lookup-status != "": Text {
+                                    text: root.lookup-status;
+                                    color: Theme.state-busy;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
                         }
                     }
 
-                    Button {
-                        text: "Send";
-                        clicked => {
-                            root.send-message(root.peer-address-input, root.message-input);
+                    // ---- Conversation: the "DM chat window" from the
+                    // reference image — compose row + message log, in its
+                    // own fixed glass panel. ----
+                    FixedPanel {
+                        panel-title: "Conversation";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                LineEdit {
+                                    width: 340px;
+                                    placeholder-text: "Type a message";
+                                    text <=> root.message-input;
+                                    accepted => {
+                                        root.send-message(root.peer-address-input, root.message-input);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Send";
+                                    clicked => {
+                                        root.send-message(root.peer-address-input, root.message-input);
+                                    }
+                                }
+                            }
+
+                            if root.send-status != "": Text {
+                                text: root.send-status;
+                                color: Theme.state-busy;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: "Messages (most recent first, persisted to the encrypted local DB)";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                            }
+
+                            for entry in root.message-log: Text {
+                                text: "• " + entry;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
                         }
                     }
-                }
-
-                if root.send-status != "": Text {
-                    text: root.send-status;
-                    color: Theme.state-busy;
-                    font-size: 12px;
-                }
-
-                Text {
-                    text: "Messages (most recent first, persisted to the encrypted local DB)";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                }
-
-                for entry in root.message-log: Text {
-                    text: "• " + entry;
-                    color: Theme.text-secondary;
-                    font-size: 14px;
-                    wrap: word-wrap;
                 }
             }
 
@@ -2714,50 +2746,80 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.hangouts-index: VerticalLayout {
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
+            if root.selected-index == root.hangouts-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
 
-                Text {
-                    text: "Hangouts";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                Text {
-                    text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
+                VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    LineEdit {
-                        width: 240px;
-                        placeholder-text: "New hangout name";
-                        text <=> root.new-hangout-name;
-                        accepted => {
-                            root.create-hangout(root.new-hangout-name);
+                    Text {
+                        text: "Hangouts";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // "Hangout Room" — the reference image's floating
+                    // watch-party window, fixed (non-draggable) here — see
+                    // FixedPanel's doc comment in floating-panel.slint.
+                    FixedPanel {
+                        panel-title: "Create a Hangout";
+
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+                            alignment: start;
+
+                            LineEdit {
+                                width: 240px;
+                                placeholder-text: "New hangout name";
+                                text <=> root.new-hangout-name;
+                                accepted => {
+                                    root.create-hangout(root.new-hangout-name);
+                                }
+                            }
+
+                            Button {
+                                text: "Create";
+                                clicked => {
+                                    root.create-hangout(root.new-hangout-name);
+                                }
+                            }
                         }
                     }
 
-                    Button {
-                        text: "Create";
-                        clicked => {
-                            root.create-hangout(root.new-hangout-name);
+                    FixedPanel {
+                        panel-title: "Your Hangouts";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            if root.hangout-names.length == 0: Text {
+                                text: "You haven't created any Hangouts yet.";
+                                color: Theme.text-secondary;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            for name in root.hangout-names: Text {
+                                text: "• " + name;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                            }
                         }
                     }
-                }
-
-                for name in root.hangout-names: Text {
-                    text: "• " + name;
-                    color: Theme.text-secondary;
-                    font-size: 14px;
                 }
             }
 
