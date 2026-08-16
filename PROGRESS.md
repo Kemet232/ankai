@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-16 (session 14)
+Last updated: 2026-08-16 (session 15)
 
 ## What ANKAI is
 
@@ -77,7 +77,8 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | `client/build.rs` rerun-if-changed bug | **fixed** — the build script only ever listed two floating-panel-demo files in `cargo:rerun-if-changed`, and printing any such line replaces cargo's default "rerun on any file change" fallback with "only rerun for what's listed." Edits to `app.slint`/`theme.slint` could silently stop triggering Slint regeneration on an incremental build once a target directory already had cached output — caught for real when a color-palette-only edit compiled clean but rendered the old colors. Fixed by globbing every real `ui/*.slint` file into its own rerun-if-changed line | `client/build.rs` |
 | Color palette rework (pink/violet, matching the reference) | done — the reference mockup uses a hot pink/magenta accent plus blue-violet, barely any cyan; ANKAI's palette leaned cyan/violet/gold. Real colors sampled directly from the reference image via pixel-level histogram analysis (not guessed): `#E82888` (a "like" count badge) → `theme.slint`'s new `accent-pink` (`#F0459A`, lightened for AA contrast), and `#6C4CD0` (primary buttons) → deepened `accent-violet` (`#8B6CF0` → `#8363E3`). `accent-cyan` usages replaced app-wide (nav pill, section labels, hero glow, avatar gradients, tab pills, accent-cycle arrays, Now Playing widget) except where cyan was already paired with violet in a gradient | `client/ui/theme.slint`, `client/ui/app.slint` |
 | Last.fm "Now Playing" backend (`core::lastfm`) | done — real, read-only client for Last.fm's public `user.getrecenttracks` endpoint (API-key-only, no OAuth needed for this call — confirmed live). Returns `Ok(Some(NowPlaying))` only when Last.fm's own `nowplaying` flag is genuinely set, `Ok(None)` for an honest "nothing playing" (including zero scrobble history), `Err` for a real failure — never fabricated. No elapsed/duration data exists on this endpoint, so the My Page widget's progress bar is an explicitly-decorative indeterminate pulse, not a real scrubber. Wired via a `slint::Timer` periodic refresh (not one-shot); Last.fm username is a local-only Settings field, separate from the API key. Real live test (`cargo test -p ankai-core --test lastfm_live -- --ignored`) confirmed against a real public account and a real nonexistent-username 404 | `core/src/lastfm.rs`, `core/tests/lastfm_live.rs`, `client/ui/app.slint`, `client/src/main.rs` |
-| Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. **Not wired into the real app** — the human changed their mind mid-session and no longer wants live dragging, just a fixed layout matching their reference image, so wiring this onto the real Home/Messages/Hangouts panes is now a smaller task than originally scoped (no drag interaction needed, just fixed positioning reusing the same glass-panel visual work) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
+| Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. Not wired into the real app directly (see next row — a non-draggable sibling was wired in instead) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
+| Fixed-position glass panels wired onto Home/Messages/Hangouts | done (session 15) — new `FixedPanel` component (non-draggable sibling of `FloatingPanel`, same glass tint/border/glow/title-bar styling, laid out via normal Slint stretch/fill instead of free-floating coordinates). Wraps Home's Friend Activity/Popular Right Now/Hot Discussions/Watch Parties/MAL Forum Discussions sections; Messages split into "Connect a Peer" + "Conversation" panels (pane now scrollable); Hangouts split into "Create a Hangout" + "Your Hangouts" panels (also now scrollable, with an honest empty state). Trending Now hero left as-is (full-bleed cover art, already has equivalent glass-card styling). No drag mechanism wired onto any real pane, per standing instruction | `client/ui/floating-panel.slint`, `client/ui/app.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
@@ -699,22 +700,78 @@ Settings, or fall back to the Claude-in-Chrome-style `computer` tool's
 click primitive if working in a context that has it, rather than raw
 `osascript click at`).
 
+**Session 15 (2026-08-16) ran the floating-panels track** (candidate 1 from
+session 14's list) via a single parallel agent, isolated worktree, branched
+correctly off current `main` this time (no stale-base repeat of session 14's
+failure). Built `FixedPanel` + wired it onto Home/Messages/Hangouts — see
+phase table above. Merged clean (`--no-ff`, no conflicts), full workspace
+`build`/`test`/`clippy -D warnings`/`fmt --check` re-verified on the merged
+tree by the orchestrator (not just trusted from the agent's own report).
+Also found and flagged for cleanup a genuine leftover from session 14: an
+abandoned worktree (`.claude/worktrees/agent-a4107902cb0e9fb31`, ~12 lines
+of uncommitted diff) matching PROGRESS.md's own account of that session's
+stale-`main` floating-panel attempt — now fully superseded by this session's
+real implementation.
+
+**Stremio addon support was proposed as a new track and scoped down after a
+real disagreement, worth recording exactly:** the human initially asked for
+full Stremio-addon-store parity including in-app magnet/torrent playback.
+Declined building that specific piece — Stremio's addon ecosystem is
+dominated by torrent-scraper addons for copyrighted content, and bundling a
+download-and-stream torrent engine into a public, real-identity-attached
+repo is materially different from a generic dual-use torrent client; this
+is a hold, not a preference, and doesn't move with re-asking. Landed on a
+scope consistent with ADR-0005's own precedent (never bundle the
+risky/legally-loaded component — shell out to something external instead):
+
+- Real Stremio addon protocol client (manifest/catalog/meta/streams) —
+  in scope, same shape as the existing MAL/AniList clients.
+- In-app playback via libmpv (already ADR-0006's chosen engine) for any
+  stream result that's a direct HTTP/HLS/DASH URL — full in-app experience,
+  no compromise, including for legitimate addons and self-hosted
+  (Jellyfin/Plex-style) addons serving content the human actually owns.
+- A `StreamResolver` trait as a genuine extension point for anything libmpv
+  can't play directly (magnet URIs etc.) — default implementation is a
+  no-op/OS-handoff fallback; the human plans to implement their own resolver
+  and register it in `client/src/main.rs` themselves. Not yet started as of
+  this update — was about to be launched as a parallel track when the human
+  pivoted to asking about iOS + accounts instead; still queued.
+
+**iOS port and a real account system were raised as new asks this session,
+both flagged as needing a human decision before agents start, not yet
+scoped or started:**
+- **Accounts**: `identity.rs`'s `AccountId` is still an honest local-only
+  placeholder (see ADR-0004 notes above) — there's no server-side account
+  service, no multi-device "Registration" model, no signup/login flow.
+  Building real accounts means picking an auth mechanism (password+email?
+  magic link? OAuth?) and account-server hosting/tech (likely reusing
+  ADR-0008's axum+SQLite reference-backend shape), and it touches identity
+  issuance directly enough to matter for ADR-0004's E2EE audit gate — this
+  is genuinely ADR-shaped, same bar as directory-server tech and the
+  marketplace, not something to default into silently.
+- **iOS port**: Slint has an experimental iOS backend, so technically
+  plausible, but real device testing/distribution needs Xcode + an Apple
+  Developer Program enrollment (paid, $99/yr) for anything beyond
+  local-simulator use — what "alpha" means for iOS (own-device testing only
+  vs. TestFlight-distributable) changes the scope materially and is the
+  human's call.
+
 Remaining steps, none locked:
 
-1. **Wire the fixed-position (no-drag) floating-panel layout onto the real
-   Home/Messages/Hangouts panes**, matching the human's reference image as
-   closely as the real data allows. Build fresh against current `main`
-   (don't try to resurrect the abandoned worktree — see above); reuse
-   `floating-panel.slint`'s glass styling, no drag mechanism needed.
-2. Communities/Hangouts/Settings panes still have the old plain content
-   styling (only their shared chrome, Home, and My Page got the real
-   visual treatment so far).
-3. Multi-conversation messaging UI — still hasn't started (queued since
+1. Launch the Stremio addon-protocol-client track (scoped above) — ready to
+   go, was paused mid-launch by the human's own request to pivot.
+2. Scope and launch the accounts system, once the human answers the
+   auth-mechanism/hosting questions above.
+3. Scope and launch the iOS port, once the human answers the
+   alpha-target-vs-real-distribution question above.
+4. Communities/Settings panes still have the old plain content styling
+   inside their (now glass-wrapped, as of this session) chrome.
+5. Multi-conversation messaging UI — still hasn't started (queued since
    session 11).
-4. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+6. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
-5. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
+7. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
    held back — real payments/money, needs a human product/legal decision
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
