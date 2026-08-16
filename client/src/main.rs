@@ -2213,6 +2213,39 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    {
+        let app_weak = app.as_weak();
+        app.on_global_search(move |query| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let query = query.trim();
+            if query.is_empty() {
+                app.set_shell_notice("Type something to search.".into());
+                return;
+            }
+            app.set_selected_index(app.get_watch_index());
+            app.set_stremio_search_query(query.into());
+            app.invoke_search_stremio(query.into());
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_notifications(move || {
+            if let Some(app) = app_weak.upgrade() {
+                app.set_shell_notice("Notifications are not implemented yet.".into());
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_profile_menu(move || {
+            if let Some(app) = app_weak.upgrade() {
+                app.set_selected_index(app.get_profile_index());
+            }
+        });
+    }
+
     // Cinemeta is the public, zero-configuration default. Loading it at
     // startup makes Discover useful immediately; users can still replace the
     // URL with any configured addon manifest.

@@ -30,6 +30,7 @@ export { SpikeGlassBlurWindow }
 // any actual drag interaction (deliberately dropped mid-project — see
 // PROGRESS.md).
 import { FixedPanel } from "floating-panel.slint";
+import { AppNavButton, TopCommandBar } from "shell-components.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -910,13 +911,19 @@ export component AppWindow inherits Window {
     // hangouts, friend activity) to surface at a glance. main.rs also sets
     // this explicitly at startup for robustness against future reordering.
     in-out property <int> selected-index: 0;
+    in-out property <string> global-search-query: "";
+    in-out property <string> shell-notice: "";
+    callback global-search(string);
+    callback open-notifications();
+    callback open-profile-menu();
+    Timer { interval: 3200ms; running: root.shell-notice != ""; triggered => { root.shell-notice = ""; } }
     out property <int> home-index: 0; // index of "Home" in nav-items, above
-    property <int> watch-index: 1;
-    property <int> profile-index: 2;
-    property <int> messages-index: 3;
-    property <int> communities-index: 4;
-    property <int> hangouts-index: 5;
-    property <int> settings-index: 6;
+    out property <int> watch-index: 1;
+    out property <int> profile-index: 2;
+    out property <int> messages-index: 3;
+    out property <int> communities-index: 4;
+    out property <int> hangouts-index: 5;
+    out property <int> settings-index: 6;
 
     // Stremio addon browser. All values are populated by live calls through
     // ankai_core::stremio; the URL remains editable because configured addons
@@ -1249,34 +1256,11 @@ export component AppWindow inherits Window {
 
                 Rectangle { height: 20px; }
 
-                for item[i] in nav-items: Rectangle {
-                    height: 40px;
-                    border-radius: 20px;
-                    background: root.selected-index == i ? @linear-gradient(120deg, Theme.accent-pink.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : nav-touch.has-hover ? Theme.silver.with-alpha(0.06) : transparent;
-                    border-width: root.selected-index == i ? 1px : 0px;
-                    border-color: Theme.accent-pink.with-alpha(0.45);
-                    drop-shadow-color: Theme.accent-pink.with-alpha(0.22);
-                    drop-shadow-blur: root.selected-index == i ? 14px : 0px;
-
-                    animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
-
-                    Text {
-                        x: 14px;
-                        width: parent.width - 32px;
-                        height: parent.height;
-                        vertical-alignment: center;
-                        text: (i == 0 ? "⌂  " : i == 1 ? "◉  " : i == 2 ? "♙  " : i == 3 ? "✉  " : i == 4 ? "◇  " : i == 5 ? "▣  " : "⚙  ") + item;
-                        color: root.selected-index == i ? Theme.text-primary : Theme.text-secondary;
-                        font-size: 14px;
-                        font-weight: root.selected-index == i ? 600 : 400;
-                    }
-
-                    nav-touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.selected-index = i;
-                        }
-                    }
+                for item[i] in nav-items: AppNavButton {
+                    label: item;
+                    icon: i == 0 ? "⌂" : i == 1 ? "◉" : i == 2 ? "♙" : i == 3 ? "✉" : i == 4 ? "◇" : i == 5 ? "▣" : "⚙";
+                    active: root.selected-index == i;
+                    activated => { root.selected-index = i; }
                 }
             }
         }
@@ -1320,7 +1304,8 @@ export component AppWindow inherits Window {
             // -----------------------------------------------------------
             if root.selected-index == root.home-index: ScrollView {
                 width: parent.width;
-                height: parent.height;
+                y: 72px;
+                height: parent.height - 72px;
 
                 VerticalLayout {
                     width: parent.width;
@@ -1841,7 +1826,8 @@ export component AppWindow inherits Window {
             // -----------------------------------------------------------
             if root.selected-index == root.profile-index: ScrollView {
                 width: parent.width;
-                height: parent.height;
+                y: 72px;
+                height: parent.height - 72px;
 
                 VerticalLayout {
                     width: parent.width;
@@ -2472,7 +2458,8 @@ export component AppWindow inherits Window {
 
             if root.selected-index == root.messages-index: ScrollView {
                 width: parent.width;
-                height: parent.height;
+                y: 72px;
+                height: parent.height - 72px;
 
                 VerticalLayout {
                     width: parent.width;
@@ -2661,6 +2648,9 @@ export component AppWindow inherits Window {
             }
 
             if root.selected-index == root.communities-index && root.selected-community-id == "": VerticalLayout {
+                y: 72px;
+                width: parent.width;
+                height: parent.height - 72px;
                 padding: 32px;
                 spacing: 16px;
                 alignment: start;
@@ -2723,6 +2713,9 @@ export component AppWindow inherits Window {
             }
 
             if root.selected-index == root.communities-index && root.selected-community-id != "": VerticalLayout {
+                y: 72px;
+                width: parent.width;
+                height: parent.height - 72px;
                 padding: 32px;
                 spacing: 16px;
                 alignment: start;
@@ -2791,7 +2784,8 @@ export component AppWindow inherits Window {
 
             if root.selected-index == root.hangouts-index: ScrollView {
                 width: parent.width;
-                height: parent.height;
+                y: 72px;
+                height: parent.height - 72px;
 
                 VerticalLayout {
                     width: parent.width;
@@ -2868,7 +2862,8 @@ export component AppWindow inherits Window {
 
             if root.selected-index == root.watch-index && !root.player-active: ScrollView {
                 width: parent.width;
-                height: parent.height;
+                y: 72px;
+                height: parent.height - 72px;
 
                 VerticalLayout {
                     width: parent.width;
@@ -3007,6 +3002,9 @@ export component AppWindow inherits Window {
             }
 
             if root.selected-index == root.settings-index: VerticalLayout {
+                y: 72px;
+                width: parent.width;
+                height: parent.height - 72px;
                 padding: 32px;
                 spacing: 16px;
                 alignment: start;
@@ -3133,6 +3131,30 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+
+            if !root.player-active: TopCommandBar {
+                x: 18px;
+                y: 12px;
+                width: parent.width - 36px;
+                page-title: root.nav-items[root.selected-index];
+                avatar-letter: root.display-name-initial;
+                query <=> root.global-search-query;
+                submitted(query) => { root.global-search(query); }
+                notifications => { root.open-notifications(); }
+                profile-menu => { root.open-profile-menu(); }
+            }
+
+            if root.shell-notice != "": Rectangle {
+                x: parent.width - 342px;
+                y: 78px;
+                width: 320px;
+                height: 46px;
+                border-radius: 14px;
+                background: Theme.bg-surface-raised.with-alpha(0.96);
+                border-width: 1px;
+                border-color: Theme.accent-violet.with-alpha(0.46);
+                Text { x: 12px; width: parent.width - 24px; height: parent.height; text: root.shell-notice; color: Theme.text-primary; font-size: 11px; vertical-alignment: center; wrap: word-wrap; }
             }
         }
     }
