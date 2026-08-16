@@ -158,7 +158,7 @@ export struct MalTopicRef {
 // accessibility floor.
 component GlassIconButton inherits Rectangle {
     in property <string> glyph;
-    in property <color> tint: Theme.accent-cyan;
+    in property <color> tint: Theme.accent-pink;
     in property <bool> enabled: true;
     callback clicked();
 
@@ -298,9 +298,9 @@ component AddCommunityChip inherits Rectangle {
 
     height: 36px;
     border-radius: 18px;
-    background: !root.enabled ? Theme.bg-surface-raised.with-alpha(0.4) : touch.has-hover ? Theme.accent-cyan.with-alpha(0.16) : Theme.bg-surface-raised.with-alpha(0.6);
+    background: !root.enabled ? Theme.bg-surface-raised.with-alpha(0.4) : touch.has-hover ? Theme.accent-pink.with-alpha(0.16) : Theme.bg-surface-raised.with-alpha(0.6);
     border-width: 1px;
-    border-color: root.enabled ? Theme.accent-cyan.with-alpha(0.35) : Theme.silver.with-alpha(0.15);
+    border-color: root.enabled ? Theme.accent-pink.with-alpha(0.35) : Theme.silver.with-alpha(0.15);
     opacity: root.enabled ? 1.0 : 0.5;
 
     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
@@ -321,7 +321,7 @@ component AddCommunityChip inherits Rectangle {
 
         Text {
             text: "+";
-            color: root.enabled ? Theme.accent-cyan : Theme.text-secondary;
+            color: root.enabled ? Theme.accent-pink : Theme.text-secondary;
             font-size: 16px;
             font-weight: 700;
             vertical-alignment: center;
@@ -465,9 +465,9 @@ component ProfileTabPill inherits Rectangle {
 
     height: 34px;
     border-radius: 17px;
-    background: root.active ? @linear-gradient(120deg, Theme.accent-cyan.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : touch.has-hover ? Theme.silver.with-alpha(0.08) : Theme.bg-surface-raised.with-alpha(0.5);
+    background: root.active ? @linear-gradient(120deg, Theme.accent-pink.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : touch.has-hover ? Theme.silver.with-alpha(0.08) : Theme.bg-surface-raised.with-alpha(0.5);
     border-width: root.active ? 1px : 0px;
-    border-color: Theme.accent-cyan.with-alpha(0.45);
+    border-color: Theme.accent-pink.with-alpha(0.45);
 
     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
@@ -750,7 +750,7 @@ export component AppWindow inherits Window {
     // which varied each card's accent for the same reason. All four values
     // are real tokens.md accent/state colors, just cycled by index.
     property <[color]> top8-accent-cycle: [
-        Theme.accent-cyan,
+        Theme.accent-pink,
         Theme.accent-violet,
         Theme.accent-gold,
         Theme.state-online,
@@ -991,7 +991,7 @@ export component AppWindow inherits Window {
         y: 0px;
         width: parent.width;
         height: parent.height;
-        background: @linear-gradient(150deg, Theme.accent-violet.with-alpha(0.05) 0%, transparent 35%, transparent 65%, Theme.accent-cyan.with-alpha(0.04) 100%);
+        background: @linear-gradient(150deg, Theme.accent-violet.with-alpha(0.05) 0%, transparent 35%, transparent 65%, Theme.accent-pink.with-alpha(0.04) 100%);
     }
 
     HorizontalLayout {
@@ -1041,7 +1041,7 @@ export component AppWindow inherits Window {
                     height: 3px;
                     width: 36px;
                     border-radius: 2px;
-                    background: @linear-gradient(90deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                    background: @linear-gradient(90deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
                 }
 
                 Rectangle { height: 20px; }
@@ -1049,10 +1049,10 @@ export component AppWindow inherits Window {
                 for item[i] in nav-items: Rectangle {
                     height: 40px;
                     border-radius: 20px;
-                    background: root.selected-index == i ? @linear-gradient(120deg, Theme.accent-cyan.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : nav-touch.has-hover ? Theme.silver.with-alpha(0.06) : transparent;
+                    background: root.selected-index == i ? @linear-gradient(120deg, Theme.accent-pink.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : nav-touch.has-hover ? Theme.silver.with-alpha(0.06) : transparent;
                     border-width: root.selected-index == i ? 1px : 0px;
-                    border-color: Theme.accent-cyan.with-alpha(0.45);
-                    drop-shadow-color: Theme.accent-cyan.with-alpha(0.22);
+                    border-color: Theme.accent-pink.with-alpha(0.45);
+                    drop-shadow-color: Theme.accent-pink.with-alpha(0.22);
                     drop-shadow-blur: root.selected-index == i ? 14px : 0px;
 
                     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
@@ -1149,7 +1149,7 @@ export component AppWindow inherits Window {
 
                                 GlassIconButton {
                                     glyph: "⟳";
-                                    tint: Theme.accent-cyan;
+                                    tint: Theme.accent-pink;
                                     clicked => {
                                         root.refresh-home();
                                     }
@@ -1237,7 +1237,7 @@ export component AppWindow inherits Window {
                             Rectangle {
                                 width: 100%;
                                 height: 100%;
-                                background: @linear-gradient(135deg, Theme.accent-violet.with-alpha(0.55) 0%, Theme.bg-surface-raised.with-alpha(0.55) 55%, Theme.accent-cyan.with-alpha(0.25) 100%);
+                                background: @linear-gradient(135deg, Theme.accent-violet.with-alpha(0.55) 0%, Theme.bg-surface-raised.with-alpha(0.55) 55%, Theme.accent-pink.with-alpha(0.25) 100%);
                             }
 
                             if root.trending-anime.length == 0: VerticalLayout {
@@ -1246,7 +1246,7 @@ export component AppWindow inherits Window {
 
                                 Text {
                                     text: "TRENDING NOW";
-                                    color: Theme.accent-cyan;
+                                    color: Theme.accent-pink;
                                     font-size: 11px;
                                     font-weight: 700;
                                     letter-spacing: 1px;
@@ -1267,7 +1267,7 @@ export component AppWindow inherits Window {
 
                                 Text {
                                     text: "TRENDING NOW";
-                                    color: Theme.accent-cyan;
+                                    color: Theme.accent-pink;
                                     font-size: 11px;
                                     font-weight: 700;
                                     letter-spacing: 1px;
@@ -1682,7 +1682,7 @@ export component AppWindow inherits Window {
                                 width: 84px;
                                 height: 84px;
                                 border-radius: 42px;
-                                background: @linear-gradient(135deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                                background: @linear-gradient(135deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
                                 border-width: 1px;
                                 border-color: Theme.silver.with-alpha(0.3);
 
@@ -2224,7 +2224,7 @@ export component AppWindow inherits Window {
                             StatTile {
                                 stat-label: "Communities";
                                 stat-value: root.stat-communities-count;
-                                accent: Theme.accent-cyan;
+                                accent: Theme.accent-pink;
                             }
                             StatTile {
                                 stat-label: "Top 8 slots filled";
@@ -2249,7 +2249,7 @@ export component AppWindow inherits Window {
                             StatTile {
                                 stat-label: "Completed";
                                 stat-value: root.stat-completed-count;
-                                accent: Theme.accent-cyan;
+                                accent: Theme.accent-pink;
                             }
                             StatTile {
                                 stat-label: "Planned";
