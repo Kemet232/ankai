@@ -77,6 +77,9 @@ thread_local! {
 thread_local! {
     static HOME_TRENDING_ANIME: RefCell<Vec<ankai_core::anime::AnimeSummary>> =
         const { RefCell::new(Vec::new()) };
+    static STREMIO_MEDIA: RefCell<Vec<ankai_core::stremio::MetaPreview>> = const { RefCell::new(Vec::new()) };
+    static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
+    static STREMIO_CLIENT: RefCell<Option<ankai_core::stremio::AddonClient>> = const { RefCell::new(None) };
 }
 
 /// A time-of-day-appropriate greeting prefix for the Home dashboard's
@@ -1760,6 +1763,158 @@ fn main() -> Result<(), slint::PlatformError> {
                 });
             });
         }
+    }
+
+    // Stremio addon browser: manifest/catalog/meta/stream data is fetched on
+    // the shared runtime and handed back to Slint on its event loop.
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_load_stremio_addon(move |url| {
+            let url = url.trim().to_owned();
+            let app_weak = app_weak.clone();
+            if let Some(app) = app_weak.upgrade() {
+                app.set_stremio_status("Loading addon manifest…".into());
+            }
+            runtime.spawn(async move {
+                let result = async {
+                    let client = ankai_core::stremio::AddonClient::new(&url)?;
+                    let manifest = client.manifest().await?;
+                    let catalog = manifest.catalogs.first().ok_or_else(|| {
+                        ankai_core::Error::Stremio("addon has no catalogs".into())
+                    })?;
+                    let media = client.catalog(&catalog.media_type, &catalog.id).await?;
+                    Ok::<_, ankai_core::Error>((client, manifest.name, catalog.name.clone(), media))
+                }
+                .await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    match result {
+                        Ok((client, addon_name, catalog_name, media)) => {
+                            let names = media
+                                .iter()
+                                .map(|item| item.name.clone().into())
+                                .collect::<Vec<slint::SharedString>>();
+                            let details = media
+                                .iter()
+                                .map(|item| {
+                                    format!(
+                                        "{} · {}",
+                                        item.media_type,
+                                        item.release_info.as_deref().unwrap_or("Unknown release")
+                                    )
+                                    .into()
+                                })
+                                .collect::<Vec<slint::SharedString>>();
+                            STREMIO_CLIENT.with(|slot| *slot.borrow_mut() = Some(client));
+                            STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
+                            STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
+                            app.set_stremio_addon_name(addon_name.into());
+                            app.set_stremio_media_names(slint::ModelRc::from(std::rc::Rc::new(
+                                slint::VecModel::from(names),
+                            )));
+                            app.set_stremio_media_details(slint::ModelRc::from(std::rc::Rc::new(
+                                slint::VecModel::from(details),
+                            )));
+                            app.set_stremio_stream_names(slint::ModelRc::default());
+                            app.set_stremio_selected_title("".into());
+                            app.set_stremio_status(
+                                format!(
+                                    "Loaded {} items from {}.",
+                                    STREMIO_MEDIA.with(|s| s.borrow().len()),
+                                    catalog_name.unwrap_or_else(|| "the default catalog".into())
+                                )
+                                .into(),
+                            );
+                        }
+                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_open_stremio_media(move |index| {
+            let selected = STREMIO_MEDIA.with(|items| items.borrow().get(index as usize).cloned());
+            let client = STREMIO_CLIENT.with(|slot| slot.borrow().clone());
+            let (Some(selected), Some(client)) = (selected, client) else {
+                return;
+            };
+            if let Some(app) = app_weak.upgrade() {
+                app.set_stremio_selected_title(selected.name.clone().into());
+                app.set_stremio_status("Loading streams…".into());
+            }
+            let app_weak = app_weak.clone();
+            runtime.spawn(async move {
+                let result = client.streams(&selected.media_type, &selected.id).await;
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(app) = app_weak.upgrade() else {
+                        return;
+                    };
+                    match result {
+                        Ok(streams) => {
+                            let labels = streams
+                                .iter()
+                                .map(|stream| {
+                                    let kind = if stream.url.is_some() {
+                                        "Direct"
+                                    } else if stream.info_hash.is_some() {
+                                        "Torrent"
+                                    } else {
+                                        "Unsupported"
+                                    };
+                                    format!(
+                                        "{} — {}",
+                                        kind,
+                                        stream
+                                            .title
+                                            .as_deref()
+                                            .or(stream.name.as_deref())
+                                            .unwrap_or("Unnamed stream")
+                                    )
+                                    .into()
+                                })
+                                .collect::<Vec<slint::SharedString>>();
+                            let count = streams.len();
+                            STREMIO_STREAMS.with(|slot| *slot.borrow_mut() = streams);
+                            app.set_stremio_stream_names(slint::ModelRc::from(std::rc::Rc::new(
+                                slint::VecModel::from(labels),
+                            )));
+                            app.set_stremio_status(format!("Found {count} streams.").into());
+                        }
+                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let app_weak = app.as_weak();
+        app.on_activate_stremio_stream(move |index| {
+            let message = STREMIO_STREAMS.with(|streams| {
+                let streams = streams.borrow();
+                match streams.get(index as usize).map(|stream| stream.source()) {
+                    Some(Ok(ankai_core::stremio::StreamSource::Direct(url))) => {
+                        format!("Direct stream selected: {url}")
+                    }
+                    Some(Ok(ankai_core::stremio::StreamSource::BitTorrent { .. })) => {
+                        "Torrent stream selected; a torrent resolver is required before playback."
+                            .into()
+                    }
+                    Some(Err(err)) => format!("Error: {err}"),
+                    None => "Error: stream is no longer available.".into(),
+                }
+            });
+            if let Some(app) = app_weak.upgrade() {
+                app.set_stremio_status(message.into());
+            }
+        });
     }
 
     // Home dashboard: recent posts and friends are plain synchronous local-

@@ -877,6 +877,7 @@ export component AppWindow inherits Window {
         "Communities",
         "Hangouts",
         "Settings",
+        "Watch",
     ];
 
     // Accent colors cycled across Top 8 module cards (see the Profile pane
@@ -902,6 +903,21 @@ export component AppWindow inherits Window {
     property <int> communities-index: 3; // index of "Communities" in nav-items, above
     property <int> hangouts-index: 4; // index of "Hangouts" in nav-items, above
     property <int> settings-index: 5; // index of "Settings" in nav-items, above
+    property <int> watch-index: 6;
+
+    // Stremio addon browser. All values are populated by live calls through
+    // ankai_core::stremio; the URL remains editable because configured addons
+    // commonly encode their configuration in the manifest path.
+    in-out property <string> stremio-addon-url: "https://v3-cinemeta.strem.io/manifest.json";
+    in-out property <string> stremio-addon-name: "";
+    in-out property <string> stremio-status: "Enter an addon URL and load it.";
+    in-out property <[string]> stremio-media-names: [];
+    in-out property <[string]> stremio-media-details: [];
+    in-out property <[string]> stremio-stream-names: [];
+    in-out property <string> stremio-selected-title: "";
+    callback load-stremio-addon(string);
+    callback open-stremio-media(int);
+    callback activate-stremio-stream(int);
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
     // screen/persistence" step) — main.rs loads the saved value into this
@@ -1243,7 +1259,7 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: Theme.bg-surface;
 
-            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index: Text {
+            if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index && root.selected-index != root.watch-index: Text {
                 x: 32px;
                 y: 28px;
                 text: nav-items[root.selected-index];
@@ -2819,6 +2835,93 @@ export component AppWindow inherits Window {
                                 font-size: 14px;
                             }
                         }
+                    }
+                }
+            }
+
+            if root.selected-index == root.watch-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
+
+                VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 18px;
+                    alignment: start;
+
+                    Text {
+                        text: "Watch with Stremio addons";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Connect any public Stremio addon. Catalogs and streams are fetched live; ANKAI does not alter the addon URL or its embedded configuration.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        LineEdit {
+                            horizontal-stretch: 1;
+                            text <=> root.stremio-addon-url;
+                            placeholder-text: "https://addon.example/manifest.json";
+                            accepted => { root.load-stremio-addon(root.stremio-addon-url); }
+                        }
+                        Button {
+                            text: "Load addon";
+                            clicked => { root.load-stremio-addon(root.stremio-addon-url); }
+                        }
+                    }
+
+                    Text {
+                        text: root.stremio-status;
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.stremio-addon-name != "": Text {
+                        text: root.stremio-addon-name;
+                        color: Theme.accent-pink;
+                        font-size: 17px;
+                        font-weight: 700;
+                    }
+
+                    for name[i] in root.stremio-media-names: Rectangle {
+                        height: 64px;
+                        border-radius: 12px;
+                        background: media-touch.has-hover ? Theme.silver.with-alpha(0.10) : Theme.bg-surface-raised.with-alpha(0.55);
+                        border-width: 1px;
+                        border-color: Theme.silver.with-alpha(0.12);
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 3px;
+                            Text { text: name; color: Theme.text-primary; font-size: 14px; font-weight: 600; }
+                            Text { text: root.stremio-media-details[i]; color: Theme.text-secondary; font-size: 11px; }
+                        }
+                        media-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-stremio-media(i); }
+                        }
+                    }
+
+                    if root.stremio-selected-title != "": Text {
+                        text: "Streams for " + root.stremio-selected-title;
+                        color: Theme.text-primary;
+                        font-size: 17px;
+                        font-weight: 700;
+                    }
+
+                    for stream[i] in root.stremio-stream-names: Button {
+                        text: stream;
+                        clicked => { root.activate-stremio-stream(i); }
                     }
                 }
             }
