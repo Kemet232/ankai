@@ -33,7 +33,7 @@ mod directory;
 mod images;
 mod playback;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use slint::Model;
@@ -64,7 +64,18 @@ struct MessagingHandles {
     mls_provider: Rc<ankai_core::mls_provider::AnkaiMlsProvider>,
 }
 
+struct SocialServices {
+    mls_provider: Rc<ankai_core::mls_provider::AnkaiMlsProvider>,
+    device: ankai_core::identity::Device,
+    node: std::sync::Arc<ankai_core::p2p::P2pNode>,
+    own_invite: ankai_core::messaging::PeerInvite,
+    own_invite_text: String,
+}
+
 thread_local! {
+    // App-wide DB access for UI-thread callbacks that return from async work.
+    // This remains available even when optional MLS/P2P startup fails.
+    static DB_HANDLE: RefCell<Option<Rc<ankai_core::db::Db>>> = const { RefCell::new(None) };
     static MESSAGING_HANDLES: RefCell<Option<MessagingHandles>> = const { RefCell::new(None) };
 }
 
@@ -81,13 +92,86 @@ thread_local! {
 thread_local! {
     static HOME_TRENDING_ANIME: RefCell<Vec<ankai_core::anime::AnimeSummary>> =
         const { RefCell::new(Vec::new()) };
+    static HOME_POPULAR_ANIME: RefCell<Vec<ankai_core::anime::AnimeSummary>> =
+        const { RefCell::new(Vec::new()) };
     static STREMIO_MEDIA: RefCell<Vec<ankai_core::stremio::MetaPreview>> = const { RefCell::new(Vec::new()) };
     static STREMIO_STREAMS: RefCell<Vec<ankai_core::stremio::Stream>> = const { RefCell::new(Vec::new()) };
     static STREMIO_ADDONS: RefCell<Vec<StremioAddon>> = const { RefCell::new(Vec::new()) };
     static STREMIO_MEDIA_SOURCES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static STREMIO_EPISODES: RefCell<Vec<ankai_core::stremio::Video>> = const { RefCell::new(Vec::new()) };
+    static JIKAN_ANIME: RefCell<Vec<ankai_core::jikan::Anime>> = const { RefCell::new(Vec::new()) };
+    static RESUME_PROGRESS: RefCell<Vec<ankai_core::playback_progress::PlaybackProgress>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
+    static VIDEO_SURFACE: RefCell<Option<playback::BoundedVideoSurface>> = const { RefCell::new(None) };
     static LAST_PLAYBACK_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    static STREMIO_SELECTED_CONTEXT: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    static PENDING_PLAYBACK_KEY: RefCell<Option<ankai_core::playback_progress::PlaybackKey>> = const { RefCell::new(None) };
+    static ACTIVE_PLAYBACK_KEY: RefCell<Option<ankai_core::playback_progress::PlaybackKey>> = const { RefCell::new(None) };
+    static PENDING_PLAYBACK_METADATA: RefCell<ankai_core::playback_progress::PlaybackMetadata> =
+        RefCell::new(ankai_core::playback_progress::PlaybackMetadata::default());
+    static ACTIVE_PLAYBACK_METADATA: RefCell<ankai_core::playback_progress::PlaybackMetadata> =
+        RefCell::new(ankai_core::playback_progress::PlaybackMetadata::default());
+    static PENDING_RESUME_SECONDS: RefCell<Option<f64>> = const { RefCell::new(None) };
+    static LAST_PROGRESS_SAVE: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
+
+    // Network completions return to the Slint event loop out of order. Each
+    // independently replaceable UI model owns a generation counter so only
+    // the most recently issued request (and its image children) may mutate
+    // that model. These counters are event-loop local by design: requests are
+    // issued and checked only on Slint's UI thread.
+    static STREMIO_SEARCH_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static STREMIO_DETAIL_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static STREMIO_MEDIA_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static STREMIO_META_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static ADDON_MANAGER_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static HOME_ANIME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static WATCHLIST_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static JIKAN_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static NYAA_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static LETTERBOXD_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static RESUME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
+    static STREMIO_ADDON_LOAD_SEQUENCE: RequestGeneration = const { RequestGeneration::new() };
+    static STREMIO_ADDON_LOAD_GENERATIONS: RefCell<std::collections::HashMap<String, u64>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// A tiny event-loop-local last-request-wins token source.
+///
+/// `issue` is monotonically increasing for the practical lifetime of the
+/// process. It wraps without panicking after `u64::MAX` requests and skips the
+/// initial zero token.
+struct RequestGeneration(Cell<u64>);
+
+impl RequestGeneration {
+    const fn new() -> Self {
+        Self(Cell::new(0))
+    }
+
+    fn issue(&self) -> u64 {
+        let next = self.0.get().wrapping_add(1).max(1);
+        self.0.set(next);
+        next
+    }
+
+    fn is_current(&self, token: u64) -> bool {
+        self.0.get() == token
+    }
+
+    fn current(&self) -> u64 {
+        self.0.get()
+    }
+}
+
+fn issue_addon_load(url: &str) -> u64 {
+    let token = STREMIO_ADDON_LOAD_SEQUENCE.with(RequestGeneration::issue);
+    STREMIO_ADDON_LOAD_GENERATIONS.with(|requests| {
+        requests.borrow_mut().insert(url.to_owned(), token);
+    });
+    token
+}
+
+fn is_current_addon_load(url: &str, token: u64) -> bool {
+    STREMIO_ADDON_LOAD_GENERATIONS.with(|requests| requests.borrow().get(url) == Some(&token))
 }
 
 #[derive(Clone)]
@@ -106,6 +190,7 @@ fn show_stremio_media(
     sources: Vec<usize>,
     image_handle: &tokio::runtime::Handle,
 ) {
+    let generation = STREMIO_MEDIA_GENERATION.with(RequestGeneration::issue);
     let cards = media
         .iter()
         .map(|item| StremioMediaRef {
@@ -123,17 +208,29 @@ fn show_stremio_media(
     let posters = media
         .iter()
         .enumerate()
-        .filter_map(|(index, item)| item.poster.clone().map(|url| (index, url)))
+        .filter_map(|(index, item)| item.poster.clone().map(|url| (index, item.id.clone(), url)))
         .collect::<Vec<_>>();
     STREMIO_MEDIA.with(|slot| *slot.borrow_mut() = media);
     STREMIO_MEDIA_SOURCES.with(|slot| *slot.borrow_mut() = sources);
     app.set_stremio_media(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
-    for (index, url) in posters {
+    for (index, media_id, url) in posters {
+        let expected_url = url.clone();
         images::load_cover_image(
             url,
             image_handle.clone(),
             app.as_weak(),
             move |app, image| {
+                if !STREMIO_MEDIA_GENERATION.with(|state| state.is_current(generation)) {
+                    return;
+                }
+                let still_matches = STREMIO_MEDIA.with(|media| {
+                    media.borrow().get(index).is_some_and(|item| {
+                        item.id == media_id && item.poster.as_deref() == Some(expected_url.as_str())
+                    })
+                });
+                if !still_matches {
+                    return;
+                }
                 let model = app.get_stremio_media();
                 let Some(model) = model
                     .as_any()
@@ -156,6 +253,7 @@ fn show_stremio_meta(
     meta: &ankai_core::stremio::Meta,
     image_handle: &tokio::runtime::Handle,
 ) {
+    let generation = STREMIO_META_GENERATION.with(RequestGeneration::issue);
     app.set_stremio_selected_title(meta.name.clone().into());
     app.set_stremio_selected_description(meta.description.clone().unwrap_or_default().into());
     app.set_stremio_selected_meta_line(
@@ -204,19 +302,37 @@ fn show_stremio_meta(
         .videos
         .iter()
         .enumerate()
-        .filter_map(|(index, episode)| episode.thumbnail.clone().map(|url| (index, url)))
+        .filter_map(|(index, episode)| {
+            episode
+                .thumbnail
+                .clone()
+                .map(|url| (index, episode.id.clone(), url))
+        })
         .collect::<Vec<_>>();
     STREMIO_EPISODES.with(|slot| *slot.borrow_mut() = meta.videos.clone());
     app.set_stremio_episodes(slint::ModelRc::from(Rc::new(slint::VecModel::from(
         episode_cards,
     ))));
 
-    for (index, url) in thumbnails {
+    for (index, episode_id, url) in thumbnails {
+        let expected_url = url.clone();
         images::load_cover_image(
             url,
             image_handle.clone(),
             app.as_weak(),
             move |app, image| {
+                if !STREMIO_META_GENERATION.with(|state| state.is_current(generation)) {
+                    return;
+                }
+                let still_matches = STREMIO_EPISODES.with(|episodes| {
+                    episodes.borrow().get(index).is_some_and(|episode| {
+                        episode.id == episode_id
+                            && episode.thumbnail.as_deref() == Some(expected_url.as_str())
+                    })
+                });
+                if !still_matches {
+                    return;
+                }
                 let model = app.get_stremio_episodes();
                 let Some(model) = model
                     .as_any()
@@ -239,13 +355,19 @@ fn refresh_addon_manager(
     db: &ankai_core::db::Db,
     image_handle: &tokio::runtime::Handle,
 ) {
+    let generation = ADDON_MANAGER_GENERATION.with(RequestGeneration::issue);
     match ankai_core::addons::list(db) {
         Ok(addons) => {
             let total = addons.len();
             let logo_urls = addons
                 .iter()
                 .enumerate()
-                .filter_map(|(index, addon)| addon.logo.clone().map(|url| (index, url)))
+                .filter_map(|(index, addon)| {
+                    addon
+                        .logo
+                        .clone()
+                        .map(|url| (index, addon.manifest_url.clone(), url))
+                })
                 .collect::<Vec<_>>();
             let cards = addons
                 .into_iter()
@@ -315,12 +437,15 @@ fn refresh_addon_manager(
             app.set_addon_manager_state("ready".into());
             app.set_addon_manager_error("".into());
 
-            for (index, url) in logo_urls {
+            for (index, manifest_url, url) in logo_urls {
                 images::load_cover_image(
                     url,
                     image_handle.clone(),
                     app.as_weak(),
                     move |app, image| {
+                        if !ADDON_MANAGER_GENERATION.with(|state| state.is_current(generation)) {
+                            return;
+                        }
                         let model = app.get_installed_addons();
                         let Some(model) =
                             model.as_any().downcast_ref::<slint::VecModel<AddonCard>>()
@@ -328,6 +453,9 @@ fn refresh_addon_manager(
                             return;
                         };
                         if let Some(mut row) = model.row_data(index) {
+                            if row.id.as_str() != manifest_url {
+                                return;
+                            }
                             row.logo = image;
                             row.has_logo = true;
                             model.set_row_data(index, row);
@@ -344,6 +472,11 @@ fn refresh_addon_manager(
 }
 
 fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
+    // A registry reload clears the catalog. Any search that was issued
+    // against the previous addon snapshot must not repopulate it afterward.
+    STREMIO_SEARCH_GENERATION.with(RequestGeneration::issue);
+    STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
+    STREMIO_MEDIA_GENERATION.with(RequestGeneration::issue);
     STREMIO_ADDONS.with(|slot| slot.borrow_mut().clear());
     STREMIO_MEDIA.with(|slot| slot.borrow_mut().clear());
     STREMIO_MEDIA_SOURCES.with(|slot| slot.borrow_mut().clear());
@@ -384,13 +517,14 @@ fn sync_player_state(app: &AppWindow, state: &playback::PlayerState) {
     use playback::{PlaybackPhase, TrackKind};
 
     app.set_player_has_media(state.has_media);
-    app.set_player_video_ready(
-        state.has_media
-            && !matches!(
-                state.phase,
-                PlaybackPhase::Idle | PlaybackPhase::Loading | PlaybackPhase::Error
-            ),
-    );
+    if !state.has_media
+        || matches!(
+            state.phase,
+            PlaybackPhase::Idle | PlaybackPhase::Loading | PlaybackPhase::Error
+        )
+    {
+        app.set_player_video_ready(false);
+    }
     app.set_player_playing(state.phase == PlaybackPhase::Playing);
     app.set_player_loading(state.phase == PlaybackPhase::Loading);
     app.set_player_buffering(state.phase == PlaybackPhase::Buffering);
@@ -398,7 +532,10 @@ fn sync_player_state(app: &AppWindow, state: &playback::PlayerState) {
     app.set_player_muted(state.muted);
     app.set_player_position(state.position_seconds.unwrap_or(0.0) as f32);
     app.set_player_duration(state.duration_seconds.unwrap_or(0.0) as f32);
-    app.set_player_buffered(state.position_seconds.unwrap_or(0.0) as f32);
+    // mpv's cache percentage is not a buffered-duration value. Until the
+    // adapter observes a real demuxer cache duration, keep the secondary
+    // timeline hidden instead of presenting the playhead as buffered media.
+    app.set_player_buffered(0.0);
     app.set_player_buffering_percent(state.buffering_percent.unwrap_or(-1.0) as f32);
     app.set_player_volume(state.volume as f32);
     app.set_player_speed(state.speed as f32);
@@ -459,6 +596,58 @@ fn sync_player_state(app: &AppWindow, state: &playback::PlayerState) {
     ))));
 }
 
+fn persist_player_progress(state: &playback::PlayerState, force: bool) {
+    let (Some(position), Some(duration)) = (state.position_seconds, state.duration_seconds) else {
+        return;
+    };
+    if !(position.is_finite()
+        && duration.is_finite()
+        && position >= 0.0
+        && duration > 0.0
+        && position <= duration)
+    {
+        return;
+    }
+
+    let due = LAST_PROGRESS_SAVE.with(|last_save| {
+        let last_save = last_save.borrow();
+        force
+            || last_save
+                .as_ref()
+                .is_none_or(|saved| saved.elapsed() >= std::time::Duration::from_secs(5))
+    });
+    if !due {
+        return;
+    }
+    let Some(key) = ACTIVE_PLAYBACK_KEY.with(|key| key.borrow().clone()) else {
+        return;
+    };
+    let metadata = ACTIVE_PLAYBACK_METADATA.with(|metadata| metadata.borrow().clone());
+    let completed = state.phase == playback::PlaybackPhase::Ended || position / duration >= 0.98;
+    let result = DB_HANDLE.with(|db| {
+        let db = db.borrow();
+        let Some(db) = db.as_ref() else {
+            return Ok(None);
+        };
+        ankai_core::playback_progress::save_with_metadata(
+            db,
+            &key,
+            if completed { duration } else { position },
+            duration,
+            completed,
+            &metadata,
+        )
+        .map(Some)
+    });
+    match result {
+        Ok(Some(_)) => LAST_PROGRESS_SAVE.with(|last_save| {
+            *last_save.borrow_mut() = Some(std::time::Instant::now());
+        }),
+        Ok(None) => {}
+        Err(error) => eprintln!("ankai-client: failed to save playback progress: {error}"),
+    }
+}
+
 /// A time-of-day-appropriate greeting prefix for the Home dashboard's
 /// header ("good morning"/"good afternoon"/"good evening"), from this
 /// device's real local wall-clock time via `chrono::Local` — computed once
@@ -478,19 +667,76 @@ fn time_of_day_greeting() -> &'static str {
 /// Opens (creating if necessary) ANKAI's local encrypted database in this
 /// platform's standard app-data directory, keyed by the device-local
 /// passphrase from `ankai_core::keychain` (OS secure storage, per
-/// ADR-0004). Panics on failure — without a working local DB there's
-/// nothing useful the app can do, so there's no graceful degraded mode to
-/// fall back to here.
-fn open_local_db() -> ankai_core::db::Db {
-    let dirs = directories::ProjectDirs::from("com", "ankai", "ANKAI")
-        .expect("no valid app data directory for this platform/user");
-    std::fs::create_dir_all(dirs.data_dir()).expect("failed to create app data directory");
+/// ADR-0004). A working local DB is required, but failure is returned as a
+/// normal platform error rather than panicking during process startup.
+fn open_local_db() -> Result<ankai_core::db::Db, slint::PlatformError> {
+    let dirs = directories::ProjectDirs::from("com", "ankai", "ANKAI").ok_or_else(|| {
+        slint::PlatformError::Other(
+            "couldn't locate an application data directory for this user".into(),
+        )
+    })?;
+    std::fs::create_dir_all(dirs.data_dir()).map_err(|error| {
+        slint::PlatformError::Other(format!(
+            "couldn't create the ANKAI application data directory: {error}"
+        ))
+    })?;
 
-    let passphrase = ankai_core::keychain::device_db_passphrase()
-        .expect("failed to obtain device DB encryption key from OS secure storage");
+    let passphrase = ankai_core::keychain::device_db_passphrase().map_err(|error| {
+        slint::PlatformError::Other(format!(
+            "couldn't access the device database key in secure storage: {error}"
+        ))
+    })?;
 
-    ankai_core::db::Db::open(dirs.data_dir().join("ankai.sqlite"), &passphrase)
-        .expect("failed to open local encrypted database")
+    ankai_core::db::Db::open(dirs.data_dir().join("ankai.sqlite"), &passphrase).map_err(|error| {
+        slint::PlatformError::Other(format!(
+            "couldn't open the encrypted local database: {error}"
+        ))
+    })
+}
+
+/// Builds the optional social-networking stack. Catalogs, metadata, cover
+/// images and playback use the shared runtime directly and do not depend on
+/// this succeeding.
+fn initialize_social_services(
+    db: &Rc<ankai_core::db::Db>,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<SocialServices, String> {
+    let mls_provider = Rc::new(
+        ankai_core::mls_provider::AnkaiMlsProvider::load(db)
+            .map_err(|error| format!("couldn't load encrypted messaging state: {error}"))?,
+    );
+    let device = ankai_core::identity::load_or_create_device(db, &mls_provider)
+        .map_err(|error| format!("couldn't load this device's social identity: {error}"))?;
+    mls_provider
+        .flush(db)
+        .map_err(|error| format!("couldn't persist this device's social identity: {error}"))?;
+
+    let node = std::sync::Arc::new(
+        runtime
+            .block_on(ankai_core::p2p::P2pNode::bind())
+            .map_err(|error| format!("couldn't bind the local peer-to-peer endpoint: {error}"))?,
+    );
+    let own_key_package = ankai_core::identity::create_key_package(&device, &mls_provider)
+        .map_err(|error| format!("couldn't build this device's secure invite: {error}"))?
+        .key_package
+        .ok_or_else(|| "secure invite creation returned no key package".to_string())?;
+    mls_provider
+        .flush(db)
+        .map_err(|error| format!("couldn't persist this device's secure invite: {error}"))?;
+    let own_invite = ankai_core::messaging::PeerInvite {
+        addr: node.addr(),
+        key_package: own_key_package,
+    };
+    let own_invite_text = ankai_core::messaging::format_peer_invite(&own_invite)
+        .map_err(|error| format!("couldn't encode this device's secure invite: {error}"))?;
+
+    Ok(SocialServices {
+        mls_provider,
+        device,
+        node,
+        own_invite,
+        own_invite_text,
+    })
 }
 
 /// Derives the single uppercase letter shown in the Profile pane's avatar
@@ -606,6 +852,7 @@ fn watchlist_progress(entry: &ankai_core::anime::WatchlistEntry) -> String {
 /// `handle` — same "text now, image once it loads" shape
 /// `spawn_anime_refresh` already uses for the Home dashboard's cards.
 fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db, handle: &tokio::runtime::Handle) {
+    let generation = WATCHLIST_GENERATION.with(RequestGeneration::issue);
     let watching =
         ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
             .unwrap_or_else(|err| {
@@ -633,6 +880,9 @@ fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db, handle: &tokio::r
         let anilist_id = entry.anilist_id as i32;
         let app_weak = app.as_weak();
         images::load_cover_image(url, handle.clone(), app_weak, move |app, image| {
+            if !WATCHLIST_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
             set_watchlist_cover(app.get_watching_anime(), anilist_id, image);
         });
     }
@@ -820,11 +1070,15 @@ fn set_anime_cover(model: slint::ModelRc<AnimeRef>, id: i32, image: slint::Image
 /// doc comment), so a slow or failed request must not stall the window at
 /// startup or freeze the UI thread on a refresh click.
 fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
+    let generation = HOME_ANIME_GENERATION.with(RequestGeneration::issue);
     let app_weak_trending = app_weak.clone();
     let handle_trending = handle.clone();
     handle.spawn(async move {
         let result = ankai_core::anime::trending_anime(10).await;
         let _ = slint::invoke_from_event_loop(move || {
+            if !HOME_ANIME_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
             let Some(app) = app_weak_trending.upgrade() else {
                 return;
             };
@@ -850,6 +1104,18 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                     app.set_trending_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
                         refs,
                     ))));
+                    let hero_id = HOME_TRENDING_ANIME
+                        .with(|items| items.borrow().first().map(|anime| anime.id));
+                    let hero_watchlisted = hero_id.is_some_and(|id| {
+                        DB_HANDLE.with(|db| {
+                            db.borrow()
+                                .as_ref()
+                                .and_then(|db| ankai_core::anime::get_watchlist_entry(db, id).ok())
+                                .flatten()
+                                .is_some()
+                        })
+                    });
+                    app.set_hero_watchlisted(hero_watchlisted);
                     for (id, url) in covers {
                         let app_weak = app_weak_trending.clone();
                         images::load_cover_image(
@@ -857,6 +1123,10 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                             handle_trending.clone(),
                             app_weak,
                             move |app, image| {
+                                if !HOME_ANIME_GENERATION.with(|state| state.is_current(generation))
+                                {
+                                    return;
+                                }
                                 set_anime_cover(app.get_trending_anime(), id, image);
                             },
                         );
@@ -875,6 +1145,9 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
     handle.spawn(async move {
         let result = ankai_core::anime::popular_anime(10).await;
         let _ = slint::invoke_from_event_loop(move || {
+            if !HOME_ANIME_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
             let Some(app) = app_weak_popular.upgrade() else {
                 return;
             };
@@ -884,6 +1157,7 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                         .iter()
                         .filter_map(|a| a.cover_image_url.clone().map(|url| (a.id as i32, url)))
                         .collect();
+                    HOME_POPULAR_ANIME.with(|store| *store.borrow_mut() = list.clone());
                     let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
                     app.set_popular_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
                         refs,
@@ -895,6 +1169,10 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                             handle_popular.clone(),
                             app_weak,
                             move |app, image| {
+                                if !HOME_ANIME_GENERATION.with(|state| state.is_current(generation))
+                                {
+                                    return;
+                                }
                                 set_anime_cover(app.get_popular_anime(), id, image);
                             },
                         );
@@ -909,241 +1187,317 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
     });
 }
 
-/// MAL's real, stable board id for the "Anime Discussion" board — confirmed
-/// via a live request during `core::mal_forums`'s development (see that
-/// module's test fixtures/doc comment), not guessed at. The Home
-/// dashboard's "MAL Forum Discussions" column always reads from this one
-/// board; there's no board picker yet.
-const MAL_ANIME_DISCUSSION_BOARD_ID: i64 = 1;
-
-/// Converts one real MAL `ForumTopic` into the Home dashboard's compact
-/// title/snippet display shape, same "pre-format the fallback-y text in
-/// Rust" reason as `anime_to_ref` above.
-fn mal_topic_to_ref(topic: ankai_core::mal_forums::ForumTopic) -> MalTopicRef {
-    let replies_word = if topic.number_of_posts == 1 {
-        "reply"
-    } else {
-        "replies"
-    };
-    MalTopicRef {
-        id: topic.id as i32,
-        title: topic.title.into(),
-        snippet: format!(
-            "{} {replies_word} · started by {}",
-            topic.number_of_posts, topic.created_by.name
-        )
-        .into(),
-        preview: "".into(),
+fn jikan_to_ref(anime: &ankai_core::jikan::Anime) -> JikanAnimeRef {
+    let title = anime
+        .title_english
+        .as_deref()
+        .unwrap_or(anime.title.as_str());
+    JikanAnimeRef {
+        mal_id: i32::try_from(anime.mal_id).unwrap_or(i32::MAX),
+        title: title.into(),
+        score_label: anime
+            .score
+            .map(|score| format!("{score:.1} / 10"))
+            .unwrap_or_else(|| "Not yet rated".to_string())
+            .into(),
     }
 }
 
-/// Decodes numeric HTML character references (`&#68;`/`&#x44;`) into their
-/// real characters. Real MAL post bodies were observed to encode non-ASCII
-/// characters this way (in addition to the small set of named entities
-/// `bbcode_preview` decodes directly) — a malformed/unrecognized reference is
-/// left as-is rather than dropped, since a real preview showing raw markup
-/// is better than one silently losing real text.
-fn decode_numeric_html_entities(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("&#") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let (is_hex, digits_start) = if after.starts_with(['x', 'X']) {
-            (true, 1)
-        } else {
-            (false, 0)
-        };
-        let digits_part = &after[digits_start..];
-        let digit_len = digits_part
-            .find(|c: char| !c.is_ascii_hexdigit())
-            .unwrap_or(digits_part.len());
-        let has_semicolon = digits_part[digit_len..].starts_with(';');
-        let code_point = if digit_len > 0 {
-            u32::from_str_radix(&digits_part[..digit_len], if is_hex { 16 } else { 10 }).ok()
-        } else {
-            None
-        };
-        match (code_point.and_then(char::from_u32), has_semicolon) {
-            (Some(ch), true) => {
-                out.push(ch);
-                rest = &digits_part[digit_len + 1..];
-            }
-            _ => {
-                out.push_str("&#");
-                rest = after;
-            }
-        }
+fn spawn_jikan_refresh(
+    handle: tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+    query: Option<String>,
+) {
+    let generation = JIKAN_GENERATION.with(RequestGeneration::issue);
+    if let Some(app) = app_weak.upgrade() {
+        app.set_jikan_state("loading".into());
+        app.set_jikan_error("".into());
     }
-    out.push_str(rest);
-    out
-}
-
-/// Strips MAL's real raw phpBB-style BBCode post body down to a short plain-
-/// text preview — not a real BBCode renderer (see `core::mal_forums`'s "No
-/// rendering of forum post bodies" doc comment: converting that markup to
-/// displayable text is explicitly left to the UI layer, not core). Drops
-/// anything between `[`/`]` (tags like `[b]`, `[url=...]`, `[/list]`),
-/// decodes the handful of HTML entities real MAL post bodies were observed
-/// to contain, collapses all whitespace/newlines to single spaces, and
-/// truncates to `max_chars` real characters (not bytes) with a trailing
-/// ellipsis.
-fn bbcode_preview(body: &str, max_chars: usize) -> String {
-    let mut stripped = String::with_capacity(body.len());
-    let mut chars = body.chars();
-    // Real MAL post bodies were observed to use `[img]<raw url>[/img]` with
-    // the URL as bare tag *content*, not an attribute — stripping only the
-    // brackets (as every other tag needs) would leak the whole URL as
-    // visible text, which happened for real the first time this ran against
-    // a live topic. So `[img]`/`[/img]` content is dropped entirely, not
-    // just the brackets.
-    let mut skip_until_closing_img = false;
-    while let Some(ch) = chars.next() {
-        if ch == '[' {
-            let mut tag = String::new();
-            for c in chars.by_ref() {
-                if c == ']' {
-                    break;
-                }
-                tag.push(c);
-            }
-            match tag.to_ascii_lowercase().as_str() {
-                "img" => skip_until_closing_img = true,
-                "/img" => skip_until_closing_img = false,
-                _ => {}
-            }
-        } else if !skip_until_closing_img {
-            stripped.push(ch);
-        }
-    }
-    let decoded = decode_numeric_html_entities(&stripped)
-        .replace("&quot;", "\"")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&#039;", "'")
-        .replace("&ntilde;", "ñ")
-        .replace("&Ntilde;", "Ñ")
-        .replace("&ccedil;", "ç")
-        .replace("&Ccedil;", "Ç")
-        .replace("&eacute;", "é")
-        .replace("&egrave;", "è")
-        .replace("&uuml;", "ü")
-        .replace("&ouml;", "ö")
-        .replace("&auml;", "ä")
-        .replace("&nbsp;", " ")
-        .replace("<br />", " ");
-    // Real MAL post bodies were also observed to contain bare image URLs
-    // with no `[img]` wrapper at all (confirmed live: a real topic's first
-    // post was literally "AWC 2026: https://i.imgur.com/....png
-    // https://i.imgur.com/....png ..."), so a whole raw URL as one
-    // "word" is dropped too, not just BBCode-tagged ones.
-    let collapsed = decoded
-        .split_whitespace()
-        .filter(|word| !word.starts_with("http://") && !word.starts_with("https://"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if collapsed.chars().count() <= max_chars {
-        collapsed
-    } else {
-        let truncated: String = collapsed.chars().take(max_chars).collect();
-        format!("{}…", truncated.trim_end())
-    }
-}
-
-/// Updates a single MAL topic row's real first-post preview in place, once
-/// it finishes loading — matched by topic id, same "reload can race an
-/// in-flight fetch, tolerate it" shape as `set_anime_cover`.
-fn set_mal_topic_preview(model: slint::ModelRc<MalTopicRef>, id: i32, preview: String) {
-    let Some(vec_model) = model
-        .as_any()
-        .downcast_ref::<slint::VecModel<MalTopicRef>>()
-    else {
-        return;
-    };
-    for i in 0..vec_model.row_count() {
-        if let Some(mut row) = vec_model.row_data(i) {
-            if row.id == id {
-                row.preview = preview.into();
-                vec_model.set_row_data(i, row);
-                break;
-            }
-        }
-    }
-}
-
-/// Fetches real MyAnimeList forum topics for the "Anime Discussion" board
-/// (`core::mal_forums::list_topics_in_board`) and pushes them into the Home
-/// dashboard's MAL Forum Discussions column. Spawned on `handle`, same
-/// "don't block the UI thread on a real third-party network call" reasoning
-/// as `spawn_anime_refresh` above. `mal-status` only ever holds a real error
-/// message: most commonly `MAL_CLIENT_ID` not being set in this device's
-/// environment (see `core::mal_forums`'s module doc comment), reworded here
-/// into something a non-technical reader can act on, but never fabricated —
-/// any other real failure (network error, MAL outage) is shown close to
-/// verbatim.
-fn spawn_mal_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
-    let handle_for_previews = handle.clone();
-    let app_weak_for_previews = app_weak.clone();
     handle.spawn(async move {
-        let result =
-            ankai_core::mal_forums::list_topics_in_board(MAL_ANIME_DISCUSSION_BOARD_ID, 8).await;
-        // Collected before `result` moves into the closure below — used to
-        // kick off the real per-topic preview fetches afterward.
-        let topic_ids: Vec<i64> = match &result {
-            Ok(topics) => topics.iter().map(|t| t.id).collect(),
-            Err(_) => Vec::new(),
+        let client = ankai_core::jikan::JikanClient::new();
+        let result = match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            Some(query) => client.search_anime(query, 15).await,
+            None => client.top_anime(15).await,
         };
         let _ = slint::invoke_from_event_loop(move || {
+            if !JIKAN_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
             match result {
-                Ok(topics) => {
-                    app.set_mal_status("".into());
-                    let refs: Vec<MalTopicRef> = topics.into_iter().map(mal_topic_to_ref).collect();
-                    app.set_mal_topics(slint::ModelRc::from(Rc::new(slint::VecModel::from(refs))));
+                Ok(page) => {
+                    let rows = page.data.iter().map(jikan_to_ref).collect::<Vec<_>>();
+                    JIKAN_ANIME.with(|store| *store.borrow_mut() = page.data);
+                    app.set_jikan_results(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+                        rows,
+                    ))));
+                    app.set_jikan_state("ready".into());
                 }
-                Err(err) => {
-                    let msg = err.to_string();
-                    eprintln!("ankai-client: failed to load MAL forum topics: {msg}");
-                    let display = if msg.contains("MAL_CLIENT_ID") {
-                        "MyAnimeList isn't configured on this device (no MAL_CLIENT_ID set in \
-                         the environment)."
-                            .to_string()
-                    } else {
-                        format!("Couldn't load MAL forum topics: {msg}")
-                    };
-                    app.set_mal_status(display.into());
+                Err(error) => {
+                    app.set_jikan_state("error".into());
+                    app.set_jikan_error(error.to_string().into());
                 }
             }
         });
+    });
+}
 
-        // Real first-post preview text loads progressively after the topic
-        // list itself is already on screen — same "don't block the initial
-        // render on N extra network calls" shape cover-art loading already
-        // uses. One real `get_topic_posts` fetch per topic; a failed fetch
-        // just leaves that topic's preview blank, not an error state.
-        for topic_id in topic_ids {
-            let app_weak = app_weak_for_previews.clone();
-            handle_for_previews.spawn(async move {
-                if let Ok(details) = ankai_core::mal_forums::get_topic_posts(topic_id, 1).await {
-                    if let Some(first_post) = details.posts.first() {
-                        let preview = bbcode_preview(&first_post.body, 140);
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(app) = app_weak.upgrade() {
-                                set_mal_topic_preview(
-                                    app.get_mal_topics(),
-                                    topic_id as i32,
-                                    preview,
+fn spawn_nyaa_search(
+    handle: tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+    query: String,
+) {
+    let generation = NYAA_GENERATION.with(RequestGeneration::issue);
+    if let Some(app) = app_weak.upgrade() {
+        app.set_nyaa_state("loading".into());
+        app.set_nyaa_status("Searching live anime upload records…".into());
+    }
+    handle.spawn(async move {
+        let result = match ankai_core::nyaa::NyaaClient::new() {
+            Ok(client) => client.search_anime(query.trim()).await,
+            Err(error) => Err(error),
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if !NYAA_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(releases) => {
+                    let rows = releases
+                        .into_iter()
+                        .take(30)
+                        .map(|release| NyaaReleaseRef {
+                            title: release.title.into(),
+                            uploader: "Nyaa RSS".into(),
+                            published: release.published_at.into(),
+                            size: release.size.into(),
+                            seeders: i32::try_from(release.seeders).unwrap_or(i32::MAX),
+                            leechers: i32::try_from(release.leechers).unwrap_or(i32::MAX),
+                            downloads: i32::try_from(release.downloads).unwrap_or(i32::MAX),
+                            comments: i32::try_from(release.comments).unwrap_or(i32::MAX),
+                            trusted: release.trusted,
+                            remake: release.remake,
+                            release_url: release.comments_page_url.into(),
+                        })
+                        .collect::<Vec<_>>();
+                    let count = rows.len();
+                    app.set_nyaa_results(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+                        rows,
+                    ))));
+                    app.set_nyaa_state("ready".into());
+                    app.set_nyaa_status(
+                        format!(
+                            "{count} per-upload results · comment links open the exact release"
+                        )
+                        .into(),
+                    );
+                }
+                Err(error) => {
+                    app.set_nyaa_state("error".into());
+                    app.set_nyaa_status(error.to_string().into());
+                }
+            }
+        });
+    });
+}
+
+fn set_letterboxd_cover(
+    model: slint::ModelRc<LetterboxdEntryRef>,
+    index: usize,
+    link: &str,
+    image: slint::Image,
+) {
+    let Some(model) = model
+        .as_any()
+        .downcast_ref::<slint::VecModel<LetterboxdEntryRef>>()
+    else {
+        return;
+    };
+    if let Some(mut row) = model.row_data(index) {
+        if row.link.as_str() == link {
+            row.poster = image;
+            row.has_poster = true;
+            model.set_row_data(index, row);
+        }
+    }
+}
+
+fn spawn_letterboxd_refresh(
+    handle: tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+    username: String,
+) {
+    let generation = LETTERBOXD_GENERATION.with(RequestGeneration::issue);
+    if let Some(app) = app_weak.upgrade() {
+        app.set_letterboxd_state("loading".into());
+        app.set_letterboxd_status("Loading public diary…".into());
+    }
+    let image_handle = handle.clone();
+    handle.spawn(async move {
+        let result = ankai_core::letterboxd::member_feed(username.trim()).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            if !LETTERBOXD_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(entries) => {
+                    let posters = entries
+                        .iter()
+                        .take(8)
+                        .enumerate()
+                        .filter_map(|(index, entry)| {
+                            entry
+                                .poster_url
+                                .clone()
+                                .map(|poster| (index, entry.link.clone(), poster))
+                        })
+                        .collect::<Vec<_>>();
+                    let rows = entries
+                        .into_iter()
+                        .take(8)
+                        .map(|entry| LetterboxdEntryRef {
+                            title: entry.film_title.into(),
+                            meta: [
+                                entry.film_year.map(|year| year.to_string()),
+                                entry.published_at,
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                            .into(),
+                            review: entry
+                                .review_excerpt
+                                .unwrap_or_else(|| "Diary entry without a written review.".into())
+                                .into(),
+                            rating: entry
+                                .member_rating
+                                .map(|rating| format!("★ {rating:.1} / 5"))
+                                .unwrap_or_else(|| "Not rated".into())
+                                .into(),
+                            poster: slint::Image::default(),
+                            has_poster: false,
+                            link: entry.link.into(),
+                        })
+                        .collect::<Vec<_>>();
+                    app.set_letterboxd_entries(slint::ModelRc::from(Rc::new(
+                        slint::VecModel::from(rows),
+                    )));
+                    app.set_letterboxd_state("ready".into());
+                    app.set_letterboxd_status("Public member RSS · read only".into());
+                    for (index, link, poster) in posters {
+                        let app_weak = app.as_weak();
+                        images::load_cover_image(
+                            poster,
+                            image_handle.clone(),
+                            app_weak,
+                            move |app, image| {
+                                if !LETTERBOXD_GENERATION.with(|state| state.is_current(generation))
+                                {
+                                    return;
+                                }
+                                set_letterboxd_cover(
+                                    app.get_letterboxd_entries(),
+                                    index,
+                                    &link,
+                                    image,
                                 );
-                            }
-                        });
+                            },
+                        );
                     }
                 }
-            });
-        }
+                Err(error) => {
+                    app.set_letterboxd_state("error".into());
+                    app.set_letterboxd_status(error.to_string().into());
+                }
+            }
+        });
     });
+}
+
+fn set_resume_cover(model: slint::ModelRc<ResumeRef>, index: usize, image: slint::Image) {
+    let Some(model) = model.as_any().downcast_ref::<slint::VecModel<ResumeRef>>() else {
+        return;
+    };
+    if let Some(mut row) = model.row_data(index) {
+        row.poster = image;
+        row.has_poster = true;
+        model.set_row_data(index, row);
+    }
+}
+
+fn refresh_resume_entries(
+    app: &AppWindow,
+    db: &ankai_core::db::Db,
+    handle: &tokio::runtime::Handle,
+) {
+    let generation = RESUME_GENERATION.with(RequestGeneration::issue);
+    let entries =
+        ankai_core::playback_progress::list_resumable_recent(db, 8).unwrap_or_else(|error| {
+            eprintln!("ankai-client: failed to load Continue Watching: {error}");
+            Vec::new()
+        });
+    let cards = entries
+        .iter()
+        .map(|entry| {
+            let title = entry
+                .title
+                .clone()
+                .unwrap_or_else(|| entry.key.media_id.clone());
+            let subtitle = entry
+                .key
+                .episode_id
+                .as_deref()
+                .map(|episode| format!("Episode · {episode}"))
+                .unwrap_or_else(|| "Movie".into());
+            ResumeRef {
+                title: title.into(),
+                subtitle: subtitle.into(),
+                progress_label: format!(
+                    "{} / {}",
+                    playback_time_label(entry.position_seconds),
+                    playback_time_label(entry.duration_seconds)
+                )
+                .into(),
+                progress: (entry.position_seconds / entry.duration_seconds).clamp(0.0, 1.0) as f32,
+                poster: slint::Image::default(),
+                has_poster: false,
+            }
+        })
+        .collect::<Vec<_>>();
+    RESUME_PROGRESS.with(|store| *store.borrow_mut() = entries.clone());
+    app.set_continue_watching(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
+
+    for (index, entry) in entries.into_iter().enumerate() {
+        let Some(poster) = entry.poster_url.clone() else {
+            continue;
+        };
+        let expected_key = entry.key;
+        let expected_poster = poster.clone();
+        let app_weak = app.as_weak();
+        images::load_cover_image(poster, handle.clone(), app_weak, move |app, image| {
+            if !RESUME_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
+            let still_matches = RESUME_PROGRESS.with(|entries| {
+                entries.borrow().get(index).is_some_and(|entry| {
+                    entry.key == expected_key
+                        && entry.poster_url.as_deref() == Some(expected_poster.as_str())
+                })
+            });
+            if still_matches {
+                set_resume_cover(app.get_continue_watching(), index, image);
+            }
+        });
+    }
 }
 
 /// Reloads the Home dashboard's "Hot Discussions" model from
@@ -1244,6 +1598,7 @@ fn spawn_friend_presence_checks(
 /// `"display_name"`, distinct from `"directory_username"` (that one is an
 /// ANKAI directory-server identity, this one is a Last.fm account name).
 const LASTFM_USERNAME_SETTING_KEY: &str = "lastfm_username";
+const LETTERBOXD_USERNAME_SETTING_KEY: &str = "letterboxd_username";
 
 /// Fetches `username`'s real Last.fm now-playing state
 /// (`ankai_core::lastfm::current_now_playing`) and pushes exactly one of the
@@ -1253,7 +1608,7 @@ const LASTFM_USERNAME_SETTING_KEY: &str = "lastfm_username";
 /// "not-configured"; that's the caller's job when there's no username at
 /// all, since this function always requires one). Spawned on `handle`, same
 /// "don't block the UI thread on a real third-party network call" reasoning
-/// as `spawn_mal_refresh`/`spawn_anime_refresh`.
+/// as the anime and Letterboxd refresh paths.
 fn spawn_lastfm_refresh(
     handle: tokio::runtime::Handle,
     app_weak: slint::Weak<AppWindow>,
@@ -1330,28 +1685,8 @@ fn main() -> Result<(), slint::PlatformError> {
         return demo.run();
     }
 
-    let db = Rc::new(open_local_db());
-
-    // First-run local identity: generates and persists an account/device
-    // id plus a real device signature keypair the first time this device's
-    // DB is opened, or reloads the same one on every run after that. See
-    // ankai_core::identity's module doc comment for what this is (and
-    // isn't) yet — no server-issued account, no account-root identity key.
-    let mls_provider = Rc::new(
-        ankai_core::mls_provider::AnkaiMlsProvider::load(&db).expect("failed to load MLS storage"),
-    );
-    let device = ankai_core::identity::load_or_create_device(&db, &mls_provider)
-        .expect("failed to load or create local device identity");
-    mls_provider
-        .flush(&db)
-        .expect("failed to persist MLS storage");
-
-    MESSAGING_HANDLES.with(|handles| {
-        *handles.borrow_mut() = Some(MessagingHandles {
-            db: db.clone(),
-            mls_provider: mls_provider.clone(),
-        });
-    });
+    let db = Rc::new(open_local_db()?);
+    DB_HANDLE.with(|handle| *handle.borrow_mut() = Some(db.clone()));
 
     let app = AppWindow::new()?;
 
@@ -1367,37 +1702,94 @@ fn main() -> Result<(), slint::PlatformError> {
                         slint::RenderingState::RenderingSetup,
                         slint::GraphicsAPI::NativeOpenGL { .. },
                     ) => {
-                        let result = playback::Player::new().and_then(|mut player| {
-                            player.setup_opengl()?;
-                            if let Ok(url) = std::env::var("ANKAI_PLAYBACK_TEST_URL") {
-                                player.load(&url)?;
-                                app.set_player_title("Embedded playback test".into());
-                                app.set_player_active(true);
-                            }
-                            VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
-                            Ok(())
-                        });
+                        let result =
+                            playback::BoundedVideoSurface::new(graphics_api).and_then(|surface| {
+                                let mut player = playback::Player::new()?;
+                                surface.setup_player(&mut player)?;
+                                if let Ok(url) = std::env::var("ANKAI_PLAYBACK_TEST_URL") {
+                                    player.load(&url)?;
+                                    app.set_player_title("Embedded playback test".into());
+                                    app.set_player_active(true);
+                                }
+                                VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
+                                VIDEO_SURFACE.with(|slot| *slot.borrow_mut() = Some(surface));
+                                Ok(())
+                            });
                         if let Err(error) = result {
-                            app.set_stremio_status(format!("Error: {error}").into());
+                            app.set_player_error(error.to_string().into());
+                            app.set_stremio_status(format!("Player unavailable: {error}").into());
                         }
                     }
                     (
                         slint::RenderingState::BeforeRendering,
                         slint::GraphicsAPI::NativeOpenGL { .. },
                     ) if app.get_player_active() => {
-                        let size = app.window().size();
-                        VIDEO_PLAYER.with(|slot| {
-                            if let Some(player) = slot.borrow_mut().as_mut() {
-                                if let Err(error) =
-                                    player.render(size.width as i32, size.height as i32)
-                                {
-                                    app.set_stremio_status(format!("Error: {error}").into());
+                        let result = VIDEO_PLAYER.with(|player_slot| {
+                            VIDEO_SURFACE.with(|surface_slot| {
+                                let mut player_slot = player_slot.borrow_mut();
+                                let mut surface_slot = surface_slot.borrow_mut();
+                                let Some(player) = player_slot.as_mut() else {
+                                    return Ok::<_, playback::PlayerError>(false);
+                                };
+                                if app.get_player_bounded_mode() {
+                                    let Some(surface) = surface_slot.as_mut() else {
+                                        return Err(playback::PlayerError::OpenGl(
+                                            "bounded video surface is unavailable".into(),
+                                        ));
+                                    };
+                                    match surface.ensure_size(
+                                        app.get_player_video_surface_width(),
+                                        app.get_player_video_surface_height(),
+                                        app.window().scale_factor(),
+                                    )? {
+                                        playback::VideoSurfaceUpdate::Unchanged => {}
+                                        playback::VideoSurfaceUpdate::Replace { image, .. } => {
+                                            app.set_player_video_frame(image);
+                                            app.set_player_video_frame_ready(true);
+                                        }
+                                        playback::VideoSurfaceUpdate::Clear => {
+                                            app.set_player_video_frame(slint::Image::default());
+                                            app.set_player_video_frame_ready(false);
+                                        }
+                                    }
+                                    surface.render_player(player)?;
+                                } else {
+                                    let size = app.window().size();
+                                    player.render(size.width as i32, size.height as i32)?;
                                 }
+                                Ok(player.state().has_media)
+                            })
+                        });
+                        match result {
+                            Ok(true) => app.set_player_video_ready(true),
+                            Ok(false) => {}
+                            Err(error) => {
+                                app.set_player_loading(false);
+                                app.set_player_error(error.to_string().into());
+                            }
+                        }
+                    }
+                    (
+                        slint::RenderingState::AfterRendering,
+                        slint::GraphicsAPI::NativeOpenGL { .. },
+                    ) => {
+                        VIDEO_SURFACE.with(|slot| {
+                            if let Some(surface) = slot.borrow_mut().as_mut() {
+                                surface.finish_frame();
                             }
                         });
                     }
                     (slint::RenderingState::RenderingTeardown, _) => {
-                        VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = None)
+                        app.set_player_video_frame(slint::Image::default());
+                        app.set_player_video_frame_ready(false);
+                        VIDEO_SURFACE.with(|slot| {
+                            let mut slot = slot.borrow_mut();
+                            if let Some(surface) = slot.as_mut() {
+                                surface.teardown();
+                            }
+                            *slot = None;
+                        });
+                        VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = None);
                     }
                     _ => {}
                 }
@@ -1406,15 +1798,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 slint::PlatformError::Other(format!("failed to install video renderer: {error}"))
             })?;
     }
-    app.set_account_id(device.account.0.clone().into());
-    app.set_device_id(device.id.0.clone().into());
-
     let saved_display_name = db
         .get_setting("display_name")
-        .expect("failed to read display_name setting")
+        .unwrap_or_else(|error| {
+            eprintln!("ankai-client: failed to read display_name setting: {error}");
+            None
+        })
         .unwrap_or_default();
     app.set_display_name_initial(initial_letter(&saved_display_name).into());
     app.set_display_name(saved_display_name.into());
+    let reduced_motion = db
+        .get_setting("reduced_motion")
+        .unwrap_or_else(|error| {
+            eprintln!("ankai-client: failed to read reduced_motion setting: {error}");
+            None
+        })
+        .is_some_and(|value| value == "true");
+    app.set_reduced_motion(reduced_motion);
     app.set_time_of_day_greeting(time_of_day_greeting().into());
 
     let db_for_save = db.clone();
@@ -1428,7 +1828,25 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    let communities = ankai_core::communities::list(&db).expect("failed to list communities");
+    {
+        let db = db.clone();
+        let app_weak = app.as_weak();
+        app.on_save_reduced_motion(move |enabled| {
+            if let Err(error) =
+                db.set_setting("reduced_motion", if enabled { "true" } else { "false" })
+            {
+                eprintln!("ankai-client: failed to save reduced-motion preference: {error}");
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice("Couldn't save the motion preference.".into());
+                }
+            }
+        });
+    }
+
+    let communities = ankai_core::communities::list(&db).unwrap_or_else(|error| {
+        eprintln!("ankai-client: failed to list communities: {error}");
+        Vec::new()
+    });
     let (community_names, community_ids): (Vec<slint::SharedString>, Vec<slint::SharedString>) =
         communities
             .into_iter()
@@ -1581,7 +1999,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // refresh_watchlist needs a `tokio::runtime::Handle` to kick off real
     // async cover-art fetches (see client::images), same runtime everything
     // else in this file already shares.
-    let hangouts = ankai_core::hangouts::list(&db).expect("failed to list hangouts");
+    let hangouts = ankai_core::hangouts::list(&db).unwrap_or_else(|error| {
+        eprintln!("ankai-client: failed to list hangouts: {error}");
+        Vec::new()
+    });
     let hangout_names: Vec<slint::SharedString> =
         hangouts.into_iter().map(|h| h.name.into()).collect();
     let hangout_model = std::rc::Rc::new(slint::VecModel::from(hangout_names));
@@ -1605,6 +2026,15 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // A shared runtime drives every asynchronous feature, including Stremio,
+    // Jikan and cover art. Runtime construction is required; return a normal,
+    // actionable startup error if the host cannot create it.
+    let p2p_runtime = tokio::runtime::Runtime::new().map_err(|error| {
+        slint::PlatformError::Other(format!(
+            "couldn't start the background network runtime: {error}"
+        ))
+    })?;
+
     // P2P messaging (ankai_core::p2p / ankai_core::messaging): real MLS
     // (RFC 9420, via OpenMLS) end-to-end encryption over a 2-member group
     // per peer, with plaintext persisted to the encrypted local DB after
@@ -1616,235 +2046,43 @@ fn main() -> Result<(), slint::PlatformError> {
     // `slint::invoke_from_event_loop`. All MLS/DB work stays on the UI
     // thread (see `MessagingHandles`'s doc comment) — the tokio side only
     // ever moves raw, already-encrypted bytes.
-    let p2p_runtime = tokio::runtime::Runtime::new().expect("failed to start P2P runtime");
-    let p2p_node = std::sync::Arc::new(
-        p2p_runtime
-            .block_on(ankai_core::p2p::P2pNode::bind())
-            .expect("failed to bind local P2P endpoint"),
-    );
+    // Social initialization is optional. A damaged MLS blob, unavailable
+    // socket, missing signing key, or invite error disables only peer/social
+    // controls; browsing and playback keep using the runtime above.
+    let social_services = match initialize_social_services(&db, &p2p_runtime) {
+        Ok(services) => Some(services),
+        Err(error) => {
+            eprintln!("ankai-client: social networking unavailable: {error}");
+            app.set_social_networking_enabled(false);
+            app.set_social_networking_status(
+                format!("Social networking is unavailable for this session. {error}").into(),
+            );
+            app.set_send_status("Messaging is disabled for this session.".into());
+            app.set_directory_enabled(false);
+            None
+        }
+    };
+    if let Some(services) = social_services.as_ref() {
+        app.set_account_id(services.device.account.0.clone().into());
+        app.set_device_id(services.device.id.0.clone().into());
+    }
+    let social_node = social_services
+        .as_ref()
+        .map(|services| services.node.clone());
 
     // Now that a tokio runtime/handle exists, finish "Currently Watching"'s
     // setup (see the comment above this block) — real cover-art fetches
     // (client::images) get kicked off asynchronously on this same runtime.
     refresh_watchlist(&app, &db, p2p_runtime.handle());
+    refresh_resume_entries(&app, &db, p2p_runtime.handle());
 
-    // This device's standing invite: its dialable address plus a freshly
-    // built KeyPackage (MLS's prekey equivalent), so a peer who pastes it
-    // can start (or receive) a real MLS group with this device. See
-    // ankai_core::messaging's "Group setup without a directory" doc section
-    // for why this exists instead of a real directory/discovery service.
-    // Regenerated every startup rather than tracked/reused/pruned — a real
-    // client would maintain a small pool of unused KeyPackages and rotate
-    // them; Phase 1 just leaves old, never-consumed ones sitting harmlessly
-    // in MLS storage (same "revisit before the audit gate" bucket as
-    // `mls_provider`'s whole-blob persistence tradeoff).
-    let own_key_package = ankai_core::identity::create_key_package(&device, &mls_provider)
-        .expect("failed to build this device's MLS key package")
-        .key_package
-        .expect("create_key_package always returns Some");
-    mls_provider
-        .flush(&db)
-        .expect("failed to persist MLS storage");
-    let own_invite = ankai_core::messaging::PeerInvite {
-        addr: p2p_node.addr(),
-        key_package: own_key_package,
-    };
-    let own_invite_text = ankai_core::messaging::format_peer_invite(&own_invite)
-        .expect("failed to encode own P2P/MLS invite");
-    app.set_own_peer_address(own_invite_text.into());
-
-    // Friends (ankai_core::friends): a real accepted-friends list plus real
-    // pending *incoming* requests, sharing this same P2pNode with messaging
-    // (see that module's "Wire dispatch" doc section). There is
-    // deliberately no "send a friend request" UI wired here — sending would
-    // need a way to pick a target device (the same look-up-by-Device-ID/
-    // username machinery Messages already has), and this pass scopes that
-    // out to keep the surface reviewable; accepting/declining an incoming
-    // request (which core::friends fully supports) is what's wired.
+    // Local friend/message data remains readable while peer networking is
+    // offline, so the disabled social view still represents persisted state.
     refresh_friends(&app, &db);
-
-    let node_for_accept_friend = p2p_node.clone();
-    let db_for_accept_friend = db.clone();
-    let mls_provider_for_accept_friend = mls_provider.clone();
-    let device_for_accept_friend = device.clone();
-    let app_weak_for_accept_friend = app.as_weak();
-    let p2p_handle_for_accept_friend = p2p_runtime.handle().clone();
-    app.on_accept_friend_request(move |device_id_text| {
-        let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
-        // Run to completion on the UI thread via Handle::block_on rather
-        // than tokio::spawn: accept_friend_request interleaves synchronous
-        // Db writes with one async P2P send inside a single async fn (see
-        // its doc comment), so the Db/MLS-provider `Rc`s it needs can't
-        // safely cross into a spawned task (see this file's
-        // MessagingHandles doc comment on why `Db` isn't `Send`/`Sync`
-        // across threads). This does mean the UI blocks for the duration of
-        // that one P2P send attempt (no timeout on it, unlike
-        // check_presence's) — same accepted tradeoff as this file's
-        // existing directory-publish `block_on` call at startup.
-        let result =
-            p2p_handle_for_accept_friend.block_on(ankai_core::friends::accept_friend_request(
-                &node_for_accept_friend,
-                &db_for_accept_friend,
-                &device_for_accept_friend,
-                &mls_provider_for_accept_friend,
-                &device_id,
-            ));
-        match result {
-            Ok(_outcome) => {
-                if let Some(app) = app_weak_for_accept_friend.upgrade() {
-                    refresh_friends(&app, &db_for_accept_friend);
-                }
-            }
-            Err(err) => eprintln!("ankai-client: failed to accept friend request: {err}"),
-        }
+    let history = ankai_core::messaging::list_messages(&db).unwrap_or_else(|error| {
+        eprintln!("ankai-client: failed to load message history: {error}");
+        Vec::new()
     });
-
-    let db_for_decline_friend = db.clone();
-    let app_weak_for_decline_friend = app.as_weak();
-    app.on_decline_friend_request(move |device_id_text| {
-        let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
-        if let Err(err) =
-            ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
-        {
-            eprintln!("ankai-client: failed to decline friend request: {err}");
-        }
-        if let Some(app) = app_weak_for_decline_friend.upgrade() {
-            refresh_friends(&app, &db_for_decline_friend);
-        }
-    });
-
-    // Real, on-demand presence checks (ankai_core::friends::check_presence)
-    // against every accepted friend. Unlike accept above, check_presence
-    // takes no Db/MLS-provider reference (just `&P2pNode` and an owned
-    // `Friend`), so it's safe to run as real spawned tasks that report back
-    // via invoke_from_event_loop — same shape as messaging's send/receive
-    // paths.
-    let node_for_presence = p2p_node.clone();
-    let db_for_presence = db.clone();
-    let app_weak_for_presence = app.as_weak();
-    let p2p_handle_for_presence = p2p_runtime.handle().clone();
-    app.on_refresh_friends_presence(move || {
-        let friends = match ankai_core::friends::list_friends(&db_for_presence) {
-            Ok(friends) => friends,
-            Err(err) => {
-                eprintln!("ankai-client: failed to list friends for presence check: {err}");
-                return;
-            }
-        };
-
-        if let Some(app) = app_weak_for_presence.upgrade() {
-            if let Some(model) = app
-                .get_friends_list()
-                .as_any()
-                .downcast_ref::<slint::VecModel<FriendCard>>()
-            {
-                for i in 0..model.row_count() {
-                    if let Some(mut row) = model.row_data(i) {
-                        row.status = "checking...".into();
-                        model.set_row_data(i, row);
-                    }
-                }
-            }
-        }
-
-        for friend in friends {
-            let node = node_for_presence.clone();
-            let app_weak = app_weak_for_presence.clone();
-            p2p_handle_for_presence.spawn(async move {
-                let online = ankai_core::friends::check_presence(&node, &friend).await;
-                let device_id = friend.device_id.0.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(app) = app_weak.upgrade() else {
-                        return;
-                    };
-                    let friends_list = app.get_friends_list();
-                    let Some(model) = friends_list
-                        .as_any()
-                        .downcast_ref::<slint::VecModel<FriendCard>>()
-                    else {
-                        return;
-                    };
-                    for i in 0..model.row_count() {
-                        let Some(mut row) = model.row_data(i) else {
-                            continue;
-                        };
-                        if row.device_id.as_str() == device_id.as_str() {
-                            row.status = if online { "online" } else { "offline" }.into();
-                            model.set_row_data(i, row);
-                            break;
-                        }
-                    }
-                });
-            });
-        }
-    });
-
-    // Experimental, opt-in ADR-0008 directory integration (Status:
-    // Proposed — see docs/adr/0008-identity-discovery-service.md and
-    // ankai_core::messaging's module doc comment). `directory_client` stays
-    // `None`, and nothing here ever makes a network call to any directory
-    // server, unless a human explicitly set ANKAI_DIRECTORY_URL. When set,
-    // this device publishes its current KeyPackage + EndpointAddr (the same
-    // pair `own_invite` above already bundles for manual pasting) so a peer
-    // who knows this device's short DeviceId can look it up instead.
-    // Publish failure (e.g. no server running at that URL) is logged and
-    // otherwise ignored — the manual-paste flow keeps working regardless.
-    let directory_url = directory::configured_directory_url();
-    let directory_client = directory_url.as_ref().map(|url| {
-        let signer = ankai_core::identity::device_signer(&device, &mls_provider)
-            .expect("device signature key must exist to sign directory requests");
-        std::sync::Arc::new(ankai_directory_server::HttpDirectoryClient::new(
-            url.clone(),
-            device.id.clone(),
-            signer,
-        ))
-    });
-
-    if let Some(client) = &directory_client {
-        use ankai_core::directory::DirectoryService;
-        let device_id = device.id.clone();
-        let key_package_to_publish = own_invite.key_package.clone();
-        let addr_to_publish = own_invite.addr.clone();
-        let publish_result = p2p_runtime.block_on(async {
-            client
-                .publish_key_package(&device_id, key_package_to_publish)
-                .await?;
-            client
-                .publish_endpoint_addr(&device_id, addr_to_publish)
-                .await
-        });
-        match publish_result {
-            Ok(()) => println!(
-                "ankai-client: published this device's KeyPackage + EndpointAddr to the directory server at {} (experimental — ADR-0008 is still Proposed)",
-                directory_url.unwrap_or_default()
-            ),
-            Err(err) => eprintln!(
-                "ankai-client: failed to publish to the directory server (continuing without it, manual paste still works): {err}"
-            ),
-        }
-    }
-    app.set_directory_enabled(directory_client.is_some());
-
-    // This device's own directory username, if it's ever successfully
-    // claimed one — purely local display state (see app.slint's
-    // claimed-username doc comment): the directory server remains the real
-    // source of truth for who owns it, this is just "what did we last
-    // successfully claim, so the Settings field isn't blank on the next
-    // run." Saved under its own settings key, distinct from display_name,
-    // since the two aren't the same thing (see client::directory's doc
-    // comment on why usernames aren't folded into display_name).
-    let saved_username = db
-        .get_setting("directory_username")
-        .expect("failed to read directory_username setting")
-        .unwrap_or_default();
-    app.set_claimed_username(saved_username.into());
-
-    // Load this device's entire persisted message history (oldest first)
-    // into the same most-recent-first model shape the live send/receive
-    // paths already push into — same idea as Settings loading
-    // `display_name` and Communities loading its list at startup.
-    let history =
-        ankai_core::messaging::list_messages(&db).expect("failed to load message history");
     let message_log_model =
         std::rc::Rc::new(slint::VecModel::from(Vec::<slint::SharedString>::new()));
     for stored in history {
@@ -1858,199 +2096,426 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     app.set_message_log(slint::ModelRc::from(message_log_model));
 
-    // Background receive loop, spawned for the lifetime of the app. Each
-    // incoming connection's raw bytes and sender id are handed to the UI
-    // thread via invoke_from_event_loop, where MessagingHandles::decrypt
-    // does the actual MLS decrypt + persist — see this file's
-    // MessagingHandles doc comment for why that split exists.
-    let node_for_accept = p2p_node.clone();
-    let app_weak_for_accept = app.as_weak();
-    p2p_runtime.spawn(async move {
-        let result =
-            ankai_core::messaging::receive_messages(&node_for_accept, move |from, bytes| {
-                let app_weak = app_weak_for_accept.clone();
+    if let Some(SocialServices {
+        mls_provider,
+        device,
+        node: p2p_node,
+        own_invite,
+        own_invite_text,
+    }) = social_services
+    {
+        app.set_social_networking_enabled(true);
+        app.set_social_networking_status("Peer networking is ready.".into());
+        app.set_own_peer_address(own_invite_text.into());
+        MESSAGING_HANDLES.with(|handles| {
+            *handles.borrow_mut() = Some(MessagingHandles {
+                db: db.clone(),
+                mls_provider: mls_provider.clone(),
+            });
+        });
+
+        // This device's standing invite: its dialable address plus a freshly
+        // built KeyPackage (MLS's prekey equivalent), so a peer who pastes it
+        // can start (or receive) a real MLS group with this device. See
+        // ankai_core::messaging's "Group setup without a directory" doc section
+        // for why this exists instead of a real directory/discovery service.
+        // Regenerated every startup rather than tracked/reused/pruned — a real
+        // client would maintain a small pool of unused KeyPackages and rotate
+        // them; Phase 1 just leaves old, never-consumed ones sitting harmlessly
+        // in MLS storage (same "revisit before the audit gate" bucket as
+        // `mls_provider`'s whole-blob persistence tradeoff).
+        // Friends (ankai_core::friends): a real accepted-friends list plus real
+        // pending *incoming* requests, sharing this same P2pNode with messaging
+        // (see that module's "Wire dispatch" doc section). There is
+        // deliberately no "send a friend request" UI wired here — sending would
+        // need a way to pick a target device (the same look-up-by-Device-ID/
+        // username machinery Messages already has), and this pass scopes that
+        // out to keep the surface reviewable; accepting/declining an incoming
+        // request (which core::friends fully supports) is what's wired.
+        let node_for_accept_friend = p2p_node.clone();
+        let db_for_accept_friend = db.clone();
+        let mls_provider_for_accept_friend = mls_provider.clone();
+        let device_for_accept_friend = device.clone();
+        let app_weak_for_accept_friend = app.as_weak();
+        let p2p_handle_for_accept_friend = p2p_runtime.handle().clone();
+        app.on_accept_friend_request(move |device_id_text| {
+            let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
+            // Run to completion on the UI thread via Handle::block_on rather
+            // than tokio::spawn: accept_friend_request interleaves synchronous
+            // Db writes with one async P2P send inside a single async fn (see
+            // its doc comment), so the Db/MLS-provider `Rc`s it needs can't
+            // safely cross into a spawned task (see this file's
+            // MessagingHandles doc comment on why `Db` isn't `Send`/`Sync`
+            // across threads). This does mean the UI blocks for the duration of
+            // that one P2P send attempt (no timeout on it, unlike
+            // check_presence's) — same accepted tradeoff as this file's
+            // existing directory-publish `block_on` call at startup.
+            let result =
+                p2p_handle_for_accept_friend.block_on(ankai_core::friends::accept_friend_request(
+                    &node_for_accept_friend,
+                    &db_for_accept_friend,
+                    &device_for_accept_friend,
+                    &mls_provider_for_accept_friend,
+                    &device_id,
+                ));
+            match result {
+                Ok(_outcome) => {
+                    if let Some(app) = app_weak_for_accept_friend.upgrade() {
+                        refresh_friends(&app, &db_for_accept_friend);
+                    }
+                }
+                Err(err) => eprintln!("ankai-client: failed to accept friend request: {err}"),
+            }
+        });
+
+        let db_for_decline_friend = db.clone();
+        let app_weak_for_decline_friend = app.as_weak();
+        app.on_decline_friend_request(move |device_id_text| {
+            let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
+            if let Err(err) =
+                ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
+            {
+                eprintln!("ankai-client: failed to decline friend request: {err}");
+            }
+            if let Some(app) = app_weak_for_decline_friend.upgrade() {
+                refresh_friends(&app, &db_for_decline_friend);
+            }
+        });
+
+        // Real, on-demand presence checks (ankai_core::friends::check_presence)
+        // against every accepted friend. Unlike accept above, check_presence
+        // takes no Db/MLS-provider reference (just `&P2pNode` and an owned
+        // `Friend`), so it's safe to run as real spawned tasks that report back
+        // via invoke_from_event_loop — same shape as messaging's send/receive
+        // paths.
+        let node_for_presence = p2p_node.clone();
+        let db_for_presence = db.clone();
+        let app_weak_for_presence = app.as_weak();
+        let p2p_handle_for_presence = p2p_runtime.handle().clone();
+        app.on_refresh_friends_presence(move || {
+            let friends = match ankai_core::friends::list_friends(&db_for_presence) {
+                Ok(friends) => friends,
+                Err(err) => {
+                    eprintln!("ankai-client: failed to list friends for presence check: {err}");
+                    return;
+                }
+            };
+
+            if let Some(app) = app_weak_for_presence.upgrade() {
+                if let Some(model) = app
+                    .get_friends_list()
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<FriendCard>>()
+                {
+                    for i in 0..model.row_count() {
+                        if let Some(mut row) = model.row_data(i) {
+                            row.status = "checking...".into();
+                            model.set_row_data(i, row);
+                        }
+                    }
+                }
+            }
+
+            for friend in friends {
+                let node = node_for_presence.clone();
+                let app_weak = app_weak_for_presence.clone();
+                p2p_handle_for_presence.spawn(async move {
+                    let online = ankai_core::friends::check_presence(&node, &friend).await;
+                    let device_id = friend.device_id.0.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(app) = app_weak.upgrade() else {
+                            return;
+                        };
+                        let friends_list = app.get_friends_list();
+                        let Some(model) = friends_list
+                            .as_any()
+                            .downcast_ref::<slint::VecModel<FriendCard>>()
+                        else {
+                            return;
+                        };
+                        for i in 0..model.row_count() {
+                            let Some(mut row) = model.row_data(i) else {
+                                continue;
+                            };
+                            if row.device_id.as_str() == device_id.as_str() {
+                                row.status = if online { "online" } else { "offline" }.into();
+                                model.set_row_data(i, row);
+                                break;
+                            }
+                        }
+                    });
+                });
+            }
+        });
+
+        // Experimental, opt-in ADR-0008 directory integration (Status:
+        // Proposed — see docs/adr/0008-identity-discovery-service.md and
+        // ankai_core::messaging's module doc comment). `directory_client` stays
+        // `None`, and nothing here ever makes a network call to any directory
+        // server, unless a human explicitly set ANKAI_DIRECTORY_URL. When set,
+        // this device publishes its current KeyPackage + EndpointAddr (the same
+        // pair `own_invite` above already bundles for manual pasting) so a peer
+        // who knows this device's short DeviceId can look it up instead.
+        // Publish failure (e.g. no server running at that URL) is logged and
+        // otherwise ignored — the manual-paste flow keeps working regardless.
+        let directory_url = directory::configured_directory_url();
+        let directory_client = match directory_url.as_ref() {
+            Some(url) => match ankai_core::identity::device_signer(&device, &mls_provider) {
+                Ok(signer) => Some(std::sync::Arc::new(
+                    ankai_directory_server::HttpDirectoryClient::new(
+                        url.clone(),
+                        device.id.clone(),
+                        signer,
+                    ),
+                )),
+                Err(error) => {
+                    eprintln!(
+                    "ankai-client: directory integration unavailable; couldn't load the device signer: {error}"
+                );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        if let Some(client) = &directory_client {
+            use ankai_core::directory::DirectoryService;
+            let device_id = device.id.clone();
+            let key_package_to_publish = own_invite.key_package.clone();
+            let addr_to_publish = own_invite.addr.clone();
+            let publish_result = p2p_runtime.block_on(async {
+                client
+                    .publish_key_package(&device_id, key_package_to_publish)
+                    .await?;
+                client
+                    .publish_endpoint_addr(&device_id, addr_to_publish)
+                    .await
+            });
+            match publish_result {
+            Ok(()) => println!(
+                "ankai-client: published this device's KeyPackage + EndpointAddr to the directory server at {} (experimental — ADR-0008 is still Proposed)",
+                directory_url.unwrap_or_default()
+            ),
+            Err(err) => eprintln!(
+                "ankai-client: failed to publish to the directory server (continuing without it, manual paste still works): {err}"
+            ),
+        }
+        }
+        app.set_directory_enabled(directory_client.is_some());
+
+        // This device's own directory username, if it's ever successfully
+        // claimed one — purely local display state (see app.slint's
+        // claimed-username doc comment): the directory server remains the real
+        // source of truth for who owns it, this is just "what did we last
+        // successfully claim, so the Settings field isn't blank on the next
+        // run." Saved under its own settings key, distinct from display_name,
+        // since the two aren't the same thing (see client::directory's doc
+        // comment on why usernames aren't folded into display_name).
+        let saved_username = db
+            .get_setting("directory_username")
+            .unwrap_or_else(|error| {
+                eprintln!("ankai-client: failed to read directory_username setting: {error}");
+                None
+            })
+            .unwrap_or_default();
+        app.set_claimed_username(saved_username.into());
+
+        // Background receive loop, spawned for the lifetime of the app. Each
+        // incoming connection's raw bytes and sender id are handed to the UI
+        // thread via invoke_from_event_loop, where MessagingHandles::decrypt
+        // does the actual MLS decrypt + persist — see this file's
+        // MessagingHandles doc comment for why that split exists.
+        let node_for_accept = p2p_node.clone();
+        let app_weak_for_accept = app.as_weak();
+        p2p_runtime.spawn(async move {
+            let result =
+                ankai_core::messaging::receive_messages(&node_for_accept, move |from, bytes| {
+                    let app_weak = app_weak_for_accept.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(app) = app_weak.upgrade() else {
+                            return;
+                        };
+                        let handles = MESSAGING_HANDLES.with(|h| h.borrow().clone());
+                        let Some(handles) = handles else {
+                            eprintln!("ankai-client: messaging handles not initialized yet");
+                            return;
+                        };
+
+                        // Friends-protocol messages carry a fixed magic prefix
+                        // real MLS wire bytes never start with (see
+                        // ankai_core::friends's "Wire dispatch" doc section), so
+                        // trying friends::handle_incoming first and falling
+                        // through to messaging::decrypt_incoming only when it
+                        // reports "not ours" (Ok(None)) safely dispatches both
+                        // message kinds over this one shared P2pNode/accept_loop
+                        // with zero changes to messaging.rs itself.
+                        match ankai_core::friends::handle_incoming(
+                            &handles.db,
+                            &handles.mls_provider,
+                            &bytes,
+                        ) {
+                            Ok(Some(_event)) => {
+                                // A new pending request or a confirmed accept —
+                                // either way, the Friends section's data
+                                // changed; refresh_friends recomputes both
+                                // lists fresh rather than hand-patching one row.
+                                refresh_friends(&app, &handles.db);
+                                return;
+                            }
+                            Ok(None) => {
+                                // Not a friends-protocol message; fall through
+                                // to messaging below, unchanged.
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                "ankai-client: failed to process incoming friend message: {err}"
+                            );
+                                return;
+                            }
+                        }
+
+                        let result = ankai_core::messaging::decrypt_incoming(
+                            &handles.db,
+                            &handles.mls_provider,
+                            from,
+                            bytes,
+                        );
+                        if let Err(err) = handles.mls_provider.flush(&handles.db) {
+                            eprintln!("ankai-client: failed to persist MLS state: {err}");
+                        }
+
+                        match result {
+                            Ok(Some(msg)) => {
+                                let peer_id = ankai_core::messaging::peer_id_for(msg.from);
+                                let line = format!("{}: {}", short_peer_id(&peer_id), msg.text);
+                                if let Some(model) = app
+                                    .get_message_log()
+                                    .as_any()
+                                    .downcast_ref::<slint::VecModel<slint::SharedString>>()
+                                {
+                                    model.insert(0, line.into());
+                                }
+                            }
+                            // A Welcome establishing a new group — nothing
+                            // user-visible yet, this device just joined.
+                            Ok(None) => {}
+                            Err(err) => {
+                                eprintln!(
+                                    "ankai-client: failed to process incoming message: {err}"
+                                );
+                            }
+                        }
+                    });
+                })
+                .await;
+            if let Err(err) = result {
+                eprintln!("ankai-client: message receive loop ended: {err}");
+            }
+        });
+
+        let node_for_send = p2p_node.clone();
+        let db_for_send = db.clone();
+        let mls_provider_for_send = mls_provider.clone();
+        let device_for_send = device.clone();
+        let app_weak_for_send = app.as_weak();
+        let p2p_handle = p2p_runtime.handle().clone();
+        app.on_send_message(move |peer_invite_text, message_text| {
+            let message_text = message_text.trim().to_string();
+            if message_text.is_empty() {
+                return;
+            }
+
+            let invite = match ankai_core::messaging::parse_peer_invite(&peer_invite_text) {
+                Ok(invite) => invite,
+                Err(err) => {
+                    if let Some(app) = app_weak_for_send.upgrade() {
+                        app.set_send_status(format!("Couldn't parse peer invite: {err}").into());
+                    }
+                    return;
+                }
+            };
+
+            // Encryption (real MLS: group setup on first contact, then
+            // `create_message`) and persistence both happen synchronously here
+            // on the UI thread, where `db`/`mls_provider` already live — only
+            // the resulting already-encrypted bytes cross to the tokio runtime
+            // for the actual network send.
+            let payloads = match ankai_core::messaging::encrypt_and_log_outgoing(
+                &db_for_send,
+                &mls_provider_for_send,
+                &device_for_send,
+                &invite,
+                &message_text,
+            ) {
+                Ok(payloads) => payloads,
+                Err(err) => {
+                    if let Some(app) = app_weak_for_send.upgrade() {
+                        app.set_send_status(format!("Failed to encrypt message: {err}").into());
+                    }
+                    return;
+                }
+            };
+            if let Err(err) = mls_provider_for_send.flush(&db_for_send) {
+                eprintln!("ankai-client: failed to persist MLS state: {err}");
+            }
+
+            let node = node_for_send.clone();
+            let addr = invite.addr.clone();
+            let app_weak = app_weak_for_send.clone();
+            p2p_handle.spawn(async move {
+                let mut result = Ok(());
+                for payload in &payloads {
+                    result =
+                        ankai_core::messaging::send_message(&node, addr.clone(), payload).await;
+                    if result.is_err() {
+                        break;
+                    }
+                }
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
-                    let handles = MESSAGING_HANDLES.with(|h| h.borrow().clone());
-                    let Some(handles) = handles else {
-                        eprintln!("ankai-client: messaging handles not initialized yet");
-                        return;
-                    };
-
-                    // Friends-protocol messages carry a fixed magic prefix
-                    // real MLS wire bytes never start with (see
-                    // ankai_core::friends's "Wire dispatch" doc section), so
-                    // trying friends::handle_incoming first and falling
-                    // through to messaging::decrypt_incoming only when it
-                    // reports "not ours" (Ok(None)) safely dispatches both
-                    // message kinds over this one shared P2pNode/accept_loop
-                    // with zero changes to messaging.rs itself.
-                    match ankai_core::friends::handle_incoming(
-                        &handles.db,
-                        &handles.mls_provider,
-                        &bytes,
-                    ) {
-                        Ok(Some(_event)) => {
-                            // A new pending request or a confirmed accept —
-                            // either way, the Friends section's data
-                            // changed; refresh_friends recomputes both
-                            // lists fresh rather than hand-patching one row.
-                            refresh_friends(&app, &handles.db);
-                            return;
-                        }
-                        Ok(None) => {
-                            // Not a friends-protocol message; fall through
-                            // to messaging below, unchanged.
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "ankai-client: failed to process incoming friend message: {err}"
-                            );
-                            return;
-                        }
-                    }
-
-                    let result = ankai_core::messaging::decrypt_incoming(
-                        &handles.db,
-                        &handles.mls_provider,
-                        from,
-                        bytes,
-                    );
-                    if let Err(err) = handles.mls_provider.flush(&handles.db) {
-                        eprintln!("ankai-client: failed to persist MLS state: {err}");
-                    }
-
                     match result {
-                        Ok(Some(msg)) => {
-                            let peer_id = ankai_core::messaging::peer_id_for(msg.from);
-                            let line = format!("{}: {}", short_peer_id(&peer_id), msg.text);
+                        Ok(()) => {
+                            app.set_send_status("".into());
+                            app.set_message_input("".into());
                             if let Some(model) = app
                                 .get_message_log()
                                 .as_any()
                                 .downcast_ref::<slint::VecModel<slint::SharedString>>()
                             {
-                                model.insert(0, line.into());
+                                model.insert(0, format!("you: {message_text}").into());
                             }
                         }
-                        // A Welcome establishing a new group — nothing
-                        // user-visible yet, this device just joined.
-                        Ok(None) => {}
                         Err(err) => {
-                            eprintln!("ankai-client: failed to process incoming message: {err}");
+                            app.set_send_status(format!("Failed to send: {err}").into());
                         }
                     }
                 });
-            })
-            .await;
-        if let Err(err) = result {
-            eprintln!("ankai-client: message receive loop ended: {err}");
-        }
-    });
-
-    let node_for_send = p2p_node.clone();
-    let db_for_send = db.clone();
-    let mls_provider_for_send = mls_provider.clone();
-    let device_for_send = device.clone();
-    let app_weak_for_send = app.as_weak();
-    let p2p_handle = p2p_runtime.handle().clone();
-    app.on_send_message(move |peer_invite_text, message_text| {
-        let message_text = message_text.trim().to_string();
-        if message_text.is_empty() {
-            return;
-        }
-
-        let invite = match ankai_core::messaging::parse_peer_invite(&peer_invite_text) {
-            Ok(invite) => invite,
-            Err(err) => {
-                if let Some(app) = app_weak_for_send.upgrade() {
-                    app.set_send_status(format!("Couldn't parse peer invite: {err}").into());
-                }
-                return;
-            }
-        };
-
-        // Encryption (real MLS: group setup on first contact, then
-        // `create_message`) and persistence both happen synchronously here
-        // on the UI thread, where `db`/`mls_provider` already live — only
-        // the resulting already-encrypted bytes cross to the tokio runtime
-        // for the actual network send.
-        let payloads = match ankai_core::messaging::encrypt_and_log_outgoing(
-            &db_for_send,
-            &mls_provider_for_send,
-            &device_for_send,
-            &invite,
-            &message_text,
-        ) {
-            Ok(payloads) => payloads,
-            Err(err) => {
-                if let Some(app) = app_weak_for_send.upgrade() {
-                    app.set_send_status(format!("Failed to encrypt message: {err}").into());
-                }
-                return;
-            }
-        };
-        if let Err(err) = mls_provider_for_send.flush(&db_for_send) {
-            eprintln!("ankai-client: failed to persist MLS state: {err}");
-        }
-
-        let node = node_for_send.clone();
-        let addr = invite.addr.clone();
-        let app_weak = app_weak_for_send.clone();
-        p2p_handle.spawn(async move {
-            let mut result = Ok(());
-            for payload in &payloads {
-                result = ankai_core::messaging::send_message(&node, addr.clone(), payload).await;
-                if result.is_err() {
-                    break;
-                }
-            }
-            let _ = slint::invoke_from_event_loop(move || {
-                let Some(app) = app_weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(()) => {
-                        app.set_send_status("".into());
-                        app.set_message_input("".into());
-                        if let Some(model) = app
-                            .get_message_log()
-                            .as_any()
-                            .downcast_ref::<slint::VecModel<slint::SharedString>>()
-                        {
-                            model.insert(0, format!("you: {message_text}").into());
-                        }
-                    }
-                    Err(err) => {
-                        app.set_send_status(format!("Failed to send: {err}").into());
-                    }
-                }
             });
         });
-    });
 
-    // Experimental, opt-in directory-lookup-by-DeviceId callback — see the
-    // `directory_client` setup above and client::directory's doc comment.
-    // Only wired if directory_client is Some (i.e. ANKAI_DIRECTORY_URL was
-    // set); the corresponding UI section is hidden otherwise (see
-    // app.slint's `directory-enabled`), so this is unreachable when the
-    // integration is off. On success this fills peer-address-input with
-    // the same invite-blob text a manual paste would produce, so
-    // on_send_message above (unchanged) is exactly what runs next — no
-    // separate send path for directory-sourced peers. Usernames
-    // (claim-username / lookup-peer-by-username, both below) are wired
-    // alongside this, under the same directory_client.is_some() gate — see
-    // ankai_directory_server::username's module doc comment for what a
-    // username here is and isn't (device-scoped, not account-scoped).
-    if let Some(client) = directory_client {
-        let own_device_id = device.id.clone();
+        // Experimental, opt-in directory-lookup-by-DeviceId callback — see the
+        // `directory_client` setup above and client::directory's doc comment.
+        // Only wired if directory_client is Some (i.e. ANKAI_DIRECTORY_URL was
+        // set); the corresponding UI section is hidden otherwise (see
+        // app.slint's `directory-enabled`), so this is unreachable when the
+        // integration is off. On success this fills peer-address-input with
+        // the same invite-blob text a manual paste would produce, so
+        // on_send_message above (unchanged) is exactly what runs next — no
+        // separate send path for directory-sourced peers. Usernames
+        // (claim-username / lookup-peer-by-username, both below) are wired
+        // alongside this, under the same directory_client.is_some() gate — see
+        // ankai_directory_server::username's module doc comment for what a
+        // username here is and isn't (device-scoped, not account-scoped).
+        if let Some(client) = directory_client {
+            let own_device_id = device.id.clone();
 
-        {
-            let client = client.clone();
-            let app_weak_for_lookup = app.as_weak();
-            let p2p_handle_for_lookup = p2p_runtime.handle().clone();
-            app.on_lookup_peer_by_device_id(move |device_id_text| {
+            {
+                let client = client.clone();
+                let app_weak_for_lookup = app.as_weak();
+                let p2p_handle_for_lookup = p2p_runtime.handle().clone();
+                app.on_lookup_peer_by_device_id(move |device_id_text| {
                 let device_id_text = device_id_text.trim().to_string();
                 if device_id_text.is_empty() {
                     return;
@@ -2095,18 +2560,18 @@ fn main() -> Result<(), slint::PlatformError> {
                     });
                 });
             });
-        }
+            }
 
-        // Look up a peer by username: resolves to a DeviceId via the
-        // directory server, then goes through client::directory's
-        // lookup_peer_invite_by_username, which itself calls the exact
-        // same lookup_peer_invite as the Device-ID path above — not a
-        // separate/forked lookup path.
-        {
-            let client = client.clone();
-            let app_weak_for_lookup = app.as_weak();
-            let p2p_handle_for_lookup = p2p_runtime.handle().clone();
-            app.on_lookup_peer_by_username(move |username_text| {
+            // Look up a peer by username: resolves to a DeviceId via the
+            // directory server, then goes through client::directory's
+            // lookup_peer_invite_by_username, which itself calls the exact
+            // same lookup_peer_invite as the Device-ID path above — not a
+            // separate/forked lookup path.
+            {
+                let client = client.clone();
+                let app_weak_for_lookup = app.as_weak();
+                let p2p_handle_for_lookup = p2p_runtime.handle().clone();
+                app.on_lookup_peer_by_username(move |username_text| {
                 let username_text = username_text.trim().to_string();
                 if username_text.is_empty() {
                     return;
@@ -2149,23 +2614,23 @@ fn main() -> Result<(), slint::PlatformError> {
                     });
                 });
             });
-        }
+            }
 
-        // Claim (or update) this device's own username. The actual claim
-        // is a real signed request to the directory server (see
-        // client::directory::claim_own_username /
-        // HttpDirectoryClient::claim_username); on success the claimed name
-        // is also saved locally (via the MESSAGING_HANDLES thread-local,
-        // the same UI-thread-only Db access pattern the receive loop uses —
-        // Db isn't Send, so it can't be captured directly into this
-        // tokio-spawned async block) purely so the Settings field shows it
-        // again on the next run.
-        {
-            let client = client.clone();
-            let device_id = own_device_id.clone();
-            let app_weak_for_claim = app.as_weak();
-            let p2p_handle_for_claim = p2p_runtime.handle().clone();
-            app.on_claim_username(move |username_text| {
+            // Claim (or update) this device's own username. The actual claim
+            // is a real signed request to the directory server (see
+            // client::directory::claim_own_username /
+            // HttpDirectoryClient::claim_username); on success the claimed name
+            // is also saved locally (via the MESSAGING_HANDLES thread-local,
+            // the same UI-thread-only Db access pattern the receive loop uses —
+            // Db isn't Send, so it can't be captured directly into this
+            // tokio-spawned async block) purely so the Settings field shows it
+            // again on the next run.
+            {
+                let client = client.clone();
+                let device_id = own_device_id.clone();
+                let app_weak_for_claim = app.as_weak();
+                let p2p_handle_for_claim = p2p_runtime.handle().clone();
+                app.on_claim_username(move |username_text| {
                 let username_text = username_text.trim().to_string();
                 if username_text.is_empty() {
                     return;
@@ -2204,6 +2669,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     });
                 });
             });
+            }
         }
     }
 
@@ -2214,6 +2680,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_load_stremio_addon(move |url| {
             let url = url.trim().to_owned();
+            let request_url = url.clone();
+            let generation = issue_addon_load(&request_url);
+            let search_generation = STREMIO_SEARCH_GENERATION.with(RequestGeneration::current);
             let app_weak = app_weak.clone();
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status("Loading addon manifest…".into());
@@ -2251,10 +2720,17 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 .await;
                 let _ = slint::invoke_from_event_loop(move || {
+                    if !is_current_addon_load(&request_url, generation) {
+                        return;
+                    }
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
-                    app.set_stremio_loading(false);
+                    let search_is_still_current =
+                        STREMIO_SEARCH_GENERATION.with(|state| state.is_current(search_generation));
+                    if search_is_still_current {
+                        app.set_stremio_loading(false);
+                    }
                     match result {
                         Ok((
                             client,
@@ -2266,12 +2742,13 @@ fn main() -> Result<(), slint::PlatformError> {
                             media,
                         )) => {
                             let addon_name = manifest.name.clone();
-                            let persisted = MESSAGING_HANDLES.with(|handles| {
-                                let handles = handles.borrow();
-                                let db = &handles
-                                    .as_ref()
-                                    .expect("messaging handles initialized before addon callbacks")
-                                    .db;
+                            let persisted = DB_HANDLE.with(|db| {
+                                let db = db.borrow();
+                                let Some(db) = db.as_ref() else {
+                                    return Err(ankai_core::Error::Db(
+                                        "application database handle is unavailable".into(),
+                                    ));
+                                };
                                 let exists = ankai_core::addons::list(db)?
                                     .iter()
                                     .any(|addon| addon.manifest_url == manifest_url);
@@ -2286,13 +2763,15 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             });
                             match persisted {
-                                Ok(_) => MESSAGING_HANDLES.with(|handles| {
-                                    let handles = handles.borrow();
-                                    refresh_addon_manager(
-                                        &app,
-                                        &handles.as_ref().expect("addon registry initialized").db,
-                                        &image_handle,
-                                    );
+                                Ok(_) => DB_HANDLE.with(|db| {
+                                    if let Some(db) = db.borrow().as_ref() {
+                                        refresh_addon_manager(&app, db, &image_handle);
+                                    } else {
+                                        app.set_stremio_status(
+                                            "Loaded addon, but local registry is unavailable."
+                                                .into(),
+                                        );
+                                    }
                                 }),
                                 Err(error) => app.set_stremio_status(
                                     format!("Loaded {addon_name}, but couldn't save it: {error}")
@@ -2336,9 +2815,11 @@ fn main() -> Result<(), slint::PlatformError> {
                                 .zip(old_sources)
                                 .filter(|(_, source)| *source != addon_index)
                                 .unzip();
-                            merged.extend(media);
-                            sources.resize(merged.len(), addon_index);
-                            show_stremio_media(&app, merged, sources, &image_handle);
+                            if search_is_still_current {
+                                merged.extend(media);
+                                sources.resize(merged.len(), addon_index);
+                                show_stremio_media(&app, merged, sources, &image_handle);
+                            }
                             let names = STREMIO_ADDONS.with(|slot| {
                                 slot.borrow()
                                     .iter()
@@ -2348,23 +2829,28 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_stremio_addon_names(slint::ModelRc::from(Rc::new(
                                 slint::VecModel::from(names),
                             )));
-                            app.set_stremio_stream_names(slint::ModelRc::default());
-                            app.set_stremio_selected_title("".into());
-                            app.set_stremio_status(
-                                format!(
-                                    "Loaded {} items from {}.",
-                                    STREMIO_MEDIA.with(|s| s.borrow().len()),
-                                    STREMIO_ADDONS
-                                        .with(|addons| addons.borrow()[addon_index]
-                                            .catalogs
-                                            .first()
-                                            .and_then(|catalog| catalog.name.clone()))
-                                        .unwrap_or_else(|| "the default catalog".into())
-                                )
-                                .into(),
-                            );
+                            if search_is_still_current {
+                                app.set_stremio_stream_names(slint::ModelRc::default());
+                                app.set_stremio_selected_title("".into());
+                                app.set_stremio_status(
+                                    format!(
+                                        "Loaded {} items from {}.",
+                                        STREMIO_MEDIA.with(|s| s.borrow().len()),
+                                        STREMIO_ADDONS
+                                            .with(|addons| addons.borrow()[addon_index]
+                                                .catalogs
+                                                .first()
+                                                .and_then(|catalog| catalog.name.clone()))
+                                            .unwrap_or_else(|| "the default catalog".into())
+                                    )
+                                    .into(),
+                                );
+                            }
                         }
-                        Err(err) => app.set_stremio_status(format!("Error: {err}").into()),
+                        Err(err) if search_is_still_current => {
+                            app.set_stremio_status(format!("Error: {err}").into())
+                        }
+                        Err(_) => {}
                     }
                 });
             });
@@ -2376,6 +2862,8 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_search_stremio(move |query| {
             let query = query.trim().to_owned();
+            let generation = STREMIO_SEARCH_GENERATION.with(RequestGeneration::issue);
+            STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
             let addons = STREMIO_ADDONS.with(|slot| slot.borrow().clone());
             if addons.is_empty() {
                 return;
@@ -2416,13 +2904,16 @@ fn main() -> Result<(), slint::PlatformError> {
                         .await
                     {
                         Ok(items) => {
-                            sources.extend(std::iter::repeat(index).take(items.len()));
+                            sources.extend(std::iter::repeat_n(index, items.len()));
                             media.extend(items);
                         }
                         Err(err) => errors.push(format!("{}: {err}", addon.name)),
                     }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
+                    if !STREMIO_SEARCH_GENERATION.with(|state| state.is_current(generation)) {
+                        return;
+                    }
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
@@ -2450,13 +2941,37 @@ fn main() -> Result<(), slint::PlatformError> {
         let runtime = p2p_runtime.handle().clone();
         let app_weak = app.as_weak();
         app.on_open_stremio_media(move |index| {
+            let generation = STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
             let selected = STREMIO_MEDIA.with(|items| items.borrow().get(index as usize).cloned());
             let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
             let Some(selected) = selected else {
                 return;
             };
+            let provider = STREMIO_MEDIA_SOURCES
+                .with(|sources| sources.borrow().get(index as usize).copied())
+                .and_then(|source| addons.get(source))
+                .map(|addon| addon.manifest_url.clone())
+                .unwrap_or_else(|| "stremio".into());
+            STREMIO_SELECTED_CONTEXT.with(|context| {
+                *context.borrow_mut() = Some((provider.clone(), selected.id.clone()));
+            });
+            PENDING_PLAYBACK_KEY.with(|key| {
+                *key.borrow_mut() = Some(ankai_core::playback_progress::PlaybackKey::movie(
+                    provider,
+                    selected.id.clone(),
+                ));
+            });
+            PENDING_PLAYBACK_METADATA.with(|metadata| {
+                *metadata.borrow_mut() = ankai_core::playback_progress::PlaybackMetadata {
+                    title: Some(selected.name.clone()),
+                    poster_url: selected.poster.clone(),
+                    stream_url: None,
+                };
+            });
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_selected_title(selected.name.clone().into());
+                app.set_nyaa_query(selected.name.clone().into());
+                app.invoke_search_nyaa(selected.name.clone().into());
                 app.set_stremio_selected_description(
                     selected.description.clone().unwrap_or_default().into(),
                 );
@@ -2514,6 +3029,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
+                    if !STREMIO_DETAIL_GENERATION.with(|state| state.is_current(generation)) {
+                        return;
+                    }
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
@@ -2564,12 +3082,38 @@ fn main() -> Result<(), slint::PlatformError> {
         let runtime = p2p_runtime.handle().clone();
         let app_weak = app.as_weak();
         app.on_open_stremio_episode(move |index| {
+            let generation = STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
             let episode =
                 STREMIO_EPISODES.with(|episodes| episodes.borrow().get(index as usize).cloned());
             let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
             let Some(episode) = episode else {
                 return;
             };
+            STREMIO_SELECTED_CONTEXT.with(|context| {
+                if let Some((provider, media_id)) = context.borrow().as_ref() {
+                    PENDING_PLAYBACK_KEY.with(|key| {
+                        *key.borrow_mut() =
+                            Some(ankai_core::playback_progress::PlaybackKey::episode(
+                                provider.clone(),
+                                media_id.clone(),
+                                episode.id.clone(),
+                            ));
+                    });
+                }
+            });
+            PENDING_PLAYBACK_METADATA.with(|metadata| {
+                let mut metadata = metadata.borrow_mut();
+                let episode_title = episode.title.as_deref().unwrap_or("Untitled episode");
+                metadata.title = Some(format!(
+                    "{} — {episode_title}",
+                    app_weak
+                        .upgrade()
+                        .map(|app| app.get_stremio_selected_title().to_string())
+                        .filter(|title| !title.trim().is_empty())
+                        .unwrap_or_else(|| "Series".to_string())
+                ));
+                metadata.stream_url = None;
+            });
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_loading(true);
                 app.set_stremio_stream_names(slint::ModelRc::default());
@@ -2599,6 +3143,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
+                    if !STREMIO_DETAIL_GENERATION.with(|state| state.is_current(generation)) {
+                        return;
+                    }
                     let Some(app) = app_weak.upgrade() else {
                         return;
                     };
@@ -2656,6 +3203,9 @@ fn main() -> Result<(), slint::PlatformError> {
                             };
                             LAST_PLAYBACK_URL
                                 .with(|last_url| *last_url.borrow_mut() = Some(url.to_owned()));
+                            PENDING_PLAYBACK_METADATA.with(|metadata| {
+                                metadata.borrow_mut().stream_url = Some(url.to_owned());
+                            });
                             match player.load(url) {
                                 Ok(()) => ("Playing in ANKAI with libmpv.".into(), true),
                                 Err(err) => (format!("Error: {err}"), false),
@@ -2674,9 +3224,39 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status(message.into());
                 if playing {
+                    ACTIVE_PLAYBACK_KEY.with(|active| {
+                        *active.borrow_mut() =
+                            PENDING_PLAYBACK_KEY.with(|pending| pending.borrow().clone());
+                    });
+                    ACTIVE_PLAYBACK_METADATA.with(|active| {
+                        *active.borrow_mut() =
+                            PENDING_PLAYBACK_METADATA.with(|pending| pending.borrow().clone());
+                    });
+                    let resume = ACTIVE_PLAYBACK_KEY.with(|key| {
+                        let key = key.borrow();
+                        let key = key.as_ref()?;
+                        DB_HANDLE.with(|db| {
+                            let db = db.borrow();
+                            let db = db.as_ref()?;
+                            ankai_core::playback_progress::load(db, key)
+                                .ok()
+                                .flatten()
+                                .filter(|progress| {
+                                    !progress.completed
+                                        && progress.position_seconds >= 5.0
+                                        && progress.duration_seconds - progress.position_seconds
+                                            >= 5.0
+                                })
+                                .map(|progress| progress.position_seconds)
+                        })
+                    });
+                    PENDING_RESUME_SECONDS.with(|pending| *pending.borrow_mut() = resume);
+                    LAST_PROGRESS_SAVE.with(|last_save| *last_save.borrow_mut() = None);
                     app.set_player_title(app.get_stremio_selected_title());
                     app.set_player_active(true);
                     app.set_player_has_media(true);
+                    app.set_player_video_ready(false);
+                    app.set_player_video_frame_ready(false);
                     app.set_player_loading(true);
                     app.set_player_error("".into());
                     app.window().request_redraw();
@@ -2705,16 +3285,28 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
         let app_weak = app.as_weak();
         app.on_close_player(move || {
             VIDEO_PLAYER.with(|slot| {
                 if let Some(player) = slot.borrow_mut().as_mut() {
+                    persist_player_progress(player.state(), true);
                     let _ = player.stop();
                 }
             });
+            ACTIVE_PLAYBACK_KEY.with(|key| key.borrow_mut().take());
+            ACTIVE_PLAYBACK_METADATA.with(|metadata| {
+                *metadata.borrow_mut() = ankai_core::playback_progress::PlaybackMetadata::default();
+            });
             if let Some(app) = app_weak.upgrade() {
+                app.window().set_fullscreen(false);
+                app.set_player_fullscreen(false);
                 app.set_player_active(false);
+                app.set_player_video_frame(slint::Image::default());
+                app.set_player_video_frame_ready(false);
                 sync_player_state(&app, &playback::PlayerState::default());
+                refresh_resume_entries(&app, &db, &image_handle);
             }
         });
     }
@@ -2734,13 +3326,29 @@ fn main() -> Result<(), slint::PlatformError> {
                 let Some(player) = slot.as_mut() else {
                     return Ok::<_, playback::PlayerError>(None);
                 };
-                player.poll_events()?;
+                let events = player.poll_events()?;
+                if events
+                    .iter()
+                    .any(|event| matches!(event, playback::PlayerEvent::FileLoaded))
+                {
+                    if let Some(position) =
+                        PENDING_RESUME_SECONDS.with(|pending| pending.borrow_mut().take())
+                    {
+                        player.seek_absolute(position)?;
+                    }
+                }
                 player.refresh_state()?;
                 Ok(Some(player.state().clone()))
             });
             if let Some(app) = app_weak.upgrade() {
                 match result {
-                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(Some(state)) => {
+                        sync_player_state(&app, &state);
+                        persist_player_progress(
+                            &state,
+                            state.phase == playback::PlaybackPhase::Ended,
+                        );
+                    }
                     Ok(None) => {}
                     Err(error) => app.set_player_error(error.to_string().into()),
                 }
@@ -2951,15 +3559,11 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             app.set_selected_index(app.get_watch_index());
             app.set_stremio_search_query(query.into());
+            app.set_jikan_query(query.into());
+            app.set_nyaa_query(query.into());
             app.invoke_search_stremio(query.into());
-        });
-    }
-    {
-        let app_weak = app.as_weak();
-        app.on_open_notifications(move || {
-            if let Some(app) = app_weak.upgrade() {
-                app.set_shell_notice("Notifications are not implemented yet.".into());
-            }
+            app.invoke_search_jikan(query.into());
+            app.invoke_search_nyaa(query.into());
         });
     }
     {
@@ -2971,14 +3575,150 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
     {
+        let runtime = p2p_runtime.handle().clone();
         let app_weak = app.as_weak();
-        app.on_open_mal_forum_topic(move |topic_id| {
-            let url = format!("https://myanimelist.net/forum/?topicid={topic_id}");
+        app.on_search_jikan(move |query| {
+            spawn_jikan_refresh(runtime.clone(), app_weak.clone(), Some(query.to_string()));
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_retry_jikan(move || {
+            let query = app_weak
+                .upgrade()
+                .map(|app| app.get_jikan_query().to_string())
+                .filter(|query| !query.trim().is_empty());
+            spawn_jikan_refresh(runtime.clone(), app_weak.clone(), query);
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_jikan_anime(move |id| {
+            let title = JIKAN_ANIME.with(|anime| {
+                anime
+                    .borrow()
+                    .iter()
+                    .find(|anime| i32::try_from(anime.mal_id).unwrap_or(i32::MAX) == id)
+                    .map(|anime| {
+                        anime
+                            .title_english
+                            .clone()
+                            .unwrap_or_else(|| anime.title.clone())
+                    })
+            });
+            let (Some(app), Some(title)) = (app_weak.upgrade(), title) else {
+                return;
+            };
+            app.set_selected_index(app.get_watch_index());
+            app.set_stremio_search_query(title.clone().into());
+            app.set_nyaa_query(title.clone().into());
+            app.invoke_search_stremio(title.into());
+            app.invoke_search_nyaa(app.get_nyaa_query());
+            app.set_shell_notice("Finding playable sources for this anime…".into());
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_search_nyaa(move |query| {
+            let query = query.trim().to_owned();
+            if query.is_empty() {
+                // Clearing the field is itself the latest intent; invalidate
+                // any slower non-empty request already in flight.
+                NYAA_GENERATION.with(RequestGeneration::issue);
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_nyaa_state("idle".into());
+                    app.set_nyaa_status("Enter an anime title to search releases.".into());
+                }
+                return;
+            }
+            spawn_nyaa_search(runtime.clone(), app_weak.clone(), query);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_retry_nyaa(move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let query = app.get_nyaa_query().to_string();
+            if !query.trim().is_empty() {
+                spawn_nyaa_search(runtime.clone(), app.as_weak(), query);
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_nyaa_comments(move |url| {
             if let Err(error) = open_external_url(&url) {
                 if let Some(app) = app_weak.upgrade() {
-                    app.set_shell_notice(format!("Couldn't open MAL: {error}").into());
+                    app.set_shell_notice(
+                        format!("Couldn't open this Nyaa release: {error}").into(),
+                    );
                 }
             }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_resume_playback(move |index| {
+            let entry =
+                RESUME_PROGRESS.with(|entries| entries.borrow().get(index as usize).cloned());
+            let Some(entry) = entry else {
+                return;
+            };
+            let Some(url) = entry.stream_url.clone() else {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_selected_index(app.get_watch_index());
+                    app.set_stremio_search_query(
+                        entry.title.clone().unwrap_or(entry.key.media_id).into(),
+                    );
+                    app.set_shell_notice(
+                        "This older resume point needs its stream resolved again.".into(),
+                    );
+                }
+                return;
+            };
+            let loaded = VIDEO_PLAYER.with(|slot| {
+                slot.borrow_mut()
+                    .as_mut()
+                    .ok_or_else(|| "embedded video renderer is unavailable".to_string())?
+                    .load(&url)
+                    .map_err(|error| error.to_string())
+            });
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            if let Err(error) = loaded {
+                app.set_shell_notice(format!("Couldn't resume playback: {error}").into());
+                return;
+            }
+            let metadata = ankai_core::playback_progress::PlaybackMetadata {
+                title: entry.title.clone(),
+                poster_url: entry.poster_url.clone(),
+                stream_url: Some(url.clone()),
+            };
+            ACTIVE_PLAYBACK_KEY.with(|key| *key.borrow_mut() = Some(entry.key));
+            ACTIVE_PLAYBACK_METADATA.with(|active| *active.borrow_mut() = metadata);
+            PENDING_RESUME_SECONDS
+                .with(|position| *position.borrow_mut() = Some(entry.position_seconds));
+            LAST_PLAYBACK_URL.with(|last_url| *last_url.borrow_mut() = Some(url));
+            LAST_PROGRESS_SAVE.with(|last_save| *last_save.borrow_mut() = None);
+            app.set_player_title(
+                entry
+                    .title
+                    .unwrap_or_else(|| "Continue watching".into())
+                    .into(),
+            );
+            app.set_player_active(true);
+            app.set_player_has_media(true);
+            app.set_player_video_ready(false);
+            app.set_player_video_frame_ready(false);
+            app.set_player_loading(true);
+            app.set_player_error("".into());
+            app.window().request_redraw();
         });
     }
 
@@ -3130,35 +3870,57 @@ fn main() -> Result<(), slint::PlatformError> {
         app.set_stremio_status("All installed addons are disabled.".into());
     }
 
-    // Home dashboard: recent posts and friends are plain synchronous local-
-    // DB reads (like the rest of this app's startup loads above); trending/
-    // popular anime, MAL forum topics, and friend presence are real network
-    // calls, kicked off asynchronously on the same tokio runtime the
-    // P2P/messaging side above already uses (see spawn_anime_refresh/
-    // spawn_mal_refresh/spawn_friend_presence_checks' doc comments) so
-    // neither a slow AniList/MAL response nor an unreachable friend can
-    // stall the window. refresh-home re-runs all five so a failed AniList
-    // load (rate limit, an outage — see core::anime's module doc comment),
-    // an unconfigured/unreachable MAL, or newly-added friends/posts can be
-    // retried without restarting the app.
+    // Home's local sections load synchronously; live anime catalogs and
+    // presence checks run on the shared runtime so third-party latency never
+    // blocks the native window.
     refresh_recent_posts(&app, &db);
     let initial_friends = refresh_home_friends(&app, &db);
     spawn_anime_refresh(p2p_runtime.handle().clone(), app.as_weak());
-    spawn_mal_refresh(p2p_runtime.handle().clone(), app.as_weak());
-    spawn_friend_presence_checks(
-        initial_friends,
-        p2p_node.clone(),
-        p2p_runtime.handle().clone(),
-        app.as_weak(),
-    );
+    spawn_jikan_refresh(p2p_runtime.handle().clone(), app.as_weak(), None);
+    if let Some(node) = social_node.as_ref() {
+        spawn_friend_presence_checks(
+            initial_friends,
+            node.clone(),
+            p2p_runtime.handle().clone(),
+            app.as_weak(),
+        );
+    }
 
-    // Real "Watch Now" action on the Trending Now hero card: adds the
-    // clicked anime to the local watchlist as WatchStatus::Watching (see
-    // ui/app.slint's watch-now callback doc comment for why this is the
-    // most honest real action available here, absent a video-playback
-    // screen to navigate to). Looks the full AnimeSummary back up from
-    // HOME_TRENDING_ANIME by id since the UI only ever sees the trimmed
-    // AnimeRef shape.
+    {
+        let app_weak = app.as_weak();
+        app.on_open_home_anime(move |id| {
+            let anime = HOME_TRENDING_ANIME
+                .with(|items| {
+                    items
+                        .borrow()
+                        .iter()
+                        .find(|anime| anime.id == id as i64)
+                        .cloned()
+                })
+                .or_else(|| {
+                    HOME_POPULAR_ANIME.with(|items| {
+                        items
+                            .borrow()
+                            .iter()
+                            .find(|anime| anime.id == id as i64)
+                            .cloned()
+                    })
+                });
+            let (Some(app), Some(anime)) = (app_weak.upgrade(), anime) else {
+                return;
+            };
+            let title = anime
+                .title_english
+                .or(anime.title_romaji)
+                .unwrap_or_else(|| format!("Anime {id}"));
+            app.set_global_search_query(title.clone().into());
+            app.invoke_global_search(title.into());
+        });
+    }
+
+    // Watch Now records the title as watching and immediately enters the
+    // playable-provider search; the neighboring Watchlist action below is a
+    // real independent add/remove toggle.
     {
         let db_for_watch_now = db.clone();
         let app_weak_for_watch_now = app.as_weak();
@@ -3186,13 +3948,71 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             if let Some(app) = app_weak_for_watch_now.upgrade() {
                 refresh_watchlist(&app, &db_for_watch_now, &handle_for_watch_now);
+                app.set_hero_watchlisted(true);
+                let title = anime
+                    .title_english
+                    .or(anime.title_romaji)
+                    .unwrap_or_else(|| format!("Anime {id}"));
+                app.set_global_search_query(title.clone().into());
+                app.invoke_global_search(title.into());
+            }
+        });
+    }
+    {
+        let db = db.clone();
+        let image_handle = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_toggle_home_watchlist(move |id| {
+            let anime = HOME_TRENDING_ANIME.with(|items| {
+                items
+                    .borrow()
+                    .iter()
+                    .find(|anime| anime.id == id as i64)
+                    .cloned()
+            });
+            let Some(anime) = anime else {
+                return;
+            };
+            let already_saved = ankai_core::anime::get_watchlist_entry(&db, anime.id)
+                .ok()
+                .flatten()
+                .is_some();
+            let result = if already_saved {
+                ankai_core::anime::remove_from_watchlist(&db, anime.id)
+            } else {
+                ankai_core::anime::add_to_watchlist(
+                    &db,
+                    &anime,
+                    ankai_core::anime::WatchStatus::Planned,
+                )
+                .map(|_| ())
+            };
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(()) => {
+                    app.set_hero_watchlisted(!already_saved);
+                    refresh_watchlist(&app, &db, &image_handle);
+                    app.set_shell_notice(
+                        if already_saved {
+                            "Removed from watchlist."
+                        } else {
+                            "Saved to watchlist."
+                        }
+                        .into(),
+                    );
+                }
+                Err(error) => {
+                    app.set_shell_notice(format!("Couldn't update watchlist: {error}").into())
+                }
             }
         });
     }
 
     {
         let db_for_refresh = db.clone();
-        let p2p_node_for_refresh = p2p_node.clone();
+        let social_node_for_refresh = social_node.clone();
         let p2p_handle_for_refresh = p2p_runtime.handle().clone();
         let app_weak_for_refresh = app.as_weak();
         app.on_refresh_home(move || {
@@ -3200,15 +4020,72 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             };
             refresh_recent_posts(&app, &db_for_refresh);
+            refresh_resume_entries(&app, &db_for_refresh, &p2p_handle_for_refresh);
             let friends = refresh_home_friends(&app, &db_for_refresh);
             spawn_anime_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
-            spawn_mal_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
-            spawn_friend_presence_checks(
-                friends,
-                p2p_node_for_refresh.clone(),
-                p2p_handle_for_refresh.clone(),
-                app.as_weak(),
-            );
+            if let Some(node) = social_node_for_refresh.as_ref() {
+                spawn_friend_presence_checks(
+                    friends,
+                    node.clone(),
+                    p2p_handle_for_refresh.clone(),
+                    app.as_weak(),
+                );
+            }
+        });
+    }
+
+    let saved_letterboxd_username = db
+        .get_setting(LETTERBOXD_USERNAME_SETTING_KEY)
+        .unwrap_or_else(|error| {
+            eprintln!("ankai-client: failed to read letterboxd_username setting: {error}");
+            None
+        })
+        .unwrap_or_default();
+    app.set_letterboxd_username(saved_letterboxd_username.clone().into());
+    if saved_letterboxd_username.trim().is_empty() {
+        app.set_letterboxd_state("not-configured".into());
+    } else {
+        spawn_letterboxd_refresh(
+            p2p_runtime.handle().clone(),
+            app.as_weak(),
+            saved_letterboxd_username,
+        );
+    }
+    {
+        let db = db.clone();
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_load_letterboxd(move |username| {
+            let username = username.trim().to_owned();
+            if let Err(error) = db.set_setting(LETTERBOXD_USERNAME_SETTING_KEY, &username) {
+                eprintln!("ankai-client: failed to save Letterboxd username: {error}");
+            }
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            app.set_letterboxd_username(username.clone().into());
+            if username.is_empty() {
+                // Prevent a feed for the previous username from repopulating
+                // the panel after the user explicitly cleared it.
+                LETTERBOXD_GENERATION.with(RequestGeneration::issue);
+                app.set_letterboxd_entries(slint::ModelRc::default());
+                app.set_letterboxd_state("not-configured".into());
+                app.set_letterboxd_status("".into());
+            } else {
+                spawn_letterboxd_refresh(runtime.clone(), app.as_weak(), username);
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_letterboxd_link(move |url| {
+            if let Err(error) = open_external_url(&url) {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(
+                        format!("Couldn't open this Letterboxd entry: {error}").into(),
+                    );
+                }
+            }
         });
     }
 
@@ -3220,7 +4097,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // every load path (startup, and after clearing the field in Settings).
     let saved_lastfm_username = db
         .get_setting(LASTFM_USERNAME_SETTING_KEY)
-        .expect("failed to read lastfm_username setting")
+        .unwrap_or_else(|error| {
+            eprintln!("ankai-client: failed to read lastfm_username setting: {error}");
+            None
+        })
         .unwrap_or_default();
     app.set_lastfm_username(saved_lastfm_username.clone().into());
     if saved_lastfm_username.trim().is_empty() {
@@ -3284,7 +4164,12 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             let username = db_for_lastfm_timer
                 .get_setting(LASTFM_USERNAME_SETTING_KEY)
-                .unwrap_or_default()
+                .unwrap_or_else(|error| {
+                    eprintln!(
+                        "ankai-client: failed to read lastfm_username setting during refresh: {error}"
+                    );
+                    None
+                })
                 .unwrap_or_default();
             if username.trim().is_empty() {
                 // Stays "not-configured" — already set by the save/startup
@@ -3302,4 +4187,27 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_selected_index(app.get_home_index());
 
     app.run()
+}
+
+#[cfg(test)]
+mod request_generation_tests {
+    use super::RequestGeneration;
+
+    #[test]
+    fn only_the_latest_issued_token_is_current() {
+        let generation = RequestGeneration::new();
+        let older = generation.issue();
+        let newer = generation.issue();
+
+        assert!(!generation.is_current(older));
+        assert!(generation.is_current(newer));
+    }
+
+    #[test]
+    fn generation_wraps_without_panicking_or_emitting_zero() {
+        let generation = RequestGeneration(std::cell::Cell::new(u64::MAX));
+
+        assert_eq!(generation.issue(), 1);
+        assert!(generation.is_current(1));
+    }
 }

@@ -75,7 +75,7 @@ component PlayerControl inherits FocusScope {
         drop-shadow-color: root.prominent ? Theme.accent-pink.with-alpha(0.26) : transparent;
         drop-shadow-blur: root.prominent && (control-touch.has-hover || root.has-focus) ? 20px : root.prominent ? 11px : 0px;
 
-        animate background, border-color, drop-shadow-blur { duration: 120ms; }
+        animate background, border-color, drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 120ms; }
 
         Text {
             width: parent.width;
@@ -142,7 +142,7 @@ component PlayerTextControl inherits FocusScope {
                 ? Theme.accent-violet.with-alpha(0.62)
                 : Theme.silver.with-alpha(0.16);
 
-        animate background, border-color { duration: 120ms; }
+        animate background, border-color { duration: Theme.reduced-motion ? 0ms : 120ms; }
 
         Text {
             width: parent.width;
@@ -240,7 +240,7 @@ component SeekTimeline inherits FocusScope {
         border-radius: self.height / 2;
         background: Theme.silver.with-alpha(0.19);
 
-        animate height, y { duration: 100ms; }
+        animate height, y { duration: Theme.reduced-motion ? 0ms : 100ms; }
 
         Rectangle {
             width: parent.width * clamp(root.buffered-seconds / max(root.duration-seconds, 1), 0, 1);
@@ -271,7 +271,7 @@ component SeekTimeline inherits FocusScope {
         drop-shadow-color: Theme.accent-pink.with-alpha(0.62);
         drop-shadow-blur: 10px;
 
-        animate x, width, height { duration: 90ms; }
+        animate x, width, height { duration: Theme.reduced-motion ? 0ms : 90ms; }
     }
 
     seek-touch := TouchArea {
@@ -492,6 +492,8 @@ export component PlayerOverlay inherits Rectangle {
     in property <string> duration-label: "--:--";
     in property <bool> has-media: false;
     in property <bool> video-ready: false;
+    in property <image> video-frame;
+    in property <bool> video-frame-ready: false;
     in property <image> fallback-art;
     in property <bool> has-fallback-art: false;
     in property <bool> is-playing: false;
@@ -529,6 +531,8 @@ export component PlayerOverlay inherits Rectangle {
                         : root.has-media
                             ? "Paused"
                             : "Idle";
+    out property <length> video-surface-width: video-well.width;
+    out property <length> video-surface-height: video-well.height;
     property <string> open-menu: ""; // "speed" | "audio" | "subtitle"
     property <int> loading-step: 0;
 
@@ -548,8 +552,8 @@ export component PlayerOverlay inherits Rectangle {
     callback retry-requested();
     callback user-interacted();
 
-    min-width: 560px;
-    min-height: 360px;
+    min-width: 320px;
+    min-height: 240px;
     preferred-width: 960px;
     preferred-height: 540px;
     clip: true;
@@ -639,7 +643,9 @@ export component PlayerOverlay inherits Rectangle {
 
     loading-timer := Timer {
         interval: 360ms;
-        running: root.is-loading || root.is-buffering || root.is-seeking;
+        // The status copy still reports the real backend state with reduced
+        // motion enabled; only the decorative dot choreography is stopped.
+        running: !Theme.reduced-motion && (root.is-loading || root.is-buffering || root.is-seeking);
         triggered => { root.loading-step = Math.mod(root.loading-step + 1, 3); }
     }
 
@@ -652,6 +658,13 @@ export component PlayerOverlay inherits Rectangle {
         clip: true;
         border-radius: root.border-radius;
         background: root.video-ready ? transparent : #02030A;
+
+        if root.video-frame-ready: Image {
+            source: root.video-frame;
+            width: parent.width;
+            height: parent.height;
+            image-fit: contain;
+        }
 
         if root.has-fallback-art && !root.video-ready: Image {
             source: root.fallback-art;
@@ -704,7 +717,7 @@ export component PlayerOverlay inherits Rectangle {
         height: 116px;
         background: @linear-gradient(180deg, #02030ADE 0%, #02030A00 100%);
         opacity: root.controls-visible ? 1 : 0;
-        animate opacity { duration: 220ms; easing: ease-in-out; }
+        animate opacity { duration: Theme.reduced-motion ? 0ms : 220ms; easing: ease-in-out; }
     }
 
     Rectangle {
@@ -714,7 +727,7 @@ export component PlayerOverlay inherits Rectangle {
         height: 176px;
         background: @linear-gradient(180deg, #02030A00 0%, #02030AF0 100%);
         opacity: root.controls-visible ? 1 : 0;
-        animate opacity { duration: 220ms; easing: ease-in-out; }
+        animate opacity { duration: Theme.reduced-motion ? 0ms : 220ms; easing: ease-in-out; }
     }
 
     top-chrome := Rectangle {
@@ -725,7 +738,7 @@ export component PlayerOverlay inherits Rectangle {
         background: transparent;
         opacity: root.controls-visible ? 1 : 0;
 
-        animate opacity, y { duration: 220ms; easing: ease-out; }
+        animate opacity, y { duration: Theme.reduced-motion ? 0ms : 220ms; easing: ease-out; }
 
         HorizontalLayout {
             spacing: 12px;
@@ -863,11 +876,15 @@ export component PlayerOverlay inherits Rectangle {
                 spacing: 7px;
                 alignment: center;
                 for dot[i] in [0, 1, 2]: Rectangle {
-                    width: root.loading-step == i ? 10px : 7px;
+                    width: Theme.reduced-motion ? 7px : root.loading-step == i ? 10px : 7px;
                     height: self.width;
                     border-radius: self.width / 2;
-                    background: root.loading-step == i ? Theme.accent-pink : Theme.accent-violet.with-alpha(0.54);
-                    animate width, height, background { duration: 180ms; }
+                    background: Theme.reduced-motion
+                        ? Theme.accent-violet.with-alpha(0.54)
+                        : root.loading-step == i
+                            ? Theme.accent-pink
+                            : Theme.accent-violet.with-alpha(0.54);
+                    animate width, height, background { duration: Theme.reduced-motion ? 0ms : 180ms; }
                 }
             }
 
@@ -949,7 +966,7 @@ export component PlayerOverlay inherits Rectangle {
             root.reveal-controls();
             root.toggle-playback();
         }
-        animate opacity { duration: 180ms; }
+        animate opacity { duration: Theme.reduced-motion ? 0ms : 180ms; }
     }
 
     bottom-chrome := Rectangle {
@@ -960,7 +977,7 @@ export component PlayerOverlay inherits Rectangle {
         background: transparent;
         opacity: root.controls-visible ? 1 : 0;
 
-        animate opacity, y { duration: 220ms; easing: ease-out; }
+        animate opacity, y { duration: Theme.reduced-motion ? 0ms : 220ms; easing: ease-out; }
 
         VerticalLayout {
             spacing: 9px;

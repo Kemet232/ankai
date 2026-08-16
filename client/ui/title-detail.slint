@@ -20,11 +20,21 @@ component DetailButton inherits Rectangle {
     background: root.primary
         ? (touch.pressed ? Theme.accent-pink.with-alpha(0.68) : @linear-gradient(110deg, Theme.accent-violet 0%, Theme.accent-pink 100%))
         : touch.has-hover ? Theme.silver.with-alpha(0.13) : Theme.bg-surface-raised.with-alpha(0.72);
-    border-width: 1px;
-    border-color: touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.18);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.18);
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.activated(); }
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: true;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
     Text {
         text: root.label;
         color: Theme.text-primary;
@@ -35,7 +45,7 @@ component DetailButton inherits Rectangle {
     }
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.activated(); }
+        clicked => { keyboard-focus.focus(); root.activated(); }
     }
 }
 
@@ -174,8 +184,8 @@ export component TitleDetail inherits Rectangle {
                         border-radius: 12px;
                         clip: true;
                         background: episode-touch.has-hover ? Theme.accent-violet.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.68);
-                        border-width: 1px;
-                        border-color: episode-touch.has-hover ? Theme.accent-pink.with-alpha(0.5) : Theme.silver.with-alpha(0.14);
+                        border-width: episode-focus.has-focus ? 2px : 1px;
+                        border-color: episode-focus.has-focus ? Theme.accent-cyan : episode-touch.has-hover ? Theme.accent-pink.with-alpha(0.5) : Theme.silver.with-alpha(0.14);
                         HorizontalLayout {
                             spacing: 9px;
                             Rectangle {
@@ -194,7 +204,17 @@ export component TitleDetail inherits Rectangle {
                         accessible-role: button;
                         accessible-label: episode.title;
                         accessible-action-default => { root.choose-episode(i); }
-                        episode-touch := TouchArea { mouse-cursor: pointer; clicked => { root.choose-episode(i); } }
+                        episode-focus := FocusScope {
+                            focus-on-tab-navigation: true;
+                            key-pressed(event) => {
+                                if event.text == Key.Return || event.text == " " {
+                                    root.choose-episode(i);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                        episode-touch := TouchArea { mouse-cursor: pointer; clicked => { episode-focus.focus(); root.choose-episode(i); } }
                     }
                 }
             }

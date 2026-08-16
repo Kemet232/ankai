@@ -1248,6 +1248,7 @@ dependencies = [
  "ankai-directory-server",
  "chrono",
  "directories",
+ "glow",
  "image",
  "libc",
  "libloading",

@@ -41,7 +41,7 @@ openmls_basic_credential = "0.5.0"
 # HTTP client for `client::images`' real anime-cover-art fetch (real bytes
 # from AniList's CDN, over HTTPS) — see root Cargo.toml's `reqwest` entry
 # for the full provenance note. `client` didn't need this directly before
-# (ankai-core used it internally for AniList/MAL); now it does its own
+# (ankai-core used it internally for live metadata clients); now it does its own
 # fetching of the image bytes AniList already gives it a URL for.
 reqwest.workspace = true
 # Real JPEG/PNG decode for `client::images` (fetched cover-art bytes ->
@@ -71,6 +71,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # (LGPL build per ADR-0006), never statically linked into this executable.
 libloading = "0.8"
 libc = "0.2"
+# Same OpenGL loader/version used by Slint's FemtoVG renderer. This is used
+# only inside rendering-notifier callbacks, where Slint guarantees its context
+# is current, to allocate the bounded libmpv texture/FBO pair.
+glow = "0.17"
 
 [build-dependencies]
 slint-build = "1.17"

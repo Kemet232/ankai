@@ -102,7 +102,7 @@ export component FloatingPanel inherits Rectangle {
     drop-shadow-offset-y: dragging ? 16px : 8px;
 
     animate drop-shadow-blur, drop-shadow-offset-y, border-color {
-        duration: Theme.motion-duration-standard;
+        duration: Theme.reduced-motion ? 0ms : Theme.motion-duration-standard;
         easing: Theme.motion-easing-standard;
     }
 
@@ -178,7 +178,7 @@ export component FloatingPanel inherits Rectangle {
                     background: close-touch.has-hover ? Theme.state-busy.with-alpha(0.4) : Theme.silver.with-alpha(0.14);
 
                     animate background {
-                        duration: Theme.motion-duration-standard;
+                        duration: Theme.reduced-motion ? 0ms : Theme.motion-duration-standard;
                     }
 
                     Text {

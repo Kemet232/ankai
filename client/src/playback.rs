@@ -5,10 +5,12 @@
 //! event's pointers on the next call to `mpv_wait_event`, so public events and
 //! state only contain copied Rust values.
 
+use glow::HasContext;
 use libloading::Library;
 use std::error::Error;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fmt;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 const MPV_FORMAT_NONE: c_int = 0;
@@ -179,6 +181,7 @@ impl Default for PlayerState {
 
 impl PlayerState {
     /// Playback progress in the inclusive range `0.0..=1.0`, when known.
+    #[allow(dead_code)]
     pub fn progress(&self) -> Option<f64> {
         let duration = self.duration_seconds?;
         let position = self.position_seconds?;
@@ -303,6 +306,8 @@ pub enum PlayerError {
         name: &'static str,
         value: String,
     },
+    #[allow(dead_code)]
+    OpenGl(String),
     Mpv {
         operation: String,
         code: c_int,
@@ -334,6 +339,7 @@ impl fmt::Display for PlayerError {
             Self::InvalidValue { name, value } => {
                 write!(formatter, "invalid {name} value: {value}")
             }
+            Self::OpenGl(error) => write!(formatter, "OpenGL video surface failed: {error}"),
             Self::Mpv {
                 operation, message, ..
             } => {
@@ -524,6 +530,7 @@ impl Player {
         &self.state
     }
 
+    #[allow(dead_code)]
     pub fn tracks(&self) -> &[MediaTrack] {
         &self.state.tracks
     }
@@ -622,10 +629,12 @@ impl Player {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn play(&mut self) -> PlayerResult<()> {
         self.set_pause(false)
     }
 
+    #[allow(dead_code)]
     pub fn pause(&mut self) -> PlayerResult<()> {
         self.set_pause(true)
     }
@@ -658,6 +667,7 @@ impl Player {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn adjust_volume(&mut self, delta: f64) -> PlayerResult<()> {
         if !delta.is_finite() {
             return Err(invalid_value("volume delta", delta));
@@ -684,6 +694,7 @@ impl Player {
         self.command_owned(&["seek".into(), seconds.to_string(), "relative+exact".into()])
     }
 
+    #[allow(dead_code)]
     pub fn seek_percent(&mut self, percent: f64) -> PlayerResult<()> {
         validate_finite_range("seek percent", percent, 0.0, 100.0)?;
         self.command_owned(&[
@@ -701,6 +712,7 @@ impl Player {
         self.set_optional_track("sid", track_id)
     }
 
+    #[allow(dead_code)]
     pub fn set_subtitle_delay(&mut self, seconds: f64) -> PlayerResult<()> {
         if !seconds.is_finite() {
             return Err(invalid_value("subtitle delay", seconds));
@@ -1161,6 +1173,491 @@ impl Drop for Player {
     }
 }
 
+/// The result of reconciling a bounded video surface with its Slint geometry.
+///
+/// A `Replace` image must be assigned to the Slint `Image.source` inside the
+/// player well before [`BoundedVideoSurface::finish_frame`] is called. `Clear`
+/// means the logical item collapsed to zero size and its old source must be
+/// cleared. Keeping this transition explicit prevents deleting a texture while
+/// FemtoVG can still reference it in the current frame.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum VideoSurfaceUpdate {
+    Unchanged,
+    Replace {
+        image: slint::Image,
+        physical_size: slint::PhysicalSize,
+    },
+    Clear,
+}
+
+#[allow(dead_code)]
+struct GlVideoTarget {
+    framebuffer: glow::NativeFramebuffer,
+    texture: glow::NativeTexture,
+    image: slint::Image,
+    physical_size: slint::PhysicalSize,
+}
+
+/// Owns an RGBA8 OpenGL texture/FBO that Slint can display as a bounded image.
+///
+/// This object belongs inside Slint's rendering notifier:
+///
+/// - construct it during `RenderingSetup` from `GraphicsAPI::NativeOpenGL`;
+/// - call [`Self::ensure_size`] and [`Self::render_player`] during
+///   `BeforeRendering`, while Slint's OpenGL context is current;
+/// - assign a `Replace` image before Slint paints that frame;
+/// - call [`Self::finish_frame`] during `AfterRendering`; and
+/// - clear the Slint image and call [`Self::teardown`] during
+///   `RenderingTeardown`.
+///
+/// Logical item sizes are multiplied by the window scale factor and rounded up
+/// to physical pixels. This is required on macOS Retina displays; rendering at
+/// logical size would produce a half-resolution, blurry video texture.
+/// `glow::Context` is not sent across threads: every GL method must remain on
+/// Slint's render/event-loop thread with the same window context current.
+#[allow(dead_code)]
+pub struct BoundedVideoSurface {
+    gl: glow::Context,
+    current: Option<GlVideoTarget>,
+    retired: Vec<GlVideoTarget>,
+    max_texture_size: u32,
+}
+
+impl fmt::Debug for BoundedVideoSurface {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BoundedVideoSurface")
+            .field(
+                "current_size",
+                &self.current.as_ref().map(|target| target.physical_size),
+            )
+            .field("retired_targets", &self.retired.len())
+            .field("max_texture_size", &self.max_texture_size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[allow(dead_code)]
+impl BoundedVideoSurface {
+    /// Load GL entry points from the exact OpenGL context exposed by Slint.
+    ///
+    /// Skia/Metal and software renderers intentionally return an error. ANKAI
+    /// selects FemtoVG before constructing its window for this reason.
+    pub fn new(graphics_api: &slint::GraphicsAPI<'_>) -> PlayerResult<Self> {
+        let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api else {
+            return Err(PlayerError::OpenGl(
+                "bounded video requires Slint's NativeOpenGL/FemtoVG renderer".into(),
+            ));
+        };
+
+        // SAFETY: RenderingSetup guarantees Slint's GL context is current.
+        // glow copies the resolved function pointers and does not retain the
+        // borrowed `get_proc_address` closure.
+        let gl = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            glow::Context::from_loader_function_cstr(|name| get_proc_address(name))
+        }))
+        .map_err(|_| PlayerError::OpenGl("could not load the current OpenGL context".into()))?;
+        let max_texture_size = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) };
+        if max_texture_size <= 0 {
+            return Err(PlayerError::OpenGl(
+                "GL_MAX_TEXTURE_SIZE returned an invalid value".into(),
+            ));
+        }
+
+        Ok(Self {
+            gl,
+            current: None,
+            retired: Vec::new(),
+            max_texture_size: max_texture_size as u32,
+        })
+    }
+
+    /// Reallocate only when the item's physical size changes.
+    pub fn ensure_size(
+        &mut self,
+        logical_width: f32,
+        logical_height: f32,
+        scale_factor: f32,
+    ) -> PlayerResult<VideoSurfaceUpdate> {
+        let Some(physical_size) = physical_surface_size(
+            logical_width,
+            logical_height,
+            scale_factor,
+            self.max_texture_size,
+        )?
+        else {
+            if let Some(old) = self.current.take() {
+                self.retired.push(old);
+                return Ok(VideoSurfaceUpdate::Clear);
+            }
+            return Ok(VideoSurfaceUpdate::Unchanged);
+        };
+
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|target| target.physical_size == physical_size)
+        {
+            return Ok(VideoSurfaceUpdate::Unchanged);
+        }
+
+        let target = self.allocate_target(physical_size)?;
+        let update = VideoSurfaceUpdate::Replace {
+            image: target.image.clone(),
+            physical_size,
+        };
+        if let Some(old) = self.current.replace(target) {
+            self.retired.push(old);
+        }
+        Ok(update)
+    }
+
+    /// Initialize libmpv while preserving FemtoVG's OpenGL state.
+    ///
+    /// Use this instead of a direct `player.setup_opengl()` for the bounded
+    /// path. The pre-existing full-window method remains unchanged.
+    pub fn setup_player(&self, player: &mut Player) -> PlayerResult<()> {
+        let state = unsafe { GlStateSnapshot::capture(&self.gl) };
+        let result = player.setup_opengl();
+        unsafe { state.restore(&self.gl) };
+        result
+    }
+
+    /// Render libmpv into the current bounded target and restore GL state.
+    pub fn render_player(&self, player: &mut Player) -> PlayerResult<()> {
+        let Some(target) = self.current.as_ref() else {
+            return Ok(());
+        };
+        let state = unsafe { GlStateSnapshot::capture(&self.gl) };
+        let result = player.render_to_fbo(
+            target.framebuffer.0.get() as i32,
+            target.physical_size.width as i32,
+            target.physical_size.height as i32,
+            glow::RGBA8 as i32,
+            false,
+        );
+        unsafe { state.restore(&self.gl) };
+        result
+    }
+
+    /// Delete targets replaced before the frame that just completed.
+    ///
+    /// One-frame retirement matters because Slint images borrow GL names:
+    /// deleting the old texture immediately during `BeforeRendering` could
+    /// invalidate a FemtoVG cache entry still used by that frame.
+    pub fn finish_frame(&mut self) {
+        let retired = std::mem::take(&mut self.retired);
+        for target in retired {
+            unsafe { self.delete_target(target) }
+        }
+    }
+
+    /// Release all targets while the rendering notifier's context is current.
+    /// Clear the Slint `Image.source` before this call.
+    pub fn teardown(&mut self) {
+        self.finish_frame();
+        if let Some(target) = self.current.take() {
+            unsafe { self.delete_target(target) }
+        }
+    }
+
+    pub fn physical_size(&self) -> Option<slint::PhysicalSize> {
+        self.current.as_ref().map(|target| target.physical_size)
+    }
+
+    fn allocate_target(&self, size: slint::PhysicalSize) -> PlayerResult<GlVideoTarget> {
+        let state = unsafe { GlStateSnapshot::capture(&self.gl) };
+        let result = (|| unsafe {
+            let texture = self.gl.create_texture().map_err(PlayerError::OpenGl)?;
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                size.width as i32,
+                size.height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+
+            let framebuffer = match self.gl.create_framebuffer() {
+                Ok(framebuffer) => framebuffer,
+                Err(error) => {
+                    self.gl.delete_texture(texture);
+                    return Err(PlayerError::OpenGl(error));
+                }
+            };
+            self.gl
+                .bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            self.gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(texture),
+                0,
+            );
+            let status = self.gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                self.gl.delete_framebuffer(framebuffer);
+                self.gl.delete_texture(texture);
+                return Err(PlayerError::OpenGl(format!(
+                    "RGBA8 framebuffer is incomplete (status 0x{status:04x})"
+                )));
+            }
+
+            // The FBO texture's native origin is bottom-left. mpv renders it
+            // normally (`flip_y = false`) and Slint applies the single needed
+            // vertical flip into its top-left UI coordinate system.
+            let image = slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
+                texture.0,
+                [size.width, size.height].into(),
+            )
+            .origin(slint::BorrowedOpenGLTextureOrigin::BottomLeft)
+            .build();
+
+            Ok(GlVideoTarget {
+                framebuffer,
+                texture,
+                image,
+                physical_size: size,
+            })
+        })();
+        unsafe { state.restore(&self.gl) };
+        result
+    }
+
+    unsafe fn delete_target(&self, target: GlVideoTarget) {
+        let GlVideoTarget {
+            framebuffer,
+            texture,
+            image,
+            ..
+        } = target;
+        drop(image);
+        unsafe {
+            self.gl.delete_framebuffer(framebuffer);
+            self.gl.delete_texture(texture);
+        }
+    }
+}
+
+impl Drop for BoundedVideoSurface {
+    fn drop(&mut self) {
+        // Calling GL from Drop would be unsound because Slint's context may no
+        // longer be current. RenderingTeardown explicitly releases targets;
+        // if it is skipped, destroying the context releases remaining names.
+    }
+}
+
+#[allow(dead_code)]
+fn physical_surface_size(
+    logical_width: f32,
+    logical_height: f32,
+    scale_factor: f32,
+    max_texture_size: u32,
+) -> PlayerResult<Option<slint::PhysicalSize>> {
+    if !logical_width.is_finite() || !logical_height.is_finite() || !scale_factor.is_finite() {
+        return Err(PlayerError::InvalidValue {
+            name: "video surface geometry",
+            value: format!("{logical_width}x{logical_height} @ {scale_factor}"),
+        });
+    }
+    if logical_width < 0.0 || logical_height < 0.0 || scale_factor <= 0.0 {
+        return Err(PlayerError::InvalidValue {
+            name: "video surface geometry",
+            value: format!("{logical_width}x{logical_height} @ {scale_factor}"),
+        });
+    }
+    if logical_width == 0.0 || logical_height == 0.0 {
+        return Ok(None);
+    }
+
+    let width = (logical_width * scale_factor).ceil();
+    let height = (logical_height * scale_factor).ceil();
+    if width > max_texture_size as f32 || height > max_texture_size as f32 {
+        return Err(PlayerError::InvalidValue {
+            name: "video surface physical size",
+            value: format!("{width:.0}x{height:.0} exceeds GL limit {max_texture_size}"),
+        });
+    }
+    Ok(Some(slint::PhysicalSize::new(
+        width.max(1.0) as u32,
+        height.max(1.0) as u32,
+    )))
+}
+
+/// GL state that mpv documents as not restored, plus bindings FemtoVG can
+/// cache between command submissions. Slint's rendering-notifier contract
+/// requires custom rendering to preserve these values exactly.
+#[allow(dead_code)]
+struct GlStateSnapshot {
+    framebuffer: Option<glow::NativeFramebuffer>,
+    program: Option<glow::NativeProgram>,
+    vertex_array: Option<glow::NativeVertexArray>,
+    array_buffer: Option<glow::NativeBuffer>,
+    element_array_buffer: Option<glow::NativeBuffer>,
+    active_texture: u32,
+    active_texture_2d: Option<glow::NativeTexture>,
+    texture_zero_2d: Option<glow::NativeTexture>,
+    viewport: [i32; 4],
+    scissor: [i32; 4],
+    scissor_enabled: bool,
+    blend_enabled: bool,
+    dither_enabled: bool,
+    blend_src_rgb: u32,
+    blend_dst_rgb: u32,
+    blend_src_alpha: u32,
+    blend_dst_alpha: u32,
+    blend_equation_rgb: u32,
+    blend_equation_alpha: u32,
+    clear_color: [f32; 4],
+    unpack_alignment: i32,
+}
+
+#[allow(dead_code)]
+impl GlStateSnapshot {
+    unsafe fn capture(gl: &glow::Context) -> Self {
+        let mut viewport = [0; 4];
+        let mut scissor = [0; 4];
+        let mut clear_color = [0.0; 4];
+        unsafe {
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut scissor);
+            gl.get_parameter_f32_slice(glow::COLOR_CLEAR_VALUE, &mut clear_color);
+            let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
+            let active_texture_2d =
+                gl_name(gl.get_parameter_i32(glow::TEXTURE_BINDING_2D)).map(glow::NativeTexture);
+            let texture_zero_2d = if active_texture == glow::TEXTURE0 {
+                active_texture_2d
+            } else {
+                gl.active_texture(glow::TEXTURE0);
+                let binding = gl_name(gl.get_parameter_i32(glow::TEXTURE_BINDING_2D))
+                    .map(glow::NativeTexture);
+                gl.active_texture(active_texture);
+                binding
+            };
+            Self {
+                framebuffer: gl_name(gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING))
+                    .map(glow::NativeFramebuffer),
+                program: gl_name(gl.get_parameter_i32(glow::CURRENT_PROGRAM))
+                    .map(glow::NativeProgram),
+                vertex_array: gl_name(gl.get_parameter_i32(glow::VERTEX_ARRAY_BINDING))
+                    .map(glow::NativeVertexArray),
+                array_buffer: gl_name(gl.get_parameter_i32(glow::ARRAY_BUFFER_BINDING))
+                    .map(glow::NativeBuffer),
+                element_array_buffer: gl_name(
+                    gl.get_parameter_i32(glow::ELEMENT_ARRAY_BUFFER_BINDING),
+                )
+                .map(glow::NativeBuffer),
+                active_texture,
+                active_texture_2d,
+                texture_zero_2d,
+                viewport,
+                scissor,
+                scissor_enabled: gl.is_enabled(glow::SCISSOR_TEST),
+                blend_enabled: gl.is_enabled(glow::BLEND),
+                dither_enabled: gl.is_enabled(glow::DITHER),
+                blend_src_rgb: gl.get_parameter_i32(glow::BLEND_SRC_RGB) as u32,
+                blend_dst_rgb: gl.get_parameter_i32(glow::BLEND_DST_RGB) as u32,
+                blend_src_alpha: gl.get_parameter_i32(glow::BLEND_SRC_ALPHA) as u32,
+                blend_dst_alpha: gl.get_parameter_i32(glow::BLEND_DST_ALPHA) as u32,
+                blend_equation_rgb: gl.get_parameter_i32(glow::BLEND_EQUATION_RGB) as u32,
+                blend_equation_alpha: gl.get_parameter_i32(glow::BLEND_EQUATION_ALPHA) as u32,
+                clear_color,
+                unpack_alignment: gl.get_parameter_i32(glow::UNPACK_ALIGNMENT),
+            }
+        }
+    }
+
+    unsafe fn restore(self, gl: &glow::Context) {
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, self.framebuffer);
+            gl.use_program(self.program);
+            gl.bind_vertex_array(self.vertex_array);
+            gl.bind_buffer(glow::ARRAY_BUFFER, self.array_buffer);
+            // Core-profile OpenGL (including macOS CGL) rejects an element
+            // buffer bind while VAO zero is bound. A captured non-zero element
+            // buffer necessarily belongs to a captured VAO in that profile.
+            if self.vertex_array.is_some() || self.element_array_buffer.is_some() {
+                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, self.element_array_buffer);
+            }
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, self.texture_zero_2d);
+            gl.active_texture(self.active_texture);
+            gl.bind_texture(glow::TEXTURE_2D, self.active_texture_2d);
+            gl.viewport(
+                self.viewport[0],
+                self.viewport[1],
+                self.viewport[2],
+                self.viewport[3],
+            );
+            gl.scissor(
+                self.scissor[0],
+                self.scissor[1],
+                self.scissor[2],
+                self.scissor[3],
+            );
+            set_gl_capability(gl, glow::SCISSOR_TEST, self.scissor_enabled);
+            set_gl_capability(gl, glow::BLEND, self.blend_enabled);
+            set_gl_capability(gl, glow::DITHER, self.dither_enabled);
+            gl.blend_func_separate(
+                self.blend_src_rgb,
+                self.blend_dst_rgb,
+                self.blend_src_alpha,
+                self.blend_dst_alpha,
+            );
+            gl.blend_equation_separate(self.blend_equation_rgb, self.blend_equation_alpha);
+            gl.clear_color(
+                self.clear_color[0],
+                self.clear_color[1],
+                self.clear_color[2],
+                self.clear_color[3],
+            );
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, self.unpack_alignment);
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn gl_name(value: i32) -> Option<NonZeroU32> {
+    u32::try_from(value).ok().and_then(NonZeroU32::new)
+}
+
+#[allow(dead_code)]
+unsafe fn set_gl_capability(gl: &glow::Context, capability: u32, enabled: bool) {
+    unsafe {
+        if enabled {
+            gl.enable(capability)
+        } else {
+            gl.disable(capability)
+        }
+    }
+}
+
 fn parse_track_kind(value: String) -> TrackKind {
     match value.as_str() {
         "video" => TrackKind::Video,
@@ -1389,5 +1886,28 @@ mod tests {
         assert_eq!(EndReason::from(0), EndReason::EndOfFile);
         assert_eq!(EndReason::from(4), EndReason::Error);
         assert_eq!(EndReason::from(99), EndReason::Unknown(99));
+    }
+
+    #[test]
+    fn bounded_surface_uses_retina_physical_pixels() {
+        assert_eq!(
+            physical_surface_size(640.0, 360.0, 2.0, 16_384).unwrap(),
+            Some(slint::PhysicalSize::new(1280, 720))
+        );
+        assert_eq!(
+            physical_surface_size(100.25, 50.25, 1.5, 16_384).unwrap(),
+            Some(slint::PhysicalSize::new(151, 76))
+        );
+    }
+
+    #[test]
+    fn bounded_surface_handles_collapse_and_rejects_bad_geometry() {
+        assert_eq!(
+            physical_surface_size(0.0, 360.0, 2.0, 16_384).unwrap(),
+            None
+        );
+        assert!(physical_surface_size(-1.0, 360.0, 2.0, 16_384).is_err());
+        assert!(physical_surface_size(640.0, 360.0, 0.0, 16_384).is_err());
+        assert!(physical_surface_size(9_000.0, 360.0, 2.0, 16_384).is_err());
     }
 }

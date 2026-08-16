@@ -25,7 +25,7 @@ export component ModuleCardItem inherits Rectangle {
     y: is-dragging ? drag-y : slot-index * slot-height;
 
     animate y {
-        duration: is-dragging ? 0ms : Theme.motion-duration-standard;
+        duration: is-dragging || Theme.reduced-motion ? 0ms : Theme.motion-duration-standard;
         easing: Theme.motion-easing-standard;
     }
 

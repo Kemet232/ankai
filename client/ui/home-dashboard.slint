@@ -7,6 +7,7 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { LetterboxdFeed, LetterboxdEntryRef } from "letterboxd-feed.slint";
 
 export struct AnimeRef {
     id: int,
@@ -27,11 +28,13 @@ export struct FriendRef {
     online: bool,
 }
 
-export struct MalTopicRef {
-    id: int,
+export struct ResumeRef {
     title: string,
-    snippet: string,
-    preview: string,
+    subtitle: string,
+    progress-label: string,
+    progress: float,
+    poster: image,
+    has-poster: bool,
 }
 
 component NeonAction inherits Rectangle {
@@ -60,8 +63,8 @@ component NeonAction inherits Rectangle {
                 : touch.has-hover
                     ? Theme.accent-violet.with-alpha(0.20)
                     : Theme.bg-surface-raised.with-alpha(0.76));
-    border-width: root.quiet ? 0px : 1px;
-    border-color: root.primary ? Theme.accent-pink.with-alpha(0.72) : Theme.silver.with-alpha(0.20);
+    border-width: keyboard-focus.has-focus ? 2px : root.quiet ? 0px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : root.primary ? Theme.accent-pink.with-alpha(0.72) : Theme.silver.with-alpha(0.20);
     drop-shadow-color: root.primary ? Theme.accent-pink.with-alpha(0.24) : transparent;
     drop-shadow-blur: root.primary && touch.has-hover ? 18px : root.primary ? 10px : 0px;
     accessible-role: button;
@@ -70,9 +73,19 @@ component NeonAction inherits Rectangle {
     accessible-action-default => {
         if (root.enabled && !root.busy) { root.activated(); }
     }
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: root.enabled && !root.busy;
+        key-pressed(event) => {
+            if root.enabled && !root.busy && (event.text == Key.Return || event.text == " ") {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
-    animate background { duration: 120ms; }
-    animate drop-shadow-blur { duration: 120ms; }
+    animate background { duration: Theme.reduced-motion ? 0ms : 120ms; }
+    animate drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 120ms; }
 
     HorizontalLayout {
         padding-left: 14px;
@@ -108,7 +121,7 @@ component NeonAction inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled && !root.busy;
         mouse-cursor: root.enabled && !root.busy ? pointer : default;
-        clicked => { root.activated(); }
+        clicked => { keyboard-focus.focus(); root.activated(); }
     }
 }
 
@@ -127,13 +140,23 @@ component IconAction inherits Rectangle {
         : touch.has-hover
             ? Theme.silver.with-alpha(0.10)
             : Theme.bg-surface-raised.with-alpha(0.62);
-    border-width: 1px;
-    border-color: touch.has-hover ? Theme.accent-pink.with-alpha(0.45) : Theme.silver.with-alpha(0.15);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : touch.has-hover ? Theme.accent-pink.with-alpha(0.45) : Theme.silver.with-alpha(0.15);
     accessible-role: button;
     accessible-label: root.hint == "" ? root.glyph : root.hint;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if (root.enabled) { root.activated(); }
+    }
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == Key.Return || event.text == " ") {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
     }
 
     Text {
@@ -150,7 +173,7 @@ component IconAction inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.activated(); }
+        clicked => { keyboard-focus.focus(); root.activated(); }
     }
 }
 
@@ -193,6 +216,18 @@ component SectionHeading inherits HorizontalLayout {
         accessible-role: button;
         accessible-label: root.action-label;
         accessible-action-default => { root.action(); }
+        border-width: action-focus.has-focus ? 1px : 0px;
+        border-color: Theme.accent-cyan;
+        action-focus := FocusScope {
+            focus-on-tab-navigation: true;
+            key-pressed(event) => {
+                if event.text == Key.Return || event.text == " " {
+                    root.action();
+                    return accept;
+                }
+                return reject;
+            }
+        }
 
         action-text := Text {
             text: root.action-label + "  ›";
@@ -205,7 +240,7 @@ component SectionHeading inherits HorizontalLayout {
 
         action-touch := TouchArea {
             mouse-cursor: pointer;
-            clicked => { root.action(); }
+            clicked => { action-focus.focus(); root.action(); }
         }
     }
 }
@@ -401,18 +436,28 @@ component PosterCard inherits Rectangle {
     border-radius: 16px;
     clip: true;
     background: touch.has-hover ? Theme.bg-surface-raised.with-alpha(0.96) : Theme.bg-surface-raised.with-alpha(0.76);
-    border-width: 1px;
-    border-color: touch.has-hover ? Theme.accent-violet.with-alpha(0.62) : Theme.silver.with-alpha(0.16);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : touch.has-hover ? Theme.accent-violet.with-alpha(0.62) : Theme.silver.with-alpha(0.16);
     drop-shadow-color: touch.has-hover ? Theme.accent-violet.with-alpha(0.24) : Theme.bg-void.with-alpha(0.36);
     drop-shadow-blur: touch.has-hover ? 18px : 10px;
     drop-shadow-offset-y: touch.has-hover ? 5px : 3px;
     accessible-role: button;
     accessible-label: "Open " + root.anime.title;
     accessible-action-default => { root.selected(root.anime.id); }
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: true;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.selected(root.anime.id);
+                return accept;
+            }
+            return reject;
+        }
+    }
 
-    animate background { duration: 140ms; }
-    animate border-color { duration: 140ms; }
-    animate drop-shadow-blur { duration: 140ms; }
+    animate background { duration: Theme.reduced-motion ? 0ms : 140ms; }
+    animate border-color { duration: Theme.reduced-motion ? 0ms : 140ms; }
+    animate drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 140ms; }
 
     Rectangle {
         x: 0px;
@@ -483,7 +528,111 @@ component PosterCard inherits Rectangle {
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.selected(root.anime.id); }
+        clicked => { keyboard-focus.focus(); root.selected(root.anime.id); }
+    }
+}
+
+component ContinueWatchingPanel inherits Rectangle {
+    in property <[ResumeRef]> entries;
+    callback resume(int);
+
+    height: 198px;
+    border-radius: 20px;
+    background: @linear-gradient(145deg, Theme.bg-surface.with-alpha(0.78) 0%, Theme.accent-violet.with-alpha(0.10) 100%);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.14);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        SectionHeading {
+            eyebrow: "PICK UP WHERE YOU LEFT OFF";
+            title: "Continue watching";
+            show-action: false;
+        }
+
+        if root.entries.length == 0: Rectangle {
+            vertical-stretch: 1;
+            border-radius: 14px;
+            background: Theme.bg-void.with-alpha(0.22);
+            Text {
+                text: "Start a direct stream and ANKAI will save your place here.";
+                color: Theme.text-secondary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.entries.length > 0: ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: always-off;
+            horizontal-scrollbar-policy: as-needed;
+
+            HorizontalLayout {
+                spacing: 11px;
+                padding-right: 8px;
+                alignment: start;
+
+                for entry[i] in root.entries: Rectangle {
+                    width: 278px;
+                    height: 116px;
+                    border-radius: 15px;
+                    clip: true;
+                    background: resume-touch.has-hover ? Theme.bg-surface-raised.with-alpha(0.96) : Theme.bg-surface-raised.with-alpha(0.72);
+                    border-width: resume-focus.has-focus ? 2px : 1px;
+                    border-color: resume-focus.has-focus ? Theme.accent-cyan : resume-touch.has-hover ? Theme.accent-pink.with-alpha(0.54) : Theme.silver.with-alpha(0.14);
+                    accessible-role: button;
+                    accessible-label: "Resume " + entry.title + " at " + entry.progress-label;
+                    accessible-action-default => { root.resume(i); }
+                    resume-focus := FocusScope {
+                        focus-on-tab-navigation: true;
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == " " {
+                                root.resume(i);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 0px;
+
+                        Rectangle {
+                            width: 78px;
+                            background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.34) 0%, Theme.bg-void 100%);
+                            if entry.has-poster: Image { source: entry.poster; width: parent.width; height: parent.height; image-fit: cover; }
+                            if !entry.has-poster: Text { text: "▶"; color: Theme.accent-pink; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 5px;
+                            Text { text: entry.title; color: Theme.text-primary; font-size: 12px; font-weight: 750; overflow: elide; }
+                            Text { text: entry.subtitle; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
+                            Rectangle { vertical-stretch: 1; }
+                            Rectangle {
+                                height: 5px;
+                                border-radius: 3px;
+                                background: Theme.silver.with-alpha(0.12);
+                                Rectangle {
+                                    width: parent.width * max(0, min(1, entry.progress));
+                                    height: parent.height;
+                                    border-radius: 3px;
+                                    background: @linear-gradient(90deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
+                                }
+                            }
+                            Text { text: entry.progress-label + "  ·  Resume"; color: resume-touch.has-hover ? Theme.accent-pink : Theme.text-secondary; font-size: 9px; font-weight: 650; }
+                        }
+                    }
+
+                    resume-touch := TouchArea { mouse-cursor: pointer; clicked => { resume-focus.focus(); root.resume(i); } }
+                }
+            }
+        }
     }
 }
 
@@ -554,11 +703,21 @@ component FriendActivityPanel inherits Rectangle {
                     height: 52px;
                     border-radius: 13px;
                     background: friend-touch.has-hover ? Theme.silver.with-alpha(0.09) : Theme.bg-void.with-alpha(0.20);
-                    border-width: 1px;
-                    border-color: friend-touch.has-hover ? Theme.accent-cyan.with-alpha(0.35) : Theme.silver.with-alpha(0.09);
+                    border-width: friend-focus.has-focus ? 2px : 1px;
+                    border-color: friend-focus.has-focus ? Theme.accent-cyan : friend-touch.has-hover ? Theme.accent-cyan.with-alpha(0.35) : Theme.silver.with-alpha(0.09);
                     accessible-role: button;
                     accessible-label: "Open friend " + friend.account-id;
                     accessible-action-default => { root.friend-selected(friend.account-id); }
+                    friend-focus := FocusScope {
+                        focus-on-tab-navigation: true;
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == " " {
+                                root.friend-selected(friend.account-id);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
 
                     HorizontalLayout {
                         padding-left: 10px;
@@ -625,7 +784,7 @@ component FriendActivityPanel inherits Rectangle {
 
                     friend-touch := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.friend-selected(friend.account-id); }
+                        clicked => { friend-focus.focus(); root.friend-selected(friend.account-id); }
                     }
                 }
             }
@@ -678,9 +837,21 @@ component DiscussionPanel inherits Rectangle {
                     height: 57px;
                     border-radius: 12px;
                     background: post-touch.has-hover ? Theme.accent-pink.with-alpha(0.09) : Theme.bg-void.with-alpha(0.18);
+                    border-width: post-focus.has-focus ? 2px : 0px;
+                    border-color: Theme.accent-cyan;
                     accessible-role: button;
                     accessible-label: "Open discussion in " + post.community-name;
                     accessible-action-default => { root.selected(post.community-name); }
+                    post-focus := FocusScope {
+                        focus-on-tab-navigation: true;
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == " " {
+                                root.selected(post.community-name);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
                     HorizontalLayout {
                         padding: 9px;
                         spacing: 9px;
@@ -700,7 +871,7 @@ component DiscussionPanel inherits Rectangle {
                         }
                         Text { text: "›"; color: Theme.text-secondary; font-size: 16px; vertical-alignment: center; }
                     }
-                    post-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(post.community-name); } }
+                    post-touch := TouchArea { mouse-cursor: pointer; clicked => { post-focus.focus(); root.selected(post.community-name); } }
                 }
             }
         }
@@ -753,9 +924,21 @@ component HangoutPanel inherits Rectangle {
                     height: 57px;
                     border-radius: 12px;
                     background: room-touch.has-hover ? Theme.accent-violet.with-alpha(0.15) : Theme.bg-void.with-alpha(0.18);
+                    border-width: room-focus.has-focus ? 2px : 0px;
+                    border-color: Theme.accent-cyan;
                     accessible-role: button;
                     accessible-label: "Open hangout " + name;
                     accessible-action-default => { root.selected(name); }
+                    room-focus := FocusScope {
+                        focus-on-tab-navigation: true;
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == " " {
+                                root.selected(name);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
                     HorizontalLayout {
                         padding: 9px;
                         spacing: 9px;
@@ -775,79 +958,7 @@ component HangoutPanel inherits Rectangle {
                         }
                         Text { text: "JOIN"; color: Theme.accent-violet; font-size: 9px; font-weight: 800; vertical-alignment: center; }
                     }
-                    room-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(name); } }
-                }
-            }
-        }
-    }
-}
-
-component MalPanel inherits Rectangle {
-    in property <[MalTopicRef]> topics;
-    in property <string> state: "ready";
-    in property <string> error-message: "";
-    callback selected(int);
-    callback view-all();
-    callback retry();
-
-    border-radius: 18px;
-    background: @linear-gradient(145deg, Theme.bg-surface-raised.with-alpha(0.84) 0%, #132B48D9 100%);
-    border-width: 1px;
-    border-color: Theme.accent-cyan.with-alpha(0.20);
-    clip: true;
-
-    VerticalLayout {
-        padding: 15px;
-        spacing: 9px;
-
-        SectionHeading {
-            eyebrow: "AROUND ANIME";
-            title: "MAL discussions";
-            action => { root.view-all(); }
-        }
-
-        if root.state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading MAL topics…"; }
-        if root.state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.error-message; retry => { root.retry(); } }
-        if root.state == "ready" && root.topics.length == 0: PanelState {
-            vertical-stretch: 1;
-            state: "empty";
-            message: "No MAL topics are available right now.";
-        }
-
-        if root.state == "ready" && root.topics.length > 0: ScrollView {
-            vertical-stretch: 1;
-            vertical-scrollbar-policy: as-needed;
-            horizontal-scrollbar-policy: always-off;
-            VerticalLayout {
-                spacing: 7px;
-                alignment: start;
-                for topic in root.topics: Rectangle {
-                    height: 62px;
-                    border-radius: 12px;
-                    background: topic-touch.has-hover ? Theme.accent-cyan.with-alpha(0.08) : Theme.bg-void.with-alpha(0.18);
-                    accessible-role: button;
-                    accessible-label: "Open MAL discussion " + topic.title;
-                    accessible-action-default => { root.selected(topic.id); }
-                    HorizontalLayout {
-                        padding: 9px;
-                        spacing: 9px;
-                        Rectangle {
-                            width: 30px;
-                            height: 30px;
-                            border-radius: 9px;
-                            background: Theme.accent-cyan.with-alpha(0.12);
-                            Text { text: "M"; color: Theme.accent-cyan; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            spacing: 2px;
-                            Text { text: topic.title; color: Theme.text-primary; font-size: 10px; font-weight: 600; overflow: elide; }
-                            Text { text: topic.preview == "" ? topic.snippet : topic.preview; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
-                        }
-                        Text { text: "↗"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                    }
-                    topic-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(topic.id); } }
+                    room-touch := TouchArea { mouse-cursor: pointer; clicked => { room-focus.focus(); root.selected(name); } }
                 }
             }
         }
@@ -879,9 +990,11 @@ export component HomeDashboard inherits Rectangle {
     in property <string> hangouts-state: "ready";
     in property <string> hangouts-status: "";
 
-    in property <[MalTopicRef]> mal-topics: [];
-    in property <string> mal-state: "loading";
-    in property <string> mal-status: "";
+    in property <[ResumeRef]> continue-watching: [];
+    in-out property <string> letterboxd-username: "";
+    in property <[LetterboxdEntryRef]> letterboxd-entries: [];
+    in property <string> letterboxd-state: "not-configured";
+    in property <string> letterboxd-status: "";
 
     callback refresh-home();
     callback watch-now(int);
@@ -891,17 +1004,17 @@ export component HomeDashboard inherits Rectangle {
     callback open-discussion(string);
     callback open-hangout(string);
     callback create-hangout();
-    callback open-mal-topic(int);
+    callback resume-playback(int);
+    callback load-letterboxd(string);
+    callback open-letterboxd-link(string);
     callback view-popular();
     callback view-friends();
     callback view-discussions();
     callback view-hangouts();
-    callback view-mal();
     callback retry-anime();
     callback retry-friends();
     callback retry-discussions();
     callback retry-hangouts();
-    callback retry-mal();
 
     background: transparent;
 
@@ -1073,8 +1186,13 @@ export component HomeDashboard inherits Rectangle {
                 }
             }
 
+            ContinueWatchingPanel {
+                entries: root.continue-watching;
+                resume(index) => { root.resume-playback(index); }
+            }
+
             if !root.compact-layout: HorizontalLayout {
-                height: 292px;
+                height: 360px;
                 spacing: 14px;
                 DiscussionPanel {
                     horizontal-stretch: 1;
@@ -1095,19 +1213,20 @@ export component HomeDashboard inherits Rectangle {
                     create => { root.create-hangout(); }
                     retry => { root.retry-hangouts(); }
                 }
-                MalPanel {
-                    horizontal-stretch: 1;
-                    topics: root.mal-topics;
-                    state: root.mal-state;
-                    error-message: root.mal-status;
-                    selected(id) => { root.open-mal-topic(id); }
-                    view-all => { root.view-mal(); }
-                    retry => { root.retry-mal(); }
+                LetterboxdFeed {
+                    width: 380px;
+                    username <=> root.letterboxd-username;
+                    entries: root.letterboxd-entries;
+                    state: root.letterboxd-state;
+                    status: root.letterboxd-status;
+                    load(username) => { root.load-letterboxd(username); }
+                    retry => { root.load-letterboxd(root.letterboxd-username); }
+                    open-link(link) => { root.open-letterboxd-link(link); }
                 }
             }
 
             if root.compact-layout: VerticalLayout {
-                height: 890px;
+                height: 976px;
                 spacing: 14px;
                 DiscussionPanel {
                     height: 286px;
@@ -1128,14 +1247,15 @@ export component HomeDashboard inherits Rectangle {
                     create => { root.create-hangout(); }
                     retry => { root.retry-hangouts(); }
                 }
-                MalPanel {
-                    height: 286px;
-                    topics: root.mal-topics;
-                    state: root.mal-state;
-                    error-message: root.mal-status;
-                    selected(id) => { root.open-mal-topic(id); }
-                    view-all => { root.view-mal(); }
-                    retry => { root.retry-mal(); }
+                LetterboxdFeed {
+                    height: 372px;
+                    username <=> root.letterboxd-username;
+                    entries: root.letterboxd-entries;
+                    state: root.letterboxd-state;
+                    status: root.letterboxd-status;
+                    load(username) => { root.load-letterboxd(username); }
+                    retry => { root.load-letterboxd(root.letterboxd-username); }
+                    open-link(link) => { root.open-letterboxd-link(link); }
                 }
             }
         }

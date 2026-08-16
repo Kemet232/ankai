@@ -1,0 +1,708 @@
+// ANKAI Nyaa release browser.
+//
+// This surface is intentionally release-scoped. Nyaa's RSS feed provides
+// upload records and a comment count; the comments themselves live on each
+// upload's Nyaa page. Rust owns RSS fetching and opens the exact release URL.
+// Nothing here presents those upload comments as a title-wide discussion.
+
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct NyaaReleaseRef {
+    title: string,
+    uploader: string,
+    published: string,
+    size: string,
+    seeders: int,
+    leechers: int,
+    downloads: int,
+    comments: int,
+    trusted: bool,
+    remake: bool,
+    release-url: string,
+}
+
+component ReleaseAction inherits FocusScope {
+    in property <string> label;
+    in property <string> glyph: "";
+    in property <bool> primary: false;
+    in property <bool> compact: false;
+    callback activated();
+
+    width: root.compact ? 112px : 142px;
+    height: root.compact ? 34px : 40px;
+    focus-on-tab-navigation: root.enabled;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.activated(); }
+    }
+
+    key-pressed(event) => {
+        if (root.enabled && (event.text == Key.Return || event.text == Key.Space)) {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+
+    Rectangle {
+        border-radius: root.compact ? 10px : 12px;
+        background: !root.enabled
+            ? Theme.bg-surface-raised.with-alpha(0.28)
+            : action-touch.pressed
+                ? Theme.accent-violet.with-alpha(0.46)
+                : root.primary
+                    ? @linear-gradient(112deg, Theme.accent-pink 0%, Theme.accent-violet 100%)
+                    : action-touch.has-hover || root.has-focus
+                        ? Theme.accent-violet.with-alpha(0.24)
+                        : Theme.bg-surface-raised.with-alpha(0.76);
+        border-width: root.has-focus ? 2px : 1px;
+        border-color: root.has-focus
+            ? Theme.accent-cyan
+            : root.primary
+                ? Theme.accent-pink.with-alpha(0.66)
+                : Theme.silver.with-alpha(0.17);
+        drop-shadow-color: root.primary ? Theme.accent-pink.with-alpha(0.20) : transparent;
+        drop-shadow-blur: root.primary && (action-touch.has-hover || root.has-focus) ? 17px : root.primary ? 8px : 0px;
+
+        animate background, border-color, drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 120ms; }
+
+        HorizontalLayout {
+            padding-left: root.compact ? 10px : 13px;
+            padding-right: root.compact ? 10px : 13px;
+            spacing: 7px;
+            alignment: center;
+
+            if root.glyph != "": Text {
+                text: root.glyph;
+                color: root.enabled ? Theme.text-primary : Theme.text-secondary.with-alpha(0.52);
+                font-size: 12px;
+                font-weight: 800;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.label;
+                color: root.enabled ? Theme.text-primary : Theme.text-secondary.with-alpha(0.52);
+                font-size: root.compact ? 10px : 11px;
+                font-weight: 750;
+                overflow: elide;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        action-touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                root.focus();
+                root.activated();
+            }
+        }
+    }
+}
+
+component SourceBadge inherits Rectangle {
+    in property <string> state;
+
+    width: badge-text.preferred-width + 29px;
+    height: 27px;
+    border-radius: 14px;
+    background: root.state == "ready"
+        ? Theme.state-online.with-alpha(0.10)
+        : root.state == "error"
+            ? Theme.state-busy.with-alpha(0.12)
+            : root.state == "loading"
+                ? Theme.accent-violet.with-alpha(0.14)
+                : Theme.silver.with-alpha(0.08);
+    border-width: 1px;
+    border-color: root.state == "ready"
+        ? Theme.state-online.with-alpha(0.32)
+        : root.state == "error"
+            ? Theme.state-busy.with-alpha(0.38)
+            : root.state == "loading"
+                ? Theme.accent-violet.with-alpha(0.38)
+                : Theme.silver.with-alpha(0.16);
+    accessible-role: text;
+    accessible-label: "Nyaa RSS " + badge-text.text;
+
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        alignment: center;
+
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: root.state == "ready"
+                ? Theme.state-online
+                : root.state == "error"
+                    ? Theme.state-busy
+                    : root.state == "loading"
+                        ? Theme.accent-violet
+                        : Theme.state-offline;
+        }
+
+        badge-text := Text {
+            text: root.state == "ready"
+                ? "LIVE RSS"
+                : root.state == "error"
+                    ? "OFFLINE"
+                    : root.state == "loading"
+                        ? "SEARCHING"
+                        : "RELEASES";
+            color: root.state == "ready"
+                ? Theme.state-online
+                : root.state == "error"
+                    ? Theme.state-busy
+                    : root.state == "loading"
+                        ? Theme.accent-violet
+                        : Theme.text-secondary;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: 0.7px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component ReleaseTag inherits Rectangle {
+    in property <string> label;
+    in property <color> tint: Theme.accent-violet;
+
+    width: tag-text.preferred-width + 18px;
+    height: 23px;
+    border-radius: 8px;
+    background: root.tint.with-alpha(0.10);
+    border-width: 1px;
+    border-color: root.tint.with-alpha(0.27);
+    accessible-role: text;
+    accessible-label: root.label;
+
+    tag-text := Text {
+        text: root.label;
+        color: root.tint;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.45px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component Stat inherits Rectangle {
+    in property <string> glyph;
+    in property <int> value;
+    in property <string> label;
+    in property <color> tint: Theme.text-secondary;
+
+    width: 58px;
+    height: 36px;
+    border-radius: 10px;
+    background: Theme.bg-void.with-alpha(0.32);
+    border-width: 1px;
+    border-color: root.tint.with-alpha(0.15);
+    accessible-role: text;
+    accessible-label: root.value + " " + root.label;
+
+    VerticalLayout {
+        padding-top: 4px;
+        padding-bottom: 3px;
+        spacing: 0px;
+
+        Text {
+            text: root.glyph + " " + root.value;
+            color: root.tint;
+            font-size: 9px;
+            font-weight: 800;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.text-secondary.with-alpha(0.72);
+            font-size: 7px;
+            font-weight: 650;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component ReleaseRow inherits Rectangle {
+    in property <NyaaReleaseRef> release;
+    callback open-comments(string);
+
+    height: root.width < 690px ? 196px : 126px;
+    border-radius: 15px;
+    clip: true;
+    background: row-touch.has-hover
+        ? @linear-gradient(104deg, Theme.bg-surface-raised.with-alpha(0.94) 0%, Theme.accent-violet.with-alpha(0.13) 100%)
+        : @linear-gradient(104deg, Theme.bg-surface-raised.with-alpha(0.69) 0%, Theme.bg-surface.with-alpha(0.72) 100%);
+    border-width: 1px;
+    border-color: row-touch.has-hover ? Theme.accent-violet.with-alpha(0.42) : Theme.silver.with-alpha(0.12);
+    drop-shadow-color: row-touch.has-hover ? Theme.accent-violet.with-alpha(0.16) : transparent;
+    drop-shadow-blur: row-touch.has-hover ? 14px : 0px;
+    accessible-role: groupbox;
+    accessible-label: root.release.title;
+    accessible-description: "Nyaa upload. " + root.release.seeders + " seeders, " + root.release.leechers + " leechers, " + root.release.comments + " comments on this upload.";
+
+    animate background, border-color, drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 130ms; }
+
+    // Subtle category rail; Nyaa green reads as healthy availability without
+    // fighting ANKAI's violet/pink accent hierarchy.
+    Rectangle {
+        width: 3px;
+        height: parent.height - 20px;
+        y: 10px;
+        border-radius: 2px;
+        background: root.release.seeders > 0 ? Theme.state-online.with-alpha(0.72) : Theme.state-away.with-alpha(0.62);
+    }
+
+    if root.width >= 690px: HorizontalLayout {
+        padding: 14px;
+        padding-left: 17px;
+        spacing: 15px;
+
+        VerticalLayout {
+            spacing: 7px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.release.title;
+                color: Theme.text-primary;
+                font-size: 13px;
+                font-weight: 750;
+                overflow: elide;
+                accessible-role: text;
+            }
+
+            HorizontalLayout {
+                spacing: 7px;
+
+                if root.release.trusted: ReleaseTag {
+                    label: "✓ TRUSTED";
+                    tint: Theme.state-online;
+                }
+
+                if root.release.remake: ReleaseTag {
+                    label: "REMAKE";
+                    tint: Theme.state-away;
+                }
+
+                if root.release.size != "": ReleaseTag {
+                    label: root.release.size;
+                    tint: Theme.accent-cyan;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            Text {
+                text: (root.release.uploader == "" ? "Uploader not listed" : root.release.uploader)
+                    + (root.release.published == "" ? "" : "  ·  " + root.release.published);
+                color: Theme.text-secondary;
+                font-size: 10px;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            width: 252px;
+            spacing: 5px;
+            alignment: center;
+
+            Stat { glyph: "↑"; value: root.release.seeders; label: "seeders"; tint: Theme.state-online; }
+            Stat { glyph: "↓"; value: root.release.leechers; label: "leechers"; tint: Theme.state-away; }
+            Stat { glyph: "⇣"; value: root.release.downloads; label: "grabs"; tint: Theme.accent-cyan; }
+            Stat { glyph: "◌"; value: root.release.comments; label: "comments"; tint: Theme.accent-pink; }
+        }
+
+        ReleaseAction {
+            label: root.release.comments == 1 ? "Open 1 comment" : "Open " + root.release.comments + " comments";
+            glyph: "↗";
+            primary: true;
+            enabled: root.release.release-url != "";
+            activated => { root.open-comments(root.release.release-url); }
+        }
+    }
+
+    if root.width < 690px: VerticalLayout {
+        padding: 13px;
+        padding-left: 17px;
+        spacing: 8px;
+
+        Text {
+            text: root.release.title;
+            color: Theme.text-primary;
+            font-size: 12px;
+            font-weight: 750;
+            overflow: elide;
+            accessible-role: text;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+
+            if root.release.trusted: ReleaseTag { label: "✓ TRUSTED"; tint: Theme.state-online; }
+            if root.release.remake: ReleaseTag { label: "REMAKE"; tint: Theme.state-away; }
+            if root.release.size != "": ReleaseTag { label: root.release.size; tint: Theme.accent-cyan; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Text {
+            text: (root.release.uploader == "" ? "Uploader not listed" : root.release.uploader)
+                + (root.release.published == "" ? "" : "  ·  " + root.release.published);
+            color: Theme.text-secondary;
+            font-size: 9px;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            spacing: 5px;
+
+            Stat { glyph: "↑"; value: root.release.seeders; label: "seeders"; tint: Theme.state-online; }
+            Stat { glyph: "↓"; value: root.release.leechers; label: "leechers"; tint: Theme.state-away; }
+            Stat { glyph: "⇣"; value: root.release.downloads; label: "grabs"; tint: Theme.accent-cyan; }
+            Stat { glyph: "◌"; value: root.release.comments; label: "comments"; tint: Theme.accent-pink; }
+            Rectangle { horizontal-stretch: 1; }
+            ReleaseAction {
+                compact: true;
+                label: root.release.comments == 1 ? "1 comment ↗" : root.release.comments + " comments ↗";
+                enabled: root.release.release-url != "";
+                activated => { root.open-comments(root.release.release-url); }
+            }
+        }
+    }
+
+    row-touch := TouchArea {
+        mouse-cursor: default;
+    }
+}
+
+component EmptyMessage inherits Rectangle {
+    in property <string> glyph;
+    in property <string> title;
+    in property <string> message;
+
+    border-radius: 15px;
+    background: Theme.bg-surface-raised.with-alpha(0.40);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.11);
+    accessible-role: text;
+    accessible-label: root.title + ". " + root.message;
+
+    VerticalLayout {
+        padding: 22px;
+        spacing: 8px;
+        alignment: center;
+
+        Text {
+            text: root.glyph;
+            color: Theme.accent-violet;
+            font-size: 25px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-weight: 750;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            width: parent.width;
+            text: root.message;
+            color: Theme.text-secondary;
+            font-size: 10px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component LoadingRelease inherits Rectangle {
+    height: 92px;
+    border-radius: 14px;
+    background: Theme.bg-surface-raised.with-alpha(0.47);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.10);
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 9px;
+
+        Rectangle { width: 78%; height: 11px; border-radius: 6px; background: Theme.silver.with-alpha(0.13); }
+        Rectangle { width: 45%; height: 8px; border-radius: 4px; background: Theme.accent-violet.with-alpha(0.13); }
+        HorizontalLayout {
+            spacing: 7px;
+            Rectangle { width: 56px; height: 19px; border-radius: 7px; background: Theme.state-online.with-alpha(0.10); }
+            Rectangle { width: 62px; height: 19px; border-radius: 7px; background: Theme.accent-cyan.with-alpha(0.10); }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}
+
+export component NyaaReleases inherits Rectangle {
+    in-out property <string> query;
+    in property <string> title: "Anime releases";
+    in property <[NyaaReleaseRef]> results;
+    in property <string> state: "idle"; // idle | loading | ready | error
+    in property <string> status;
+
+    callback search(string);
+    callback retry();
+    callback open-comments(string);
+
+    width: 920px;
+    height: 560px;
+    border-radius: 18px;
+    clip: true;
+    background: @linear-gradient(142deg, Theme.bg-surface-raised.with-alpha(0.78) 0%, Theme.glass-tint 56%, Theme.accent-violet.with-alpha(0.10) 100%);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.17);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.58);
+    drop-shadow-blur: 19px;
+    drop-shadow-offset-y: 6px;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    accessible-description: "Nyaa RSS upload results. Comment links open the exact upload page; comment bodies are not loaded in ANKAI.";
+
+    Rectangle {
+        x: parent.width - 230px;
+        y: -115px;
+        width: 330px;
+        height: 245px;
+        border-radius: 170px;
+        background: Theme.accent-violet.with-alpha(0.065);
+    }
+
+    VerticalLayout {
+        padding: root.width < 520px ? 12px : 17px;
+        spacing: 11px;
+
+        HorizontalLayout {
+            height: 44px;
+            spacing: 10px;
+
+            Rectangle {
+                width: 38px;
+                height: 38px;
+                border-radius: 12px;
+                background: @linear-gradient(135deg, Theme.state-online.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.20) 100%);
+                border-width: 1px;
+                border-color: Theme.state-online.with-alpha(0.28);
+
+                Text {
+                    text: "猫";
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 1px;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    font-weight: 800;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: "Upload releases · live Nyaa RSS";
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    overflow: elide;
+                }
+            }
+
+            SourceBadge { state: root.state; }
+        }
+
+        if root.width >= 500px: HorizontalLayout {
+            height: 42px;
+            spacing: 8px;
+
+            LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.query;
+                placeholder-text: "Search release names…";
+                enabled: root.state != "loading";
+                accessible-label: "Search Nyaa anime releases";
+                accepted => {
+                    if (root.query != "") { root.search(root.query); }
+                }
+            }
+
+            ReleaseAction {
+                label: root.state == "ready" ? "Refresh" : "Search";
+                glyph: root.state == "ready" ? "↻" : "⌕";
+                primary: true;
+                enabled: root.state != "loading" && root.query != "";
+                activated => { root.search(root.query); }
+            }
+        }
+
+        if root.width < 500px: VerticalLayout {
+            height: 84px;
+            spacing: 7px;
+
+            LineEdit {
+                height: 40px;
+                text <=> root.query;
+                placeholder-text: "Search release names…";
+                enabled: root.state != "loading";
+                accessible-label: "Search Nyaa anime releases";
+                accepted => {
+                    if (root.query != "") { root.search(root.query); }
+                }
+            }
+
+            ReleaseAction {
+                width: parent.width;
+                compact: true;
+                label: root.state == "ready" ? "Refresh releases" : "Search releases";
+                glyph: root.state == "ready" ? "↻" : "⌕";
+                primary: true;
+                enabled: root.state != "loading" && root.query != "";
+                activated => { root.search(root.query); }
+            }
+        }
+
+        Rectangle {
+            height: 48px;
+            border-radius: 12px;
+            background: Theme.accent-violet.with-alpha(0.075);
+            border-width: 1px;
+            border-color: Theme.accent-violet.with-alpha(0.19);
+            accessible-role: text;
+            accessible-label: "Release comments notice. These are individual Nyaa uploads. A comment count opens that exact upload page. ANKAI does not load comment bodies or claim a title-wide discussion feed.";
+
+            HorizontalLayout {
+                padding-left: 11px;
+                padding-right: 11px;
+                spacing: 9px;
+                alignment: center;
+
+                Text {
+                    text: "ⓘ";
+                    color: Theme.accent-cyan;
+                    font-size: 13px;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.width < 560px
+                        ? "Comments open on the exact Nyaa upload page."
+                        : "Per-upload results only. Comment counts open that exact Nyaa release page; comment bodies stay on Nyaa.";
+                    color: Theme.text-secondary;
+                    font-size: 9px;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.status != "": Text {
+            text: root.status;
+            color: root.state == "error" ? Theme.state-busy : Theme.text-secondary;
+            font-size: 10px;
+            overflow: elide;
+            accessible-role: text;
+            accessible-label: root.status;
+        }
+
+        if root.state == "idle": EmptyMessage {
+            vertical-stretch: 1;
+            glyph: "⌕";
+            title: "Find a specific anime release";
+            message: "Search by anime title. Results are current upload records from Nyaa RSS, with availability stats and release-page comment counts.";
+        }
+
+        if root.state == "loading": VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 8px;
+            accessible-role: progress-indicator;
+            accessible-label: "Searching Nyaa RSS releases";
+
+            LoadingRelease {}
+            LoadingRelease {}
+            LoadingRelease {}
+        }
+
+        if root.state == "error": Rectangle {
+            vertical-stretch: 1;
+            border-radius: 14px;
+            background: Theme.state-busy.with-alpha(0.075);
+            border-width: 1px;
+            border-color: Theme.state-busy.with-alpha(0.27);
+
+            VerticalLayout {
+                padding: 22px;
+                spacing: 9px;
+                alignment: center;
+
+                Text {
+                    text: "Couldn’t load releases";
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    font-weight: 750;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    width: parent.width;
+                    text: root.status == "" ? "Check your connection, then retry this release search." : root.status;
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+
+                ReleaseAction {
+                    label: "Try again";
+                    glyph: "↻";
+                    primary: true;
+                    enabled: root.query != "";
+                    activated => { root.retry(); }
+                }
+            }
+        }
+
+        if root.state == "ready" && root.results.length == 0: EmptyMessage {
+            vertical-stretch: 1;
+            glyph: "○";
+            title: "No matching uploads";
+            message: "Nyaa RSS returned no releases for this query. Try the main title without an episode number or release-group tag.";
+        }
+
+        if root.state == "ready" && root.results.length > 0: ScrollView {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                spacing: 8px;
+
+                for release in root.results: ReleaseRow {
+                    release: release;
+                    open-comments(url) => { root.open-comments(url); }
+                }
+            }
+        }
+    }
+}

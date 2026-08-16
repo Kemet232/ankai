@@ -70,9 +70,9 @@ component ManagerAction inherits Rectangle {
         if (root.enabled && !root.busy) { root.activated(); }
     }
 
-    animate background { duration: 120ms; }
-    animate border-color { duration: 120ms; }
-    animate drop-shadow-blur { duration: 120ms; }
+    animate background { duration: Theme.reduced-motion ? 0ms : 120ms; }
+    animate border-color { duration: Theme.reduced-motion ? 0ms : 120ms; }
+    animate drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 120ms; }
 
     HorizontalLayout {
         padding-left: 13px;
@@ -158,8 +158,8 @@ component ManagerIconAction inherits Rectangle {
         if (root.enabled) { root.activated(); }
     }
 
-    animate background { duration: 120ms; }
-    animate border-color { duration: 120ms; }
+    animate background { duration: Theme.reduced-motion ? 0ms : 120ms; }
+    animate border-color { duration: Theme.reduced-motion ? 0ms : 120ms; }
 
     Text {
         width: parent.width;
@@ -292,9 +292,9 @@ component InstalledAddonCard inherits Rectangle {
     drop-shadow-blur: card-touch.has-hover ? 16px : 8px;
     drop-shadow-offset-y: 3px;
 
-    animate border-color { duration: 140ms; }
-    animate drop-shadow-blur { duration: 140ms; }
-    animate opacity { duration: 140ms; }
+    animate border-color { duration: Theme.reduced-motion ? 0ms : 140ms; }
+    animate drop-shadow-blur { duration: Theme.reduced-motion ? 0ms : 140ms; }
+    animate opacity { duration: Theme.reduced-motion ? 0ms : 140ms; }
 
     // Kept behind the card's actual controls in paint/hit-test order. It
     // exists only to drive the card-level hover elevation.

@@ -65,8 +65,12 @@ export global Theme {
     out property <length> space-16: 64px;
 
     // ---- Motion (docs/design/tokens.md § Motion) ----
-    // Only the values already hardcoded and in use in the spike (the card
-    // reorder animation) are extracted here.
-    out property <duration> motion-duration-standard: 240ms;
+    // AppWindow binds the persisted accessibility preference here once so
+    // every imported surface (including deeply nested player controls) sees
+    // the same motion policy. Individual animations may retain their tuned
+    // normal duration, but must resolve to 0ms while this flag is enabled so
+    // their final visual state remains visible without transitional motion.
+    in-out property <bool> reduced-motion: false;
+    out property <duration> motion-duration-standard: reduced-motion ? 0ms : 240ms;
     out property <easing> motion-easing-standard: cubic-bezier(0.16, 1, 0.3, 1);
 }

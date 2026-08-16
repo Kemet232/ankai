@@ -17,7 +17,7 @@
 // flag from src/main.rs (`--spike` / ANKAI_SPIKE_DEBUG=1) — it is legacy
 // prototype code, not part of this shell.
 
-import { LineEdit, Button, ScrollView } from "std-widgets.slint";
+import { LineEdit, Button, CheckBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { SpikeGlassBlurWindow } from "spike-glass-blur.slint";
 export { SpikeGlassBlurWindow }
@@ -31,10 +31,15 @@ export { SpikeGlassBlurWindow }
 // PROGRESS.md).
 import { FixedPanel } from "floating-panel.slint";
 import { AppNavButton, TopCommandBar } from "shell-components.slint";
-import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, MalTopicRef } from "home-dashboard.slint";
+import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, ResumeRef } from "home-dashboard.slint";
 import { TitleDetail, StremioEpisodeRef } from "title-detail.slint";
 import { AddonManager, AddonCard } from "addon-manager.slint";
 import { PlayerOverlay, PlayerTrackRef } from "player-overlay.slint";
+import { AnimeDiscovery, JikanAnimeRef } from "anime-discovery.slint";
+import { LetterboxdEntryRef } from "letterboxd-feed.slint";
+import { LoadingIdol } from "loading-idol.slint";
+import { HangoutPlayerSurface } from "hangout-player-surface.slint";
+import { NyaaReleases, NyaaReleaseRef } from "nyaa-releases.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -121,14 +126,6 @@ export struct StremioMediaRef {
 // `false` for every row until its real check completes and updates it in
 // place — there is no third "away" state, matching the module's own
 // documented online/offline-only distinction.
-// One MyAnimeList forum topic (ankai_core::mal_forums::ForumTopic), reduced
-// to what the Home dashboard's "MAL Forum Discussions" column renders.
-// `snippet` is pre-formatted display text ("128 replies · by someone") —
-// resolved in Rust for the same "no such fallback/format expression in
-// Slint" reason as AnimeRef's `score` field above. See core::mal_forums's
-// module doc comment for the real, read-only MAL forum API this comes from
-// (Client-ID-only auth; a real honest error, not fabricated data, if
-// MAL_CLIENT_ID isn't set in the environment at runtime).
 // ---------------------------------------------------------------------
 // Small glass-styled building blocks for the Profile pane (ADR-0002's
 // spike gate is closed — see this file's header comment above — so this
@@ -147,6 +144,7 @@ export struct StremioMediaRef {
 // accessibility floor.
 component GlassIconButton inherits Rectangle {
     in property <string> glyph;
+    in property <string> label: root.glyph;
     in property <color> tint: Theme.accent-pink;
     in property <bool> enabled: true;
     callback clicked();
@@ -155,9 +153,24 @@ component GlassIconButton inherits Rectangle {
     height: 32px;
     border-radius: 16px;
     background: !root.enabled ? transparent : touch.pressed ? root.tint.with-alpha(0.35) : touch.has-hover ? root.tint.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.7);
-    border-width: 1px;
-    border-color: root.enabled ? root.tint.with-alpha(0.4) : Theme.silver.with-alpha(0.12);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : root.enabled ? root.tint.with-alpha(0.4) : Theme.silver.with-alpha(0.12);
     opacity: root.enabled ? 1.0 : 0.35;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
@@ -179,6 +192,7 @@ component GlassIconButton inherits Rectangle {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             if (root.enabled) {
+                keyboard-focus.focus();
                 root.clicked();
             }
         }
@@ -252,6 +266,7 @@ component Top8CardItem inherits Rectangle {
 
         GlassIconButton {
             glyph: "▲";
+            label: "Move " + root.comm-name + " up";
             tint: root.accent;
             enabled: root.can-move-up;
             clicked => {
@@ -261,6 +276,7 @@ component Top8CardItem inherits Rectangle {
 
         GlassIconButton {
             glyph: "▼";
+            label: "Move " + root.comm-name + " down";
             tint: root.accent;
             enabled: root.can-move-down;
             clicked => {
@@ -270,6 +286,7 @@ component Top8CardItem inherits Rectangle {
 
         GlassIconButton {
             glyph: "×";
+            label: "Remove " + root.comm-name + " from Top 8";
             tint: Theme.state-busy;
             clicked => {
                 root.remove();
@@ -288,9 +305,24 @@ component AddCommunityChip inherits Rectangle {
     height: 36px;
     border-radius: 18px;
     background: !root.enabled ? Theme.bg-surface-raised.with-alpha(0.4) : touch.has-hover ? Theme.accent-pink.with-alpha(0.16) : Theme.bg-surface-raised.with-alpha(0.6);
-    border-width: 1px;
-    border-color: root.enabled ? Theme.accent-pink.with-alpha(0.35) : Theme.silver.with-alpha(0.15);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : root.enabled ? Theme.accent-pink.with-alpha(0.35) : Theme.silver.with-alpha(0.15);
     opacity: root.enabled ? 1.0 : 0.5;
+    accessible-role: button;
+    accessible-label: "Add " + root.comm-name + " to Top 8";
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.add(); } }
+
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == Key.Return || event.text == " ") {
+                root.add();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
@@ -322,127 +354,9 @@ component AddCommunityChip inherits Rectangle {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             if (root.enabled) {
+                keyboard-focus.focus();
                 root.add();
             }
-        }
-    }
-}
-
-component HomeCardItem inherits Rectangle {
-    in property <string> title-text;
-    in property <string> subtitle-text: "";
-    in property <color> accent;
-    // Real cover art (see AnimeRef's doc comment) — `cover-image` renders
-    // once `has-cover` is true; until then (loading, failed, or no URL on
-    // file) this shows the same accent-tinted placeholder tile the app
-    // rendered everywhere before this feature existed. Named `cover-image`
-    // rather than `cover` specifically so it doesn't collide with the
-    // `ImageFit` enum's own `cover` value used by `image-fit` below — a
-    // property named `cover` in scope shadows that enum value and Slint's
-    // compiler rejects `image-fit: cover;` as "cannot convert image to
-    // enum ImageFit" (hit for real while building this).
-    in property <image> cover-image;
-    in property <bool> has-cover: false;
-
-    border-radius: 16px;
-    background: Theme.bg-surface-raised.with-alpha(0.7);
-    border-width: 1px;
-    border-color: Theme.silver.with-alpha(0.18);
-    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
-    drop-shadow-blur: 10px;
-    drop-shadow-offset-y: 3px;
-
-    HorizontalLayout {
-        padding: 14px;
-        spacing: 12px;
-        alignment: start;
-
-        Rectangle {
-            width: 4px;
-            border-radius: 2px;
-            background: root.accent;
-        }
-
-        Rectangle {
-            width: 40px;
-            height: 56px;
-            border-radius: 6px;
-            clip: true;
-            background: root.accent.with-alpha(0.18);
-
-            if root.has-cover: Image {
-                source: root.cover-image;
-                width: 100%;
-                height: 100%;
-                image-fit: cover;
-            }
-        }
-
-        VerticalLayout {
-            alignment: center;
-            spacing: 3px;
-
-            Text {
-                text: root.title-text;
-                color: Theme.text-primary;
-                font-size: 14px;
-                font-weight: 600;
-                overflow: elide;
-            }
-
-            if root.subtitle-text != "": Text {
-                text: root.subtitle-text;
-                color: Theme.text-secondary;
-                font-size: 12px;
-                wrap: word-wrap;
-            }
-        }
-    }
-}
-
-// A friend row for the Home dashboard's Friend Activity section — like
-// HomeCardItem, but with a real presence dot (online/offline, from a live
-// ankai_core::friends::check_presence result) instead of a subtitle line.
-component HomeFriendCardItem inherits Rectangle {
-    in property <string> label-text;
-    in property <bool> online;
-
-    border-radius: 16px;
-    background: Theme.bg-surface-raised.with-alpha(0.7);
-    border-width: 1px;
-    border-color: Theme.silver.with-alpha(0.18);
-    drop-shadow-color: Theme.bg-void.with-alpha(0.45);
-    drop-shadow-blur: 10px;
-    drop-shadow-offset-y: 3px;
-
-    HorizontalLayout {
-        padding: 14px;
-        spacing: 12px;
-        alignment: start;
-
-        Rectangle {
-            width: 10px;
-            height: 10px;
-            border-radius: 5px;
-            y: (parent.height - self.height) / 2;
-            background: root.online ? Theme.state-online : Theme.state-offline;
-        }
-
-        Text {
-            text: root.label-text;
-            color: Theme.text-primary;
-            font-size: 14px;
-            font-weight: 600;
-            vertical-alignment: center;
-            overflow: elide;
-            horizontal-stretch: 1;
-        }
-
-        Text {
-            text: root.online ? "Online now" : "Offline";
-            color: root.online ? Theme.state-online : Theme.text-secondary;
-            font-size: 12px;
-            vertical-alignment: center;
         }
     }
 }
@@ -455,8 +369,22 @@ component ProfileTabPill inherits Rectangle {
     height: 34px;
     border-radius: 17px;
     background: root.active ? @linear-gradient(120deg, Theme.accent-pink.with-alpha(0.22) 0%, Theme.accent-violet.with-alpha(0.14) 100%) : touch.has-hover ? Theme.silver.with-alpha(0.08) : Theme.bg-surface-raised.with-alpha(0.5);
-    border-width: root.active ? 1px : 0px;
-    border-color: Theme.accent-pink.with-alpha(0.45);
+    border-width: root.active || keyboard-focus.has-focus ? 1px : 0px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : Theme.accent-pink.with-alpha(0.45);
+    accessible-role: button;
+    accessible-label: root.label + (root.active ? ", selected" : "");
+    accessible-action-default => { root.activate(); }
+
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: true;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.activate();
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     animate background { duration: Theme.motion-duration-standard; easing: Theme.motion-easing-standard; }
 
@@ -476,6 +404,7 @@ component ProfileTabPill inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => {
+            keyboard-focus.focus();
             root.activate();
         }
     }
@@ -667,6 +596,7 @@ component PendingRequestCardItem inherits Rectangle {
 
         GlassIconButton {
             glyph: "✓";
+            label: "Accept friend request from " + root.device-id;
             tint: Theme.state-online;
             clicked => {
                 root.accept();
@@ -675,6 +605,7 @@ component PendingRequestCardItem inherits Rectangle {
 
         GlassIconButton {
             glyph: "×";
+            label: "Decline friend request from " + root.device-id;
             tint: Theme.state-busy;
             clicked => {
                 root.decline();
@@ -827,7 +758,7 @@ component NowPlayingWidget inherits Rectangle {
                         x: 0px;
 
                         animate x {
-                            duration: 1800ms;
+                            duration: Theme.reduced-motion ? 0ms : 1800ms;
                             easing: ease-in-out;
                             iteration-count: -1;
                             direction: alternate;
@@ -848,11 +779,13 @@ export component AppWindow inherits Window {
     title: "ANKAI";
     preferred-width: 960px;
     preferred-height: 640px;
-    background: root.player-active ? transparent : Theme.bg-void;
+    background: root.player-active && !root.player-bounded-mode ? transparent : Theme.bg-void;
     in-out property <bool> player-active: false;
     in-out property <string> player-title: "";
     in-out property <bool> player-has-media: false;
     in-out property <bool> player-video-ready: false;
+    in-out property <image> player-video-frame;
+    in-out property <bool> player-video-frame-ready: false;
     in-out property <bool> player-playing: false;
     in-out property <bool> player-loading: false;
     in-out property <bool> player-buffering: false;
@@ -870,6 +803,9 @@ export component AppWindow inherits Window {
     in-out property <string> player-error: "";
     in-out property <[PlayerTrackRef]> player-audio-tracks: [];
     in-out property <[PlayerTrackRef]> player-subtitle-tracks: [];
+    out property <bool> player-bounded-mode: root.selected-index == root.hangouts-index && root.selected-hangout-name != "";
+    in-out property <length> player-video-surface-width: 0px;
+    in-out property <length> player-video-surface-height: 0px;
     callback toggle-player-pause();
     callback close-player();
     callback player-frame();
@@ -884,7 +820,7 @@ export component AppWindow inherits Window {
     callback player-disable-subtitles();
     callback player-toggle-fullscreen();
     callback player-retry();
-    Timer { interval: 16ms; running: root.player-active; triggered => { root.player-frame(); } }
+    Timer { interval: 16ms; running: root.player-active && root.player-error == ""; triggered => { root.player-frame(); } }
     Timer { interval: 120ms; running: root.player-active; triggered => { root.player-state-tick(); } }
 
     property <[string]> nav-items: [
@@ -916,9 +852,15 @@ export component AppWindow inherits Window {
     in-out property <int> selected-index: 0;
     in-out property <string> global-search-query: "";
     in-out property <string> shell-notice: "";
+    property <bool> compact-shell: root.width < 900px;
+    in-out property <bool> reduced-motion: false;
+    // One change handler propagates the persisted preference to every
+    // component importing Theme, including player and catalog surfaces
+    // instantiated several component levels below this window.
+    changed reduced-motion => { Theme.reduced-motion = root.reduced-motion; }
     callback global-search(string);
-    callback open-notifications();
     callback open-profile-menu();
+    callback save-reduced-motion(bool);
     Timer { interval: 3200ms; running: root.shell-notice != ""; triggered => { root.shell-notice = ""; } }
     out property <int> home-index: 0; // index of "Home" in nav-items, above
     out property <int> watch-index: 1;
@@ -937,7 +879,6 @@ export component AppWindow inherits Window {
     in-out property <string> stremio-search-query: "";
     in-out property <string> stremio-status: "Enter an addon URL and load it.";
     in-out property <bool> stremio-loading: false;
-    property <bool> loading-dance-beat: false;
     in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
     in-out property <string> stremio-selected-title: "";
@@ -961,6 +902,24 @@ export component AppWindow inherits Window {
     callback move-installed-addon-down(string);
     callback remove-installed-addon(string);
     callback refresh-addon-registry();
+
+    // Zero-config anime metadata and ratings, fetched from Jikan's public
+    // read-only catalog. No MAL account, credentials, forum data, or write
+    // access is used anywhere in this surface.
+    in-out property <string> jikan-query: "";
+    in-out property <[JikanAnimeRef]> jikan-results: [];
+    in-out property <string> jikan-state: "loading";
+    in-out property <string> jikan-error: "";
+    callback search-jikan(string);
+    callback retry-jikan();
+    callback open-jikan-anime(int);
+    in-out property <string> nyaa-query: "";
+    in-out property <[NyaaReleaseRef]> nyaa-results: [];
+    in-out property <string> nyaa-state: "idle";
+    in-out property <string> nyaa-status: "";
+    callback search-nyaa(string);
+    callback retry-nyaa();
+    callback open-nyaa-comments(string);
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
     // screen/persistence" step) — main.rs loads the saved value into this
@@ -1027,7 +986,7 @@ export component AppWindow inherits Window {
     // My Page's internal tab strip (see this file's Profile-pane section
     // below). Kept separate from `selected-index` (the sidebar's top-level
     // nav) — this only ever varies within the My Page pane.
-    property <[string]> profile-tabs: ["My Page", "Guestbook", "Stats"];
+    property <[string]> profile-tabs: ["My Page", "Stats"];
     property <int> profile-tab-index: 0;
 
     // "Currently Watching" (ankai_core::anime — real AniList-backed
@@ -1076,6 +1035,8 @@ export component AppWindow inherits Window {
     // peer out-of-band; message-log is most-recent-first, loaded from the
     // DB at startup and grown both by send-message and by a background
     // receive loop that decrypts and persists incoming messages.
+    in property <bool> social-networking-enabled: false;
+    in property <string> social-networking-status: "Social networking is starting…";
     in property <string> own-peer-address: "";
     in-out property <string> peer-address-input: "";
     in-out property <string> message-input: "";
@@ -1149,6 +1110,7 @@ export component AppWindow inherits Window {
     // delete/rename yet, same as communities.
     in-out property <[string]> hangout-names: [];
     in-out property <string> new-hangout-name: "";
+    in-out property <string> selected-hangout-name: "";
     callback create-hangout(string);
 
     // Home dashboard (see ui's AnimeRef/RecentPostRef/FriendRef doc
@@ -1164,10 +1126,18 @@ export component AppWindow inherits Window {
     in-out property <[AnimeRef]> trending-anime: [];
     in-out property <[AnimeRef]> popular-anime: [];
     in-out property <string> anime-status: "";
+    in-out property <bool> hero-watchlisted: false;
     in-out property <[RecentPostRef]> recent-posts: [];
     in-out property <[FriendRef]> friends: [];
+    in-out property <[ResumeRef]> continue-watching: [];
+    callback resume-playback(int);
+    in-out property <string> letterboxd-username: "";
+    in-out property <[LetterboxdEntryRef]> letterboxd-entries: [];
+    in-out property <string> letterboxd-state: "not-configured";
+    in-out property <string> letterboxd-status: "";
+    callback load-letterboxd(string);
+    callback open-letterboxd-link(string);
     callback refresh-home();
-    callback open-mal-forum-topic(int);
 
     // Real "Watch Now" action on the Trending Now hero card (main.rs's
     // on-watch-now): adds that anime to the local watchlist with
@@ -1178,17 +1148,8 @@ export component AppWindow inherits Window {
     // button right now rather than a dead visual affordance. Takes the
     // AniList id (AnimeRef::id) of the anime to add.
     callback watch-now(int);
-
-    // MAL Forum Discussions (ankai_core::mal_forums — a real, read-only
-    // MyAnimeList forum API client; see that module's doc comment for the
-    // Client-ID-only auth and exact scope). Loaded the same async way
-    // trending/popular anime above are, on the shared tokio runtime, not a
-    // synchronous local read. mal-status only ever holds a real error
-    // message (e.g. MAL_CLIENT_ID not being set in the environment, or a
-    // real network failure) — cleared to "" on a successful load, same
-    // shape as anime-status above.
-    in-out property <[MalTopicRef]> mal-topics: [];
-    in-out property <string> mal-status: "";
+    callback open-home-anime(int);
+    callback toggle-home-watchlist(int);
 
     // A time-of-day-appropriate greeting prefix ("good morning" / "good
     // afternoon" / "good evening"), computed once at startup from this
@@ -1213,7 +1174,7 @@ export component AppWindow inherits Window {
         height: parent.height;
         source: @image-url("assets/ankai-night-city.png");
         image-fit: cover;
-        visible: !root.player-active;
+        visible: !root.player-active || root.player-bounded-mode;
     }
 
     Rectangle {
@@ -1236,7 +1197,7 @@ export component AppWindow inherits Window {
         // backdrop-blur primitive, see that file's header comment), applied
         // here to the real app shell for the first time.
         Rectangle {
-            width: 196px;
+            width: root.compact-shell ? 72px : 196px;
             background: Theme.bg-surface-raised.with-alpha(0.82);
             border-width: 1px;
             border-color: Theme.silver.with-alpha(0.16);
@@ -1261,10 +1222,11 @@ export component AppWindow inherits Window {
                 alignment: start;
 
                 Text {
-                    text: "✦  ANKAI";
+                    text: root.compact-shell ? "✦" : "✦  ANKAI";
                     color: Theme.text-primary;
                     font-size: 20px;
                     font-weight: 700;
+                    horizontal-alignment: root.compact-shell ? center : left;
                 }
 
                 Rectangle {
@@ -1280,6 +1242,7 @@ export component AppWindow inherits Window {
                     label: item;
                     icon: i == 0 ? "⌂" : i == 1 ? "◉" : i == 2 ? "♙" : i == 3 ? "✉" : i == 4 ? "◇" : i == 5 ? "▣" : "⚙";
                     active: root.selected-index == i;
+                    compact: root.compact-shell;
                     activated => { root.selected-index = i; }
                 }
             }
@@ -1288,7 +1251,7 @@ export component AppWindow inherits Window {
         // ---- Content pane: swapped based on selected nav item ----
         Rectangle {
             horizontal-stretch: 1;
-            background: root.player-active ? transparent : Theme.bg-surface.with-alpha(0.72);
+            background: root.player-active && !root.player-bounded-mode ? transparent : Theme.bg-surface.with-alpha(0.72);
 
             if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index && root.selected-index != root.watch-index: Text {
                 x: 32px;
@@ -1305,22 +1268,21 @@ export component AppWindow inherits Window {
             // mockup's top-left quadrant) instead of one stacked vertical
             // column: a header row, a Trending Now hero + Friend Activity
             // two-column row, a horizontally-scrolling Popular Right Now
-            // row, and a three-column Hot Discussions / Watch Parties / MAL
-            // Forum Discussions row. Same "Liquid Y2K" glass treatment as
+            // row, a real Continue Watching shelf, and a three-column Hot
+            // Discussions / Watch Parties / Letterboxd diary row. Same
+            // "Liquid Y2K" glass treatment as
             // the Profile pane below (glass module cards, accent-cycled
             // stripes — see this file's header comment for the shared
             // alpha-tint + border + specular strip + drop-shadow
             // technique). Every section here is real, possibly-empty data
             // from a real ankai_core module (see AnimeRef/RecentPostRef/
-            // FriendRef/MalTopicRef's doc comments above for exactly which
+            // FriendRef's doc comments above for exactly which
             // one backs each section) — nothing fabricated. "Around the
             // Web" (a Reddit widget) from the original mockup is
             // permanently out of scope (Reddit API access was blocked all
             // last session and the human has since dropped the idea
-            // entirely — see PROGRESS.md); its slot in the three-column row
-            // is filled by MAL Forum Discussions instead, a real working
-            // data source that was built but never wired into any screen
-            // until now.
+            // entirely — see PROGRESS.md). Letterboxd uses only one member's
+            // public RSS diary and never claims to be a global review feed.
             // -----------------------------------------------------------
             if root.selected-index == root.home-index: HomeDashboard {
                 width: parent.width;
@@ -1332,23 +1294,24 @@ export component AppWindow inherits Window {
                 popular-anime: root.popular-anime;
                 anime-state: root.anime-status != "" ? "error" : root.trending-anime.length == 0 ? "loading" : "ready";
                 anime-status: root.anime-status;
+                hero-watchlisted: root.hero-watchlisted;
                 friends: root.friends;
                 friends-state: "ready";
                 recent-posts: root.recent-posts;
                 discussions-state: "ready";
                 hangout-names: root.hangout-names;
                 hangouts-state: "ready";
-                mal-topics: root.mal-topics;
-                mal-state: root.mal-status != "" ? "error" : root.mal-topics.length == 0 ? "loading" : "ready";
-                mal-status: root.mal-status;
+                continue-watching: root.continue-watching;
+                letterboxd-username <=> root.letterboxd-username;
+                letterboxd-entries: root.letterboxd-entries;
+                letterboxd-state: root.letterboxd-state;
+                letterboxd-status: root.letterboxd-status;
 
                 refresh-home => { root.refresh-home(); }
                 watch-now(id) => { root.watch-now(id); }
-                toggle-watchlist(id) => { root.watch-now(id); }
+                toggle-watchlist(id) => { root.toggle-home-watchlist(id); }
                 open-anime-details(id) => {
-                    root.global-search-query = "" + id;
-                    root.selected-index = root.watch-index;
-                    root.shell-notice = "Opening title details in Discover.";
+                    root.open-home-anime(id);
                 }
                 open-friend(account-id) => {
                     root.selected-index = root.profile-index;
@@ -1360,540 +1323,26 @@ export component AppWindow inherits Window {
                 }
                 open-hangout(name) => {
                     root.selected-index = root.hangouts-index;
+                    root.selected-hangout-name = name;
                     root.shell-notice = "Opened hangout: " + name;
                 }
                 create-hangout => {
                     root.selected-index = root.hangouts-index;
                     root.shell-notice = "Name your new hangout below.";
                 }
-                open-mal-topic(id) => { root.open-mal-forum-topic(id); }
+                resume-playback(index) => { root.resume-playback(index); }
+                load-letterboxd(username) => { root.load-letterboxd(username); }
+                open-letterboxd-link(link) => { root.open-letterboxd-link(link); }
                 view-popular => { root.selected-index = root.watch-index; }
                 view-friends => { root.selected-index = root.profile-index; }
                 view-discussions => { root.selected-index = root.communities-index; }
                 view-hangouts => { root.selected-index = root.hangouts-index; }
-                view-mal => { root.shell-notice = "Choose a MAL topic to open it in your browser."; }
                 retry-anime => { root.refresh-home(); }
                 retry-friends => { root.refresh-home(); }
                 retry-discussions => { root.refresh-home(); }
                 retry-hangouts => { root.refresh-home(); }
-                retry-mal => { root.refresh-home(); }
             }
 
-            // Legacy inline Home remains temporarily compiled as a visual
-            // fallback while the extracted dashboard settles, but is never
-            // instantiated. The next cleanup pass can delete it wholesale.
-            if root.selected-index == -1: ScrollView {
-                width: parent.width;
-                y: 72px;
-                height: parent.height - 72px;
-
-                VerticalLayout {
-                    width: parent.width;
-                    padding: 32px;
-                    spacing: 24px;
-                    alignment: start;
-
-                    // ---- Header row: greeting + honest online-status ----
-                    HorizontalLayout {
-                        spacing: 16px;
-                        alignment: space-between;
-
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
-                            horizontal-stretch: 1;
-
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-
-                                Text {
-                                    text: root.time-of-day-greeting + ", " + (root.display-name == "" ? "friend" : root.display-name);
-                                    color: Theme.text-primary;
-                                    font-size: 24px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
-                                }
-
-                                GlassIconButton {
-                                    glyph: "⟳";
-                                    tint: Theme.accent-pink;
-                                    clicked => {
-                                        root.refresh-home();
-                                    }
-                                }
-                            }
-
-                            Text {
-                                text: "here's what's happening.";
-                                color: Theme.text-secondary;
-                                font-size: 13px;
-                            }
-                        }
-
-                        // Honest online-status indicator: the dot reflects
-                        // this device's own running/connected state (always
-                        // true while the window is open), paired with a
-                        // real friend count (stat-friends-count, the same
-                        // number the My Page Stats tab shows) rather than a
-                        // fabricated global "users online" number — see
-                        // this file's Home dashboard header comment above.
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: end;
-
-                            Rectangle {
-                                width: 10px;
-                                height: 10px;
-                                border-radius: 5px;
-                                y: (parent.height - self.height) / 2;
-                                background: Theme.state-online;
-                            }
-
-                            Text {
-                                text: "" + root.stat-friends-count + (root.stat-friends-count == 1 ? " friend" : " friends");
-                                color: Theme.text-secondary;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    if root.anime-status != "": Text {
-                        text: root.anime-status;
-                        color: Theme.state-busy;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-
-                    // ---- Two-column row: Trending Now hero + Friend Activity ----
-                    HorizontalLayout {
-                        spacing: 20px;
-                        height: 280px;
-
-                        // Trending Now (~65%): a hero card featuring only
-                        // the single #1 real AniList trending entry, not a
-                        // stacked list — the rest of the real trending
-                        // ranking isn't shown anywhere else on this
-                        // dashboard, by design, matching the reference
-                        // mockup's structure (Popular Right Now, a
-                        // genuinely different AniList ranking, is the row
-                        // below for "many cards").
-                        Rectangle {
-                            horizontal-stretch: 65;
-                            border-radius: 20px;
-                            background: Theme.bg-surface-raised.with-alpha(0.88);
-                            border-width: 1px;
-                            border-color: Theme.silver.with-alpha(0.22);
-                            drop-shadow-color: Theme.bg-void.with-alpha(0.5);
-                            drop-shadow-blur: 20px;
-                            drop-shadow-offset-y: 6px;
-                            clip: true;
-
-                            // Real cover art (see AnimeRef's doc comment) as the
-                            // hero card's full-bleed background, matching the
-                            // reference image's look — the gradient wash below
-                            // sits on top of this so the title text stays
-                            // readable, rather than replacing the art entirely.
-                            if root.trending-anime.length > 0 && root.trending-anime[0].has-cover: Image {
-                                source: root.trending-anime[0].cover;
-                                width: 100%;
-                                height: 100%;
-                                image-fit: cover;
-                            }
-
-                            Rectangle {
-                                width: 100%;
-                                height: 100%;
-                                background: @linear-gradient(135deg, Theme.accent-violet.with-alpha(0.55) 0%, Theme.bg-surface-raised.with-alpha(0.55) 55%, Theme.accent-pink.with-alpha(0.25) 100%);
-                            }
-
-                            if root.trending-anime.length == 0: VerticalLayout {
-                                padding: 24px;
-                                alignment: center;
-
-                                Text {
-                                    text: "TRENDING NOW";
-                                    color: Theme.accent-pink;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    letter-spacing: 1px;
-                                }
-
-                                Text {
-                                    text: root.anime-status == "" ? "No trending anime data loaded yet." : "Couldn't load trending anime right now.";
-                                    color: Theme.text-secondary;
-                                    font-size: 13px;
-                                    wrap: word-wrap;
-                                }
-                            }
-
-                            if root.trending-anime.length > 0: VerticalLayout {
-                                padding: 24px;
-                                spacing: 10px;
-                                alignment: start;
-
-                                Text {
-                                    text: "TRENDING NOW";
-                                    color: Theme.accent-pink;
-                                    font-size: 11px;
-                                    font-weight: 700;
-                                    letter-spacing: 1px;
-                                }
-
-                                Text {
-                                    text: root.trending-anime[0].title;
-                                    color: Theme.text-primary;
-                                    font-size: 26px;
-                                    font-weight: 700;
-                                    wrap: word-wrap;
-                                }
-
-                                Text {
-                                    text: root.trending-anime[0].score;
-                                    color: Theme.text-secondary;
-                                    font-size: 14px;
-                                }
-
-                                Rectangle { height: 6px; }
-
-                                Rectangle {
-                                    height: 38px;
-                                    width: 160px;
-                                    border-radius: 19px;
-                                    background: watch-touch.has-hover ? Theme.accent-violet : Theme.accent-violet.with-alpha(0.85);
-                                    border-width: 1px;
-                                    border-color: Theme.silver.with-alpha(0.3);
-
-                                    Text {
-                                        x: 0px;
-                                        y: 0px;
-                                        width: parent.width;
-                                        height: parent.height;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        text: "▶  Watch Now";
-                                        color: Theme.text-primary;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                    }
-
-                                    watch-touch := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.watch-now(root.trending-anime[0].id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Friend Activity (~35%): real friends + real
-                        // on-demand presence, narrower and scrollable, in
-                        // a fixed (non-draggable) glass "window" — see
-                        // FixedPanel's doc comment in floating-panel.slint.
-                        FixedPanel {
-                            horizontal-stretch: 35;
-                            panel-title: "Friend Activity";
-
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 10px;
-
-                                Text {
-                                    text: "Real live connectivity check per friend, not a cached status.";
-                                    color: Theme.text-secondary;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                }
-
-                                if root.friends.length == 0: Rectangle {
-                                    border-radius: 14px;
-                                    background: Theme.bg-surface-raised.with-alpha(0.4);
-                                    border-width: 1px;
-                                    border-color: Theme.silver.with-alpha(0.12);
-
-                                    VerticalLayout {
-                                        padding: 16px;
-
-                                        Text {
-                                            text: "You haven't added any friends yet.";
-                                            color: Theme.text-secondary;
-                                            font-size: 13px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-
-                                if root.friends.length > 0: ScrollView {
-                                    vertical-stretch: 1;
-                                    vertical-scrollbar-policy: as-needed;
-                                    horizontal-scrollbar-policy: always-off;
-
-                                    VerticalLayout {
-                                        spacing: 10px;
-                                        alignment: start;
-
-                                        for entry in root.friends: HomeFriendCardItem {
-                                            label-text: entry.account-id;
-                                            online: entry.online;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ---- Popular Right Now (real AniList data, horizontal-scrolling row) ----
-                    FixedPanel {
-                        panel-title: "Popular Right Now";
-
-                        VerticalLayout {
-                            padding: 12px;
-                            spacing: 10px;
-
-                            if root.popular-anime.length == 0: Rectangle {
-                                border-radius: 14px;
-                                background: Theme.bg-surface-raised.with-alpha(0.4);
-                                border-width: 1px;
-                                border-color: Theme.silver.with-alpha(0.12);
-
-                                VerticalLayout {
-                                    padding: 16px;
-
-                                    Text {
-                                        text: "No popular-anime data loaded yet.";
-                                        color: Theme.text-secondary;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
-                                    }
-                                }
-                            }
-
-                            // Compact fixed-width cards in a real horizontally-
-                            // scrolling row (ScrollView with the vertical
-                            // scrollbar switched off and the horizontal one
-                            // left as-needed — Slint's real ScrollView API, not
-                            // a vertical list turned sideways) — replaces the
-                            // old full-width vertical stack for this section.
-                            if root.popular-anime.length > 0: ScrollView {
-                                height: 100px;
-                                vertical-scrollbar-policy: always-off;
-                                horizontal-scrollbar-policy: as-needed;
-
-                                HorizontalLayout {
-                                    padding-right: 8px;
-                                    spacing: 10px;
-                                    alignment: start;
-
-                                    for entry[i] in root.popular-anime: HomeCardItem {
-                                        width: 220px;
-                                        height: 72px;
-                                        title-text: entry.title;
-                                        subtitle-text: entry.score;
-                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                        cover-image: entry.cover;
-                                        has-cover: entry.has-cover;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ---- Three-column row: Hot Discussions / Watch Parties / MAL Forum Discussions ----
-                    HorizontalLayout {
-                        spacing: 20px;
-                        height: 300px;
-
-                        // Hot Discussions (real cross-community posts).
-                        FixedPanel {
-                            horizontal-stretch: 1;
-                            panel-title: "Hot Discussions";
-
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 10px;
-
-                                Text {
-                                    text: "Recent posts across every community you're in.";
-                                    color: Theme.text-secondary;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                }
-
-                                if root.recent-posts.length == 0: Rectangle {
-                                    border-radius: 14px;
-                                    background: Theme.bg-surface-raised.with-alpha(0.4);
-                                    border-width: 1px;
-                                    border-color: Theme.silver.with-alpha(0.12);
-
-                                    VerticalLayout {
-                                        padding: 16px;
-
-                                        Text {
-                                            text: "No posts yet — start a discussion in a community to see it here.";
-                                            color: Theme.text-secondary;
-                                            font-size: 13px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-
-                                if root.recent-posts.length > 0: ScrollView {
-                                    vertical-stretch: 1;
-                                    vertical-scrollbar-policy: as-needed;
-                                    horizontal-scrollbar-policy: always-off;
-
-                                    VerticalLayout {
-                                        spacing: 10px;
-                                        alignment: start;
-
-                                        for entry[i] in root.recent-posts: HomeCardItem {
-                                            title-text: entry.community-name;
-                                            subtitle-text: entry.content;
-                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Watch Parties: real local Hangouts you've
-                        // created on this device — kept under its honest
-                        // "no real-time sync" framing (see the subtitle
-                        // below), not relabeled as other people's live
-                        // watch parties, even though the column header
-                        // matches the reference mockup's label.
-                        FixedPanel {
-                            horizontal-stretch: 1;
-                            panel-title: "Watch Parties";
-
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 10px;
-
-                                Text {
-                                    text: "Hangouts you've created on this device. There's no real-time sync yet, so this deliberately isn't labeled as other people's live watch parties.";
-                                    color: Theme.text-secondary;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                }
-
-                                if root.hangout-names.length == 0: Rectangle {
-                                    border-radius: 14px;
-                                    background: Theme.bg-surface-raised.with-alpha(0.4);
-                                    border-width: 1px;
-                                    border-color: Theme.silver.with-alpha(0.12);
-
-                                    VerticalLayout {
-                                        padding: 16px;
-
-                                        Text {
-                                            text: "You haven't created any Hangouts yet.";
-                                            color: Theme.text-secondary;
-                                            font-size: 13px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-
-                                if root.hangout-names.length > 0: ScrollView {
-                                    vertical-stretch: 1;
-                                    vertical-scrollbar-policy: as-needed;
-                                    horizontal-scrollbar-policy: always-off;
-
-                                    VerticalLayout {
-                                        spacing: 10px;
-                                        alignment: start;
-
-                                        for name[i] in root.hangout-names: HomeCardItem {
-                                            title-text: name;
-                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // MAL Forum Discussions: real MyAnimeList forum
-                        // topics (ankai_core::mal_forums — wired into a UI
-                        // screen for the first time this pass), replacing
-                        // the reference mockup's out-of-scope "Around the
-                        // Web" (Reddit) column.
-                        FixedPanel {
-                            horizontal-stretch: 1;
-                            panel-title: "MAL Forum Discussions";
-
-                            VerticalLayout {
-                                padding: 12px;
-                                spacing: 10px;
-
-                                Text {
-                                    text: "Recent topics from MyAnimeList's real \"Anime Discussion\" forum board.";
-                                    color: Theme.text-secondary;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                }
-
-                                if root.mal-status != "": Rectangle {
-                                    border-radius: 14px;
-                                    background: Theme.state-busy.with-alpha(0.12);
-                                    border-width: 1px;
-                                    border-color: Theme.state-busy.with-alpha(0.35);
-
-                                    VerticalLayout {
-                                        padding: 16px;
-
-                                        Text {
-                                            text: root.mal-status;
-                                            color: Theme.text-secondary;
-                                            font-size: 12px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-
-                                if root.mal-status == "" && root.mal-topics.length == 0: Rectangle {
-                                    border-radius: 14px;
-                                    background: Theme.bg-surface-raised.with-alpha(0.4);
-                                    border-width: 1px;
-                                    border-color: Theme.silver.with-alpha(0.12);
-
-                                    VerticalLayout {
-                                        padding: 16px;
-
-                                        Text {
-                                            text: "Loading MAL forum topics…";
-                                            color: Theme.text-secondary;
-                                            font-size: 13px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-
-                                if root.mal-status == "" && root.mal-topics.length > 0: ScrollView {
-                                    vertical-stretch: 1;
-                                    vertical-scrollbar-policy: as-needed;
-                                    horizontal-scrollbar-policy: always-off;
-
-                                    VerticalLayout {
-                                        spacing: 10px;
-                                        alignment: start;
-
-                                        for entry[i] in root.mal-topics: HomeCardItem {
-                                            title-text: entry.title;
-                                            subtitle-text: entry.preview == "" ? entry.snippet : entry.snippet + "\n" + entry.preview;
-                                            accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // -----------------------------------------------------------
             // Profile pane — the "Liquid Y2K" showcase (docs/design/
             // tokens.md). Real glass module cards, not stacked plain-text
             // rows: identity header with an avatar placeholder, a
@@ -2251,102 +1700,6 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // ---- Row 2: Guestbook preview | My Charms. The
-                    // guestbook card repeats the same honest "not built yet"
-                    // framing as the full Guestbook tab (not a lesser/fake
-                    // version of it) — this is just a compact preview of the
-                    // same real state, matching the reference's layout,
-                    // which shows a guestbook module here as well as its own
-                    // nav tab. Charms: exactly the one real static badge
-                    // that already existed (moved out of the header into its
-                    // own module to match the reference's placement) — see
-                    // its comment below for why there isn't a second one. ----
-                    HorizontalLayout {
-                        spacing: 20px;
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 16px;
-                            background: Theme.bg-surface-raised.with-alpha(0.32);
-                            border-width: 1px;
-                            border-color: Theme.silver.with-alpha(0.12);
-
-                            VerticalLayout {
-                                padding: 16px;
-                                spacing: 8px;
-
-                                Text {
-                                    text: "Guestbook";
-                                    color: Theme.text-primary;
-                                    font-size: 16px;
-                                    font-weight: 700;
-                                }
-
-                                Text {
-                                    text: "Not built yet — nobody can write here. A real guestbook needs other people's devices to write entries onto this profile over the network, and that networked-write path doesn't exist in ANKAI yet.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 16px;
-                            background: Theme.bg-surface-raised.with-alpha(0.32);
-                            border-width: 1px;
-                            border-color: Theme.silver.with-alpha(0.12);
-
-                            VerticalLayout {
-                                padding: 16px;
-                                spacing: 8px;
-
-                                Text {
-                                    text: "My Charms";
-                                    color: Theme.text-primary;
-                                    font-size: 16px;
-                                    font-weight: 700;
-                                }
-
-                                // One static charm, deliberately kept alone per
-                                // this session's no-fake-gamification rule: not
-                                // a real unlock/rules system, just an
-                                // honestly-labeled always-on badge for everyone
-                                // using this early build. See PROGRESS.md's
-                                // session-12 notes on why a full charms system
-                                // isn't built — a second charm here would need
-                                // a second real, non-fabricated criterion, and
-                                // none exists yet.
-                                HorizontalLayout {
-                                    alignment: start;
-
-                                    Rectangle {
-                                        height: 22px;
-                                        border-radius: 11px;
-                                        background: Theme.accent-gold.with-alpha(0.16);
-                                        border-width: 1px;
-                                        border-color: Theme.accent-gold.with-alpha(0.4);
-
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            alignment: start;
-
-                                            Text {
-                                                text: "🌟 Early Adopter — everyone on this build has it, not a real unlock";
-                                                color: Theme.accent-gold;
-                                                font-size: 10px;
-                                                font-weight: 600;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     // ---- Friends: real ankai_core::friends accepted list
                     // + real pending incoming requests ----
                     VerticalLayout {
@@ -2360,13 +1713,15 @@ export component AppWindow inherits Window {
                         }
 
                         Text {
-                            text: "Real friend requests, sent device-to-device and accepted here. There's no address book/send-a-request UI yet — accepting an incoming request is what this pane supports today. Presence is a real, on-demand connectivity check, not a stored online/offline flag.";
-                            color: Theme.text-secondary;
+                            text: root.social-networking-enabled
+                                ? "Real friend requests, sent device-to-device and accepted here. There's no address book/send-a-request UI yet — accepting an incoming request is what this pane supports today. Presence is a real, on-demand connectivity check, not a stored online/offline flag."
+                                : root.social-networking-status;
+                            color: root.social-networking-enabled ? Theme.text-secondary : Theme.state-busy;
                             font-size: 11px;
                             wrap: word-wrap;
                         }
 
-                        if root.pending-friend-requests.length > 0: VerticalLayout {
+                        if root.social-networking-enabled && root.pending-friend-requests.length > 0: VerticalLayout {
                             spacing: 10px;
 
                             Text {
@@ -2410,6 +1765,7 @@ export component AppWindow inherits Window {
 
                             Button {
                                 text: "Refresh presence";
+                                enabled: root.social-networking-enabled;
                                 clicked => {
                                     root.refresh-friends-presence();
                                 }
@@ -2428,50 +1784,10 @@ export component AppWindow inherits Window {
                     }
                     }
 
-                    // ==== Tab 1: "Guestbook" — real UI shell, honest
-                    // placeholder: nobody else can write here yet. ====
-                    if root.profile-tab-index == 1: VerticalLayout {
-                        spacing: 12px;
-
-                        Text {
-                            text: "Guestbook";
-                            color: Theme.text-primary;
-                            font-size: 16px;
-                            font-weight: 700;
-                        }
-
-                        Rectangle {
-                            border-radius: 14px;
-                            background: Theme.bg-surface-raised.with-alpha(0.4);
-                            border-width: 1px;
-                            border-color: Theme.silver.with-alpha(0.12);
-
-                            VerticalLayout {
-                                padding: 16px;
-                                spacing: 6px;
-
-                                Text {
-                                    text: "Guestbook isn't built yet — nobody can write here.";
-                                    color: Theme.text-primary;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                    wrap: word-wrap;
-                                }
-
-                                Text {
-                                    text: "A real guestbook needs other people's devices to write entries onto this profile over the network — that networked-write path doesn't exist in ANKAI yet. This tab is a placeholder shell, not a preview of fake sample entries.";
-                                    color: Theme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-                    }
-
-                    // ==== Tab 2: "Stats" — real counts only, pulled from
+                    // ==== Tab 1: "Stats" — real counts only, pulled from
                     // the same core:: calls already used elsewhere in this
                     // pane/main.rs. ====
-                    if root.profile-tab-index == 2: VerticalLayout {
+                    if root.profile-tab-index == 1: VerticalLayout {
                         spacing: 12px;
 
                         Text {
@@ -2555,8 +1871,10 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
-                        color: Theme.text-secondary;
+                        text: root.social-networking-enabled
+                            ? "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start."
+                            : root.social-networking-status;
+                        color: root.social-networking-enabled ? Theme.text-secondary : Theme.state-busy;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
@@ -2582,8 +1900,9 @@ export component AppWindow inherits Window {
                                 }
 
                                 LineEdit {
-                                    width: 500px;
+                                    width: min(500px, parent.width);
                                     read-only: true;
+                                    enabled: root.social-networking-enabled;
                                     text: root.own-peer-address;
                                 }
                             }
@@ -2598,7 +1917,8 @@ export component AppWindow inherits Window {
                                 }
 
                                 LineEdit {
-                                    width: 500px;
+                                    width: min(500px, parent.width);
+                                    enabled: root.social-networking-enabled;
                                     placeholder-text: "Paste a peer's invite here";
                                     text <=> root.peer-address-input;
                                 }
@@ -2619,7 +1939,7 @@ export component AppWindow inherits Window {
                                     alignment: start;
 
                                     LineEdit {
-                                        width: 340px;
+                                        width: min(340px, parent.width);
                                         placeholder-text: "Peer's Device ID (hex)";
                                         text <=> root.peer-device-id-input;
                                         accepted => {
@@ -2647,7 +1967,7 @@ export component AppWindow inherits Window {
                                     alignment: start;
 
                                     LineEdit {
-                                        width: 340px;
+                                        width: min(340px, parent.width);
                                         placeholder-text: "Peer's username";
                                         text <=> root.peer-username-input;
                                         accepted => {
@@ -2688,7 +2008,8 @@ export component AppWindow inherits Window {
                                 alignment: start;
 
                                 LineEdit {
-                                    width: 340px;
+                                    width: min(340px, parent.width);
+                                    enabled: root.social-networking-enabled;
                                     placeholder-text: "Type a message";
                                     text <=> root.message-input;
                                     accepted => {
@@ -2698,6 +2019,7 @@ export component AppWindow inherits Window {
 
                                 Button {
                                     text: "Send";
+                                    enabled: root.social-networking-enabled;
                                     clicked => {
                                         root.send-message(root.peer-address-input, root.message-input);
                                     }
@@ -2772,6 +2094,23 @@ export component AppWindow inherits Window {
                 for name[i] in root.community-names: Rectangle {
                     height: 32px;
                     border-radius: 6px;
+                    background: community-touch.has-hover ? Theme.silver.with-alpha(0.08) : transparent;
+                    border-width: community-focus.has-focus ? 2px : 0px;
+                    border-color: Theme.accent-cyan;
+                    accessible-role: button;
+                    accessible-label: "Open community " + name;
+                    accessible-action-default => { root.open-community(root.community-ids[i], name); }
+
+                    community-focus := FocusScope {
+                        focus-on-tab-navigation: true;
+                        key-pressed(event) => {
+                            if event.text == Key.Return || event.text == " " {
+                                root.open-community(root.community-ids[i], name);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
 
                     Text {
                         x: 4px;
@@ -2783,9 +2122,10 @@ export component AppWindow inherits Window {
                         font-size: 14px;
                     }
 
-                    TouchArea {
+                    community-touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
+                            community-focus.focus();
                             root.open-community(root.community-ids[i], name);
                         }
                     }
@@ -2862,7 +2202,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.hangouts-index: ScrollView {
+            if root.selected-index == root.hangouts-index && root.selected-hangout-name == "": ScrollView {
                 width: parent.width;
                 y: 72px;
                 height: parent.height - 72px;
@@ -2881,7 +2221,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
+                        text: "Create a local room around ANKAI's player. Real-time playback sync and remote participants are not connected yet; the room labels that boundary clearly.";
                         color: Theme.text-secondary;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -2930,14 +2270,94 @@ export component AppWindow inherits Window {
                                 wrap: word-wrap;
                             }
 
-                            for name in root.hangout-names: Text {
-                                text: "• " + name;
-                                color: Theme.text-secondary;
-                                font-size: 14px;
+                            for name in root.hangout-names: Rectangle {
+                                height: 52px;
+                                border-radius: 13px;
+                                background: hangout-touch.has-hover ? Theme.accent-violet.with-alpha(0.18) : Theme.bg-void.with-alpha(0.22);
+                                border-width: room-focus.has-focus ? 2px : 1px;
+                                border-color: room-focus.has-focus ? Theme.accent-cyan : hangout-touch.has-hover ? Theme.accent-pink.with-alpha(0.46) : Theme.silver.with-alpha(0.12);
+                                accessible-role: button;
+                                accessible-label: "Open local Hangout " + name;
+                                accessible-action-default => { root.selected-hangout-name = name; }
+                                room-focus := FocusScope {
+                                    focus-on-tab-navigation: true;
+                                    key-pressed(event) => {
+                                        if event.text == Key.Return || event.text == " " {
+                                            root.selected-hangout-name = name;
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 10px;
+                                    Text { text: "▶"; color: Theme.accent-pink; font-size: 13px; vertical-alignment: center; }
+                                    Text { text: name; color: Theme.text-primary; font-size: 13px; font-weight: 650; vertical-alignment: center; horizontal-stretch: 1; }
+                                    Text { text: "OPEN ROOM  ›"; color: Theme.text-secondary; font-size: 9px; font-weight: 750; vertical-alignment: center; }
+                                }
+
+                                hangout-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { room-focus.focus(); root.selected-hangout-name = name; }
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            if root.selected-index == root.hangouts-index && root.selected-hangout-name != "": hangout-player := HangoutPlayerSurface {
+                x: 22px;
+                y: 88px;
+                width: parent.width - 44px;
+                height: parent.height - 110px;
+                room-title: root.selected-hangout-name;
+                room-subtitle: root.player-has-media ? root.player-title : "Choose a stream in Discover to start watching";
+                sync-detail: "Playback and room state are local to this device";
+                chat-enabled: false;
+                media-title: root.player-title;
+                has-media: root.player-has-media;
+                video-ready: root.player-video-ready;
+                video-frame: root.player-video-frame;
+                video-frame-ready: root.player-video-frame-ready;
+                changed video-surface-width => { root.player-video-surface-width = self.video-surface-width; }
+                changed video-surface-height => { root.player-video-surface-height = self.video-surface-height; }
+                fallback-art: root.stremio-selected-poster;
+                has-fallback-art: root.stremio-selected-has-poster;
+                is-playing: root.player-playing;
+                is-loading: root.player-loading;
+                is-buffering: root.player-buffering;
+                is-seeking: root.player-seeking;
+                is-muted: root.player-muted;
+                is-fullscreen: root.player-fullscreen;
+                position-seconds: root.player-position;
+                duration-seconds: root.player-duration;
+                buffered-seconds: root.player-buffered;
+                buffering-percent: root.player-buffering-percent;
+                volume: root.player-volume;
+                playback-speed: root.player-speed;
+                elapsed-label: root.player-elapsed-label;
+                duration-label: root.player-duration-label;
+                error-message: root.player-error;
+                audio-tracks: root.player-audio-tracks;
+                subtitle-tracks: root.player-subtitle-tracks;
+                toggle-playback => { root.toggle-player-pause(); }
+                seek-relative(seconds) => { root.player-seek-relative(seconds); }
+                seek-requested(seconds) => { root.player-seek(seconds); }
+                mute-toggled => { root.player-toggle-mute(); }
+                volume-requested(value) => { root.player-set-volume(value); }
+                speed-requested(value) => { root.player-set-speed(value); }
+                audio-track-requested(id) => { root.player-select-audio(id); }
+                subtitle-track-requested(id) => { root.player-select-subtitle(id); }
+                subtitles-disabled => { root.player-disable-subtitles(); }
+                fullscreen-toggled => { root.player-toggle-fullscreen(); }
+                close-requested => { root.close-player(); }
+                retry-requested => { root.player-retry(); }
+                leave-room-requested => { root.selected-hangout-name = ""; }
+                send-chat-message(message) => { root.shell-notice = "Room chat is unavailable while this Hangout is local-only."; }
             }
 
             if root.selected-index == root.watch-index && !root.player-active: ScrollView {
@@ -2963,6 +2383,17 @@ export component AppWindow inherits Window {
                         color: Theme.text-secondary;
                         font-size: 12px;
                         wrap: word-wrap;
+                    }
+
+                    AnimeDiscovery {
+                        height: 510px;
+                        query <=> root.jikan-query;
+                        results: root.jikan-results;
+                        state: root.jikan-state;
+                        error-message: root.jikan-error;
+                        search(query) => { root.search-jikan(query); }
+                        retry => { root.retry-jikan(); }
+                        open(id) => { root.open-jikan-anime(id); }
                     }
 
                     HorizontalLayout {
@@ -3019,9 +2450,22 @@ export component AppWindow inherits Window {
                                 height: 232px;
                                 border-radius: 12px;
                                 clip: true;
-                                background: media-touch.has-hover ? Theme.accent-violet.with-alpha(0.20) : Theme.bg-surface-raised.with-alpha(0.75);
-                                border-width: 1px;
-                                border-color: media-touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.14);
+                                background: catalog-touch.has-hover ? Theme.accent-violet.with-alpha(0.20) : Theme.bg-surface-raised.with-alpha(0.75);
+                                border-width: catalog-focus.has-focus ? 2px : 1px;
+                                border-color: catalog-focus.has-focus ? Theme.accent-cyan : catalog-touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.14);
+                                accessible-role: button;
+                                accessible-label: "Open " + media.title;
+                                accessible-action-default => { root.open-stremio-media(i); }
+                                catalog-focus := FocusScope {
+                                    focus-on-tab-navigation: true;
+                                    key-pressed(event) => {
+                                        if event.text == Key.Return || event.text == " " {
+                                            root.open-stremio-media(i);
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                }
 
                                 VerticalLayout {
                                     spacing: 0px;
@@ -3038,7 +2482,7 @@ export component AppWindow inherits Window {
                                         Text { text: media.detail; color: Theme.text-secondary; font-size: 10px; overflow: elide; }
                                     }
                                 }
-                                media-touch := TouchArea { mouse-cursor: pointer; clicked => { root.open-stremio-media(i); } }
+                                catalog-touch := TouchArea { mouse-cursor: pointer; clicked => { catalog-focus.focus(); root.open-stremio-media(i); } }
                             }
                         }
                     }
@@ -3064,10 +2508,23 @@ export component AppWindow inherits Window {
                         play-stream(index) => { root.activate-stremio-stream(index); }
                     }
 
+                    if root.stremio-selected-title != "": NyaaReleases {
+                        width: parent.width;
+                        height: 560px;
+                        query <=> root.nyaa-query;
+                        title: "Upload comments for " + root.stremio-selected-title;
+                        results: root.nyaa-results;
+                        state: root.nyaa-state;
+                        status: root.nyaa-status;
+                        search(query) => { root.search-nyaa(query); }
+                        retry => { root.retry-nyaa(); }
+                        open-comments(url) => { root.open-nyaa-comments(url); }
+                    }
+
                 }
             }
 
-            if root.player-active: PlayerOverlay {
+            if root.player-active && !root.player-bounded-mode: PlayerOverlay {
                 x: 0px;
                 y: 0px;
                 width: parent.width;
@@ -3108,13 +2565,16 @@ export component AppWindow inherits Window {
                 retry-requested => { root.player-retry(); }
             }
 
-            if root.selected-index == root.settings-index: VerticalLayout {
+            if root.selected-index == root.settings-index: ScrollView {
                 y: 72px;
                 width: parent.width;
                 height: parent.height - 72px;
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
+
+                VerticalLayout {
+                    width: parent.width;
+                    padding: root.compact-shell ? 18px : 32px;
+                    spacing: 16px;
+                    alignment: start;
 
                 Text {
                     text: "Settings";
@@ -3148,6 +2608,12 @@ export component AppWindow inherits Window {
                             root.save-display-name(root.display-name);
                         }
                     }
+                }
+
+                CheckBox {
+                    text: "Reduce interface motion";
+                    checked <=> root.reduced-motion;
+                    toggled => { root.save-reduced-motion(self.checked); }
                 }
 
                 if root.directory-enabled: VerticalLayout {
@@ -3201,7 +2667,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                VerticalLayout {
+                    VerticalLayout {
                     spacing: 4px;
 
                     Text {
@@ -3237,18 +2703,19 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    }
                 }
             }
 
-            if !root.player-active: TopCommandBar {
+            if !root.player-active || root.player-bounded-mode: TopCommandBar {
                 x: 18px;
                 y: 12px;
                 width: parent.width - 36px;
                 page-title: root.nav-items[root.selected-index];
+                compact: root.width < 760px;
                 avatar-letter: root.display-name-initial;
                 query <=> root.global-search-query;
                 submitted(query) => { root.global-search(query); }
-                notifications => { root.open-notifications(); }
                 profile-menu => { root.open-profile-menu(); }
             }
 
@@ -3266,49 +2733,15 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.stremio-loading: Rectangle {
-        x: 0px; y: 0px; width: parent.width; height: parent.height;
-        background: Theme.bg-void.with-alpha(0.78);
-
-        Rectangle {
-            width: 300px; height: 390px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            border-radius: 24px;
-            clip: true;
-            background: Theme.bg-surface-raised;
-            border-width: 1px;
-            border-color: Theme.accent-violet.with-alpha(0.65);
-            drop-shadow-color: Theme.accent-pink.with-alpha(root.loading-dance-beat ? 0.55 : 0.24);
-            drop-shadow-blur: root.loading-dance-beat ? 42px : 22px;
-
-            Image {
-                width: 260px;
-                height: 310px;
-                x: 20px + (root.loading-dance-beat ? 7px : -7px);
-                y: root.loading-dance-beat ? 2px : 12px;
-                source: @image-url("assets/ankai-loading-idol.png");
-                image-fit: contain;
-                transform-rotation: root.loading-dance-beat ? 2deg : -2deg;
-                animate x { duration: 260ms; easing: ease-in-out; }
-                animate y { duration: 260ms; easing: ease-in-out; }
-                animate transform-rotation { duration: 260ms; easing: ease-in-out; }
-            }
-
-            Text {
-                x: 20px; y: 334px; width: parent.width - 40px;
-                text: root.stremio-status;
-                color: Theme.text-primary;
-                font-size: 13px;
-                horizontal-alignment: center;
-                wrap: word-wrap;
-            }
-        }
-
-        Timer {
-            interval: 280ms;
-            running: root.stremio-loading;
-            triggered => { root.loading-dance-beat = !root.loading-dance-beat; }
-        }
+    if root.stremio-loading: LoadingIdol {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        active: root.stremio-loading;
+        reduced-motion: root.reduced-motion;
+        modal: true;
+        status: "Finding your next watch";
+        detail: root.stremio-status;
     }
 }

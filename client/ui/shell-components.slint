@@ -5,34 +5,50 @@ export component AppNavButton inherits Rectangle {
     in property <string> icon;
     in property <string> label;
     in property <bool> active;
+    in property <bool> compact: false;
     callback activated();
 
     height: 44px;
     border-radius: 14px;
     background: root.active ? @linear-gradient(105deg, Theme.accent-violet.with-alpha(0.42) 0%, Theme.accent-pink.with-alpha(0.18) 100%) : touch.has-hover ? Theme.silver.with-alpha(0.07) : transparent;
-    border-width: root.active ? 1px : 0px;
-    border-color: Theme.accent-violet.with-alpha(0.58);
+    border-width: root.active || keyboard-focus.has-focus ? 1px : 0px;
+    border-color: keyboard-focus.has-focus ? Theme.accent-cyan : Theme.accent-violet.with-alpha(0.58);
     drop-shadow-color: Theme.accent-violet.with-alpha(0.24);
     drop-shadow-blur: root.active ? 14px : 0px;
 
     HorizontalLayout {
-        padding-left: 13px;
-        padding-right: 12px;
-        spacing: 12px;
+        padding-left: root.compact ? 8px : 13px;
+        padding-right: root.compact ? 8px : 12px;
+        spacing: root.compact ? 0px : 12px;
         alignment: start;
-        Text { text: root.icon; width: 22px; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 17px; vertical-alignment: center; horizontal-alignment: center; }
-        Text { text: root.label; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 13px; font-weight: root.active ? 700 : 500; vertical-alignment: center; horizontal-stretch: 1; }
-        Text { text: "›"; color: Theme.text-secondary; font-size: 18px; vertical-alignment: center; opacity: root.active ? 1 : 0; }
+        Text { text: root.icon; width: root.compact ? parent.width : 22px; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 17px; vertical-alignment: center; horizontal-alignment: center; }
+        if !root.compact: Text { text: root.label; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 13px; font-weight: root.active ? 700 : 500; vertical-alignment: center; horizontal-stretch: 1; }
+        if !root.compact: Text { text: "›"; color: Theme.text-secondary; font-size: 18px; vertical-alignment: center; opacity: root.active ? 1 : 0; }
     }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
+    accessible-role: button;
+    accessible-label: root.label + (root.active ? ", current page" : "");
+    accessible-action-default => { root.activated(); }
+    keyboard-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { keyboard-focus.focus(); root.activated(); }
+    }
 }
 
 export component TopCommandBar inherits Rectangle {
     in-out property <string> query;
     in property <string> page-title;
     in property <string> avatar-letter: "A";
+    in property <bool> compact: false;
     callback submitted(string);
-    callback notifications();
     callback profile-menu();
 
     height: 56px;
@@ -46,7 +62,7 @@ export component TopCommandBar inherits Rectangle {
     HorizontalLayout {
         padding: 8px;
         spacing: 10px;
-        Text { text: root.page-title; width: 112px; color: Theme.text-primary; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; }
+        Text { text: root.page-title; width: root.compact ? 0px : 112px; visible: !root.compact; color: Theme.text-primary; font-size: 15px; font-weight: 700; vertical-alignment: center; overflow: elide; }
         Rectangle {
             horizontal-stretch: 1;
             border-radius: 16px;
@@ -60,14 +76,23 @@ export component TopCommandBar inherits Rectangle {
             }
         }
         Rectangle {
-            width: 38px; border-radius: 12px; background: notify-touch.has-hover ? Theme.accent-violet.with-alpha(0.24) : transparent;
-            Text { text: "♢"; color: Theme.text-secondary; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
-            notify-touch := TouchArea { mouse-cursor: pointer; clicked => { root.notifications(); } }
-        }
-        Rectangle {
             width: 40px; border-radius: 20px; background: @linear-gradient(145deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
+            border-width: profile-focus.has-focus ? 2px : 0px;
+            border-color: Theme.accent-cyan;
+            accessible-role: button;
+            accessible-label: "Open My Page";
+            accessible-action-default => { root.profile-menu(); }
             Text { text: root.avatar-letter; color: Theme.text-primary; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-            profile-touch := TouchArea { mouse-cursor: pointer; clicked => { root.profile-menu(); } }
+            profile-focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Return || event.text == " " {
+                        root.profile-menu();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            profile-touch := TouchArea { mouse-cursor: pointer; clicked => { profile-focus.focus(); root.profile-menu(); } }
         }
     }
 }
