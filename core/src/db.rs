@@ -221,6 +221,19 @@ const MIGRATIONS: &[Migration] = &[
           AND position_seconds > 0
           AND position_seconds < duration_seconds;",
     },
+    Migration {
+        version: 11,
+        description: "add playback resume metadata",
+        // These nullable fields keep migration-10 rows valid while giving
+        // the client enough context to render and restart a resume entry
+        // without another catalog lookup. `stream_url` may contain an
+        // addon configuration segment or access token, so it deliberately
+        // lives in the same SQLCipher-encrypted database as the rest of the
+        // resume row rather than in a plaintext preference or log.
+        sql: "ALTER TABLE playback_progress ADD COLUMN title TEXT;
+    ALTER TABLE playback_progress ADD COLUMN poster_url TEXT;
+    ALTER TABLE playback_progress ADD COLUMN stream_url TEXT;",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -431,7 +444,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 10);
+        assert_eq!(db.schema_version().unwrap(), 11);
     }
 
     #[test]
@@ -440,21 +453,21 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 10);
+            assert_eq!(db.schema_version().unwrap(), 11);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 10);
+            assert_eq!(db.schema_version().unwrap(), 11);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(
-                row_count, 10,
+                row_count, 11,
                 "each migration must be recorded exactly once"
             );
         }
@@ -494,7 +507,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 10);
+            assert_eq!(db.schema_version().unwrap(), 11);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
@@ -502,6 +515,56 @@ mod tests {
             result.is_err(),
             "opening an encrypted db with the wrong key must fail, not silently succeed"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn migration_11_preserves_legacy_playback_progress_rows() {
+        use crate::playback_progress::{load, PlaybackKey};
+
+        let path = temp_db_path("playback-metadata-migration");
+        let passphrase = "legacy-progress-passphrase";
+
+        {
+            let conn = Connection::open(&path).expect("legacy database should open");
+            conn.pragma_update(None, "key", passphrase)
+                .expect("legacy database key should be set");
+
+            for migration in MIGRATIONS
+                .iter()
+                .filter(|migration| migration.version <= 10)
+            {
+                conn.execute_batch(migration.sql)
+                    .expect("legacy migration should apply");
+                conn.execute(
+                    "INSERT INTO schema_version (version, description) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.description],
+                )
+                .expect("legacy migration should be recorded");
+            }
+
+            conn.execute(
+                "INSERT INTO playback_progress
+                    (provider, media_id, episode_id, position_seconds, duration_seconds, completed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params!["cinemeta", "tt0133093", "", 321.0, 8_160.0, false],
+            )
+            .expect("legacy playback row should be inserted");
+        }
+
+        {
+            let db = Db::open(&path, passphrase).expect("migration 11 should apply on reopen");
+            assert_eq!(db.schema_version().unwrap(), 11);
+
+            let progress = load(&db, &PlaybackKey::movie("cinemeta", "tt0133093"))
+                .unwrap()
+                .expect("legacy playback row should remain readable");
+            assert_eq!(progress.position_seconds, 321.0);
+            assert_eq!(progress.title, None);
+            assert_eq!(progress.poster_url, None);
+            assert_eq!(progress.stream_url, None);
+        }
 
         cleanup(&path);
     }

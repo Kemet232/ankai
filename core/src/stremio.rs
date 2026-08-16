@@ -7,11 +7,33 @@
 //! addon root.
 
 use std::collections::HashMap;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Error;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_REDIRECTS: usize = 3;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_META_BYTES: usize = 4 * 1024 * 1024;
+const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
+const MAX_ERROR_EXCERPT_BYTES: usize = 512;
+const MAX_URL_LENGTH: usize = 8 * 1024;
+const MAX_CATALOG_ITEMS: usize = 500;
+const MAX_STREAM_ITEMS: usize = 500;
+const MAX_VIDEO_ITEMS: usize = 2_000;
+const MAX_COLLECTION_ITEMS: usize = 256;
+const MAX_EXTRA_FIELDS: usize = 64;
+const MAX_EXTRA_DEPTH: usize = 8;
+const MAX_EXTRA_NODES: usize = 2_048;
+const MAX_SHORT_STRING: usize = 1_024;
+const MAX_LONG_STRING: usize = 64 * 1024;
 
 /// A reusable client for one installed/configured addon.
 #[derive(Debug, Clone)]
@@ -20,14 +42,44 @@ pub struct AddonClient {
     base_url: reqwest::Url,
 }
 
+/// DNS resolver that returns only public destination addresses.
+///
+/// Resolution happens inside reqwest's connection path, so the addresses this
+/// implementation validates are the addresses the connector receives. Both
+/// clients using it disable environment proxies; otherwise a proxy could
+/// resolve the destination independently and bypass this check.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PublicDnsResolver;
+
+impl reqwest::dns::Resolve for PublicDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| {
+                    Box::new(error) as Box<dyn std::error::Error + Send + Sync + 'static>
+                })?
+                .filter(|address| !is_non_public_ip(address.ip()))
+                .collect::<Vec<SocketAddr>>();
+            if addresses.is_empty() {
+                return Err(Box::new(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "DNS name did not resolve to a public address",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync + 'static>);
+            }
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
 impl AddonClient {
     /// Creates a client from either an addon base URL or its `manifest.json` URL.
     pub fn new(base_url: &str) -> Result<Self, Error> {
         let mut base_url = reqwest::Url::parse(base_url)
             .map_err(|e| Error::Stremio(format!("invalid addon URL: {e}")))?;
-        if !matches!(base_url.scheme(), "http" | "https") {
-            return Err(Error::Stremio("addon URL must use http or https".into()));
-        }
+        validate_public_https_url(&base_url, "addon URL")?;
         base_url.set_query(None);
         base_url.set_fragment(None);
         if base_url.path().ends_with("/manifest.json") {
@@ -37,15 +89,44 @@ impl AddonClient {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);
         }
-        Ok(Self {
-            client: reqwest::Client::new(),
-            base_url,
-        })
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .no_proxy()
+            .dns_resolver(PublicDnsResolver)
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let Some(initial) = attempt.previous().first() else {
+                    return attempt.error("redirect has no initial request URL");
+                };
+                if attempt.previous().len() > MAX_REDIRECTS {
+                    return attempt.error("too many addon redirects");
+                }
+                if !same_origin(initial, attempt.url())
+                    && !is_official_cinemeta_redirect(initial, attempt.url())
+                {
+                    return attempt.error("addon redirect changed origin");
+                }
+                if validate_public_https_url(attempt.url(), "addon redirect URL").is_err() {
+                    return attempt.error("addon redirect URL is not public HTTPS");
+                }
+                attempt.follow()
+            }))
+            .user_agent(concat!("ankai/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| Error::Stremio(format!("failed to build addon HTTP client: {e}")))?;
+        Ok(Self { client, base_url })
     }
 
     pub async fn manifest(&self) -> Result<Manifest, Error> {
-        self.get(self.endpoint(&["manifest.json"])?, "manifest")
-            .await
+        let manifest: Manifest = self
+            .get(
+                self.endpoint(&["manifest.json"])?,
+                "manifest",
+                MAX_MANIFEST_BYTES,
+            )
+            .await?;
+        manifest.validate()?;
+        Ok(manifest)
     }
 
     /// Returns the canonical manifest URL this client will request.
@@ -74,6 +155,17 @@ impl AddonClient {
         catalog_id: &str,
         extra: &[(&str, &str)],
     ) -> Result<Vec<MetaPreview>, Error> {
+        validate_path_value("catalog type", media_type)?;
+        validate_path_value("catalog id", catalog_id)?;
+        if extra.len() > 16 {
+            return Err(Error::Stremio(
+                "catalog request has too many extra parameters".into(),
+            ));
+        }
+        for (name, value) in extra {
+            validate_string("catalog extra name", name, 64, true)?;
+            validate_string("catalog extra value", value, 512, false)?;
+        }
         let mut parts = vec!["catalog", media_type, catalog_id];
         let extra_segment;
         let file;
@@ -88,23 +180,54 @@ impl AddonClient {
             extra_segment = format!("{}.json", encoded.query().unwrap_or_default());
             parts.push(&extra_segment);
         }
-        let response: CatalogResponse = self.get(self.endpoint(&parts)?, "catalog").await?;
+        let response: CatalogResponse = self
+            .get(self.endpoint(&parts)?, "catalog", MAX_CATALOG_BYTES)
+            .await?;
+        if response.metas.len() > MAX_CATALOG_ITEMS {
+            return Err(Error::Stremio(format!(
+                "catalog contains too many items (maximum {MAX_CATALOG_ITEMS})"
+            )));
+        }
+        for meta in &response.metas {
+            meta.validate()?;
+        }
         Ok(response.metas)
     }
 
     pub async fn meta(&self, media_type: &str, id: &str) -> Result<Meta, Error> {
+        validate_path_value("meta type", media_type)?;
+        validate_path_value("meta id", id)?;
         let file = format!("{id}.json");
         let response: MetaResponse = self
-            .get(self.endpoint(&["meta", media_type, &file])?, "meta")
+            .get(
+                self.endpoint(&["meta", media_type, &file])?,
+                "meta",
+                MAX_META_BYTES,
+            )
             .await?;
+        response.meta.validate()?;
         Ok(response.meta)
     }
 
     pub async fn streams(&self, media_type: &str, id: &str) -> Result<Vec<Stream>, Error> {
+        validate_path_value("stream type", media_type)?;
+        validate_path_value("stream id", id)?;
         let file = format!("{id}.json");
         let response: StreamResponse = self
-            .get(self.endpoint(&["stream", media_type, &file])?, "stream")
+            .get(
+                self.endpoint(&["stream", media_type, &file])?,
+                "stream",
+                MAX_STREAM_BYTES,
+            )
             .await?;
+        if response.streams.len() > MAX_STREAM_ITEMS {
+            return Err(Error::Stremio(format!(
+                "stream response contains too many items (maximum {MAX_STREAM_ITEMS})"
+            )));
+        }
+        for stream in &response.streams {
+            stream.validate()?;
+        }
         Ok(response.streams)
     }
 
@@ -121,25 +244,201 @@ impl AddonClient {
         &self,
         url: reqwest::Url,
         resource: &str,
+        max_bytes: usize,
     ) -> Result<T, Error> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| Error::Stremio(format!("{resource} request failed: {e}")))?;
+        validate_public_https_url(&url, "addon endpoint URL")?;
+        let response = self.client.get(url).send().await.map_err(|e| {
+            Error::Stremio(format!("{resource} request failed: {}", e.without_url()))
+        })?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| Error::Stremio(format!("failed to read {resource} response: {e}")))?;
         if !status.is_success() {
+            let body = read_error_excerpt(response).await;
             return Err(Error::Stremio(format!(
                 "{resource} returned HTTP {status}: {body}"
             )));
         }
-        serde_json::from_str(&body)
+        let body = read_bounded_body(response, max_bytes, resource).await?;
+        serde_json::from_slice(&body)
             .map_err(|e| Error::Stremio(format!("failed to parse {resource} response: {e}")))
+    }
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+/// Cinemeta's official public endpoint delegates catalogs to this exact
+/// sibling host. This narrow exception preserves the bundled catalog without
+/// granting arbitrary third-party addons a general cross-origin redirect.
+fn is_official_cinemeta_redirect(initial: &reqwest::Url, next: &reqwest::Url) -> bool {
+    initial.scheme() == "https"
+        && initial.host_str() == Some("v3-cinemeta.strem.io")
+        && initial.port_or_known_default() == Some(443)
+        && next.scheme() == "https"
+        && next.host_str() == Some("cinemeta-catalogs.strem.io")
+        && next.port_or_known_default() == Some(443)
+}
+
+fn validate_public_https_url(url: &reqwest::Url, label: &str) -> Result<(), Error> {
+    if url.as_str().len() > MAX_URL_LENGTH {
+        return Err(Error::Stremio(format!("{label} is too long")));
+    }
+    if url.scheme() != "https" {
+        return Err(Error::Stremio(format!("{label} must use HTTPS")));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::Stremio(format!(
+            "{label} must not contain credentials"
+        )));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::Stremio(format!("{label} must have a host")))?;
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_non_public_ip(ip) {
+            return Err(Error::Stremio(format!(
+                "{label} must not target a local or non-public address"
+            )));
+        }
+    } else if is_obviously_local_name(host) {
+        return Err(Error::Stremio(format!(
+            "{label} must not target a local hostname"
+        )));
+    }
+    Ok(())
+}
+
+fn is_obviously_local_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    !host.contains('.')
+        || host == "localhost"
+        || [
+            ".localhost",
+            ".local",
+            ".localdomain",
+            ".lan",
+            ".home",
+            ".internal",
+            ".intranet",
+            ".test",
+            ".invalid",
+        ]
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+}
+
+fn is_non_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_non_public_ipv4(ip),
+        IpAddr::V6(ip) => is_non_public_ipv6(ip),
+    }
+}
+
+fn is_non_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || a == 0
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 192 && b == 0)
+        || (a == 198 && (18..=19).contains(&b))
+        || a >= 240
+}
+
+fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] & 0xffc0) == 0xfec0
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || ip.to_ipv4().is_some_and(is_non_public_ipv4)
+}
+
+async fn read_bounded_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    resource: &str,
+) -> Result<Vec<u8>, Error> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(Error::Stremio(format!(
+            "{resource} response is larger than {max_bytes} bytes"
+        )));
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(max_bytes as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        Error::Stremio(format!(
+            "failed to read {resource} response: {}",
+            e.without_url()
+        ))
+    })? {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(Error::Stremio(format!(
+                "{resource} response is larger than {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_error_excerpt(mut response: reqwest::Response) -> String {
+    let mut body = Vec::with_capacity(MAX_ERROR_EXCERPT_BYTES);
+    let mut truncated = false;
+    loop {
+        let Ok(next) = response.chunk().await else {
+            return "response body could not be read".into();
+        };
+        let Some(chunk) = next else {
+            break;
+        };
+        let remaining = MAX_ERROR_EXCERPT_BYTES.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+        if body.len() == MAX_ERROR_EXCERPT_BYTES {
+            truncated = true;
+            break;
+        }
+    }
+    let mut excerpt = String::from_utf8_lossy(&body)
+        .chars()
+        .map(|character| {
+            if character.is_control() && !matches!(character, '\n' | '\t') {
+                '�'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if truncated {
+        excerpt.push('…');
+    }
+    if excerpt.is_empty() {
+        "empty response body".into()
+    } else {
+        excerpt
     }
 }
 
@@ -288,12 +587,21 @@ pub enum StreamSource<'a> {
 }
 
 impl Stream {
-    /// Returns a direct libmpv URL or a BitTorrent descriptor for a resolver.
+    /// Returns a public HTTPS libmpv URL or a BitTorrent descriptor for a resolver.
+    ///
+    /// Addon output is untrusted. Direct playback deliberately accepts only
+    /// credential-free, public HTTPS URLs; local paths and libmpv pseudo
+    /// protocols (`file:`, `data:`, `concat:`, and similar) never cross this
+    /// resolver boundary.
     pub fn source(&self) -> Result<StreamSource<'_>, Error> {
         if let Some(url) = self.url.as_deref() {
+            let parsed = reqwest::Url::parse(url)
+                .map_err(|e| Error::Stremio(format!("invalid direct stream URL: {e}")))?;
+            validate_public_https_url(&parsed, "direct stream URL")?;
             return Ok(StreamSource::Direct(url));
         }
         if let Some(info_hash) = self.info_hash.as_deref() {
+            validate_string("stream infoHash", info_hash, 128, true)?;
             return Ok(StreamSource::BitTorrent {
                 info_hash,
                 file_idx: self.file_idx,
@@ -339,6 +647,258 @@ struct StreamResponse {
     streams: Vec<Stream>,
 }
 
+impl Manifest {
+    fn validate(&self) -> Result<(), Error> {
+        validate_string("manifest id", &self.id, MAX_SHORT_STRING, true)?;
+        validate_string("manifest name", &self.name, MAX_SHORT_STRING, true)?;
+        validate_string("manifest version", &self.version, 128, true)?;
+        validate_optional_string(
+            "manifest description",
+            self.description.as_deref(),
+            MAX_LONG_STRING,
+        )?;
+        validate_optional_string("manifest logo", self.logo.as_deref(), MAX_URL_LENGTH)?;
+        validate_optional_string(
+            "manifest background",
+            self.background.as_deref(),
+            MAX_URL_LENGTH,
+        )?;
+        ensure_collection_limit("manifest resources", self.resources.len(), 64)?;
+        ensure_collection_limit("manifest types", self.types.len(), 64)?;
+        ensure_collection_limit("manifest catalogs", self.catalogs.len(), 128)?;
+        validate_string_collection("manifest types", &self.types, 64)?;
+        for resource in &self.resources {
+            match resource {
+                Resource::Name(name) => {
+                    validate_string("manifest resource", name, 128, true)?;
+                }
+                Resource::Descriptor {
+                    name,
+                    types,
+                    id_prefixes,
+                } => {
+                    validate_string("manifest resource name", name, 128, true)?;
+                    ensure_collection_limit("manifest resource types", types.len(), 64)?;
+                    ensure_collection_limit(
+                        "manifest resource id prefixes",
+                        id_prefixes.len(),
+                        128,
+                    )?;
+                    validate_string_collection("manifest resource types", types, 64)?;
+                    validate_string_collection(
+                        "manifest resource id prefixes",
+                        id_prefixes,
+                        MAX_SHORT_STRING,
+                    )?;
+                }
+            }
+        }
+        for catalog in &self.catalogs {
+            catalog.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl Catalog {
+    fn validate(&self) -> Result<(), Error> {
+        validate_string("catalog type", &self.media_type, 64, true)?;
+        validate_string("catalog id", &self.id, MAX_SHORT_STRING, true)?;
+        validate_optional_string("catalog name", self.name.as_deref(), MAX_SHORT_STRING)?;
+        ensure_collection_limit("catalog genres", self.genres.len(), MAX_COLLECTION_ITEMS)?;
+        ensure_collection_limit("catalog extras", self.extra.len(), 32)?;
+        validate_string_collection("catalog genres", &self.genres, MAX_SHORT_STRING)?;
+        for extra in &self.extra {
+            validate_string("catalog extra name", &extra.name, 64, true)?;
+            ensure_collection_limit("catalog extra options", extra.options.len(), 256)?;
+            validate_string_collection("catalog extra options", &extra.options, 512)?;
+        }
+        Ok(())
+    }
+}
+
+impl MetaPreview {
+    fn validate(&self) -> Result<(), Error> {
+        validate_string("catalog item id", &self.id, MAX_SHORT_STRING, true)?;
+        validate_string("catalog item type", &self.media_type, 64, true)?;
+        validate_string("catalog item name", &self.name, MAX_SHORT_STRING, true)?;
+        validate_optional_string(
+            "catalog item poster",
+            self.poster.as_deref(),
+            MAX_URL_LENGTH,
+        )?;
+        validate_optional_string(
+            "catalog item background",
+            self.background.as_deref(),
+            MAX_URL_LENGTH,
+        )?;
+        validate_optional_string(
+            "catalog item description",
+            self.description.as_deref(),
+            MAX_LONG_STRING,
+        )?;
+        validate_optional_string(
+            "catalog item release info",
+            self.release_info.as_deref(),
+            MAX_SHORT_STRING,
+        )?;
+        ensure_collection_limit(
+            "catalog item genres",
+            self.genres.len(),
+            MAX_COLLECTION_ITEMS,
+        )?;
+        validate_string_collection("catalog item genres", &self.genres, MAX_SHORT_STRING)?;
+        validate_extra_map("catalog item extras", &self.extra)
+    }
+}
+
+impl Meta {
+    fn validate(&self) -> Result<(), Error> {
+        validate_string("meta id", &self.id, MAX_SHORT_STRING, true)?;
+        validate_string("meta type", &self.media_type, 64, true)?;
+        validate_string("meta name", &self.name, MAX_SHORT_STRING, true)?;
+        validate_optional_string("meta poster", self.poster.as_deref(), MAX_URL_LENGTH)?;
+        validate_optional_string(
+            "meta background",
+            self.background.as_deref(),
+            MAX_URL_LENGTH,
+        )?;
+        validate_optional_string("meta logo", self.logo.as_deref(), MAX_URL_LENGTH)?;
+        validate_optional_string(
+            "meta description",
+            self.description.as_deref(),
+            MAX_LONG_STRING,
+        )?;
+        ensure_collection_limit("meta cast", self.cast.len(), MAX_COLLECTION_ITEMS)?;
+        ensure_collection_limit("meta genres", self.genres.len(), MAX_COLLECTION_ITEMS)?;
+        ensure_collection_limit("meta videos", self.videos.len(), MAX_VIDEO_ITEMS)?;
+        validate_string_collection("meta cast", &self.cast, MAX_SHORT_STRING)?;
+        validate_string_collection("meta genres", &self.genres, MAX_SHORT_STRING)?;
+        for video in &self.videos {
+            video.validate()?;
+        }
+        validate_extra_map("meta extras", &self.extra)
+    }
+}
+
+impl Video {
+    fn validate(&self) -> Result<(), Error> {
+        validate_string("video id", &self.id, MAX_SHORT_STRING, true)?;
+        validate_optional_string("video title", self.title.as_deref(), MAX_SHORT_STRING)?;
+        validate_optional_string("video release date", self.released.as_deref(), 128)?;
+        validate_optional_string("video thumbnail", self.thumbnail.as_deref(), MAX_URL_LENGTH)?;
+        validate_extra_map("video extras", &self.extra)
+    }
+}
+
+impl Stream {
+    fn validate(&self) -> Result<(), Error> {
+        validate_optional_string("stream URL", self.url.as_deref(), MAX_URL_LENGTH)?;
+        validate_optional_string("stream infoHash", self.info_hash.as_deref(), 128)?;
+        ensure_collection_limit("stream sources", self.sources.len(), 64)?;
+        validate_string_collection("stream sources", &self.sources, MAX_URL_LENGTH)?;
+        validate_optional_string("stream name", self.name.as_deref(), MAX_SHORT_STRING)?;
+        validate_optional_string("stream title", self.title.as_deref(), MAX_LONG_STRING)?;
+        validate_extra_map("stream extras", &self.extra)
+    }
+}
+
+fn validate_path_value(label: &str, value: &str) -> Result<(), Error> {
+    validate_string(label, value, MAX_SHORT_STRING, true)
+}
+
+fn validate_optional_string(
+    label: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), Error> {
+    if let Some(value) = value {
+        validate_string(label, value, max_bytes, false)?;
+    }
+    Ok(())
+}
+
+fn validate_string(
+    label: &str,
+    value: &str,
+    max_bytes: usize,
+    required: bool,
+) -> Result<(), Error> {
+    if required && value.trim().is_empty() {
+        return Err(Error::Stremio(format!("{label} must not be empty")));
+    }
+    if value.len() > max_bytes {
+        return Err(Error::Stremio(format!(
+            "{label} is longer than {max_bytes} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_collection_limit(label: &str, count: usize, max: usize) -> Result<(), Error> {
+    if count > max {
+        return Err(Error::Stremio(format!(
+            "{label} contains too many items (maximum {max})"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_string_collection(
+    label: &str,
+    values: &[String],
+    max_string_bytes: usize,
+) -> Result<(), Error> {
+    for value in values {
+        validate_string(label, value, max_string_bytes, false)?;
+    }
+    Ok(())
+}
+
+fn validate_extra_map(label: &str, extras: &HashMap<String, Value>) -> Result<(), Error> {
+    ensure_collection_limit(label, extras.len(), MAX_EXTRA_FIELDS)?;
+    let mut nodes = 0;
+    for (key, value) in extras {
+        validate_string("extra field name", key, 256, true)?;
+        validate_extra_value(value, 0, &mut nodes)?;
+    }
+    Ok(())
+}
+
+fn validate_extra_value(value: &Value, depth: usize, nodes: &mut usize) -> Result<(), Error> {
+    if depth > MAX_EXTRA_DEPTH {
+        return Err(Error::Stremio(
+            "addon extra data is nested too deeply".into(),
+        ));
+    }
+    *nodes = nodes.saturating_add(1);
+    if *nodes > MAX_EXTRA_NODES {
+        return Err(Error::Stremio(
+            "addon extra data contains too many values".into(),
+        ));
+    }
+    match value {
+        Value::String(value) => {
+            validate_string("addon extra string", value, MAX_LONG_STRING, false)?;
+        }
+        Value::Array(values) => {
+            ensure_collection_limit("addon extra array", values.len(), MAX_COLLECTION_ITEMS)?;
+            for value in values {
+                validate_extra_value(value, depth + 1, nodes)?;
+            }
+        }
+        Value::Object(values) => {
+            ensure_collection_limit("addon extra object", values.len(), MAX_EXTRA_FIELDS)?;
+            for (key, value) in values {
+                validate_string("addon extra field name", key, 256, true)?;
+                validate_extra_value(value, depth + 1, nodes)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +915,92 @@ mod tests {
             client.manifest_url().unwrap(),
             "https://example.com/c29tZS1jb25maWc=/manifest.json"
         );
+    }
+
+    #[test]
+    fn addon_urls_must_be_public_credential_free_https() {
+        for rejected in [
+            "http://addons.example.com/manifest.json",
+            "https://user:secret@addons.example.com/manifest.json",
+            "https://localhost/manifest.json",
+            "https://router/manifest.json",
+            "https://media.internal/manifest.json",
+            "https://127.0.0.1/manifest.json",
+            "https://10.2.3.4/manifest.json",
+            "https://169.254.169.254/manifest.json",
+            "https://[::1]/manifest.json",
+            "https://[fe80::1]/manifest.json",
+        ] {
+            assert!(AddonClient::new(rejected).is_err(), "accepted {rejected}");
+        }
+        assert!(AddonClient::new("https://addons.example.com/manifest.json").is_ok());
+    }
+
+    #[test]
+    fn redirect_origin_comparison_includes_scheme_host_and_port() {
+        let original = reqwest::Url::parse("https://addons.example.com/a").unwrap();
+        assert!(same_origin(
+            &original,
+            &reqwest::Url::parse("https://addons.example.com/b").unwrap()
+        ));
+        assert!(!same_origin(
+            &original,
+            &reqwest::Url::parse("https://cdn.example.com/b").unwrap()
+        ));
+        assert!(!same_origin(
+            &original,
+            &reqwest::Url::parse("https://addons.example.com:444/b").unwrap()
+        ));
+        assert!(!same_origin(
+            &original,
+            &reqwest::Url::parse("http://addons.example.com/b").unwrap()
+        ));
+    }
+
+    #[test]
+    fn only_the_exact_official_cinemeta_cross_origin_redirect_is_allowed() {
+        let official =
+            reqwest::Url::parse("https://v3-cinemeta.strem.io/catalog/movie/top.json").unwrap();
+        let catalog =
+            reqwest::Url::parse("https://cinemeta-catalogs.strem.io/top/catalog/movie/top.json")
+                .unwrap();
+        assert!(is_official_cinemeta_redirect(&official, &catalog));
+        assert!(!is_official_cinemeta_redirect(
+            &reqwest::Url::parse("https://untrusted.example/catalog/movie/top.json").unwrap(),
+            &catalog
+        ));
+        assert!(!is_official_cinemeta_redirect(
+            &official,
+            &reqwest::Url::parse("https://cinemeta-catalogs.strem.io.evil.example/top").unwrap()
+        ));
+        assert!(!is_official_cinemeta_redirect(
+            &official,
+            &reqwest::Url::parse("http://cinemeta-catalogs.strem.io/top").unwrap()
+        ));
+    }
+
+    #[test]
+    fn dns_address_filter_rejects_non_public_ranges() {
+        for rejected in [
+            "0.0.0.0",
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "172.16.0.1",
+            "192.168.0.1",
+            "224.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(
+                is_non_public_ip(rejected.parse().unwrap()),
+                "accepted {rejected}"
+            );
+        }
+        assert!(!is_non_public_ip("1.1.1.1".parse().unwrap()));
+        assert!(!is_non_public_ip("2606:4700:4700::1111".parse().unwrap()));
     }
 
     #[test]
@@ -380,5 +1026,50 @@ mod tests {
             torrent.magnet_uri().unwrap().unwrap(),
             "magnet:?xt=urn%3Abtih%3Aabc123&tr=udp%3A%2F%2Ftracker.example"
         );
+    }
+
+    #[test]
+    fn direct_stream_policy_rejects_native_and_local_sources() {
+        for rejected in [
+            "file:///etc/passwd",
+            "data:text/plain,hello",
+            "concat:https://a|https://b",
+            "/Users/example/movie.mp4",
+            "https://user:secret@video.example/movie.mp4",
+            "https://127.0.0.1/movie.mp4",
+            "http://video.example/movie.mp4",
+            "ftp://video.example/movie.mp4",
+        ] {
+            let stream = Stream {
+                url: Some(rejected.into()),
+                info_hash: None,
+                file_idx: None,
+                sources: Vec::new(),
+                name: None,
+                title: None,
+                extra: HashMap::new(),
+            };
+            assert!(stream.source().is_err(), "accepted {rejected}");
+        }
+    }
+
+    #[test]
+    fn deserialized_collection_and_extra_limits_are_enforced() {
+        let mut preview: MetaPreview = serde_json::from_value(serde_json::json!({
+            "id": "tt1",
+            "type": "movie",
+            "name": "Example"
+        }))
+        .unwrap();
+        preview.genres =
+            std::iter::repeat_n("genre".to_owned(), MAX_COLLECTION_ITEMS + 1).collect();
+        assert!(preview.validate().is_err());
+
+        preview.genres.clear();
+        preview.extra.insert(
+            "oversized".into(),
+            Value::String("x".repeat(MAX_LONG_STRING + 1)),
+        );
+        assert!(preview.validate().is_err());
     }
 }

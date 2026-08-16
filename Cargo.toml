@@ -93,13 +93,11 @@ async-trait = "0.1"
 # HTTP client. Originally added as a direct dependency of `server/directory`
 # (`HttpDirectoryClient`'s transport — see that crate's Cargo.toml for the
 # "already transitive via iroh/iroh-relay" provenance note); promoted to a
-# workspace dependency here so `core::anime` (AniList's public GraphQL API)
-# and `core::mal_forums` (MyAnimeList's public REST API) — both unrelated
-# consumers, not ANKAI's own infrastructure — reuse the exact same resolved
-# version/feature set instead of pulling in a second HTTP client crate.
+# workspace dependency here so the live third-party metadata clients reuse
+# the exact same resolved version/feature set instead of pulling in a second
+# HTTP client crate.
 # `default-features = false` + explicit `rustls` avoids also pulling in the
 # `native-tls`/OpenSSL backend; `json` for typed request/response bodies;
-# `query` (added for `core::mal_forums`) for `RequestBuilder::query`, used to
-# build MAL's `?board_id=...&limit=...`-style query strings without
-# hand-rolled percent-encoding.
+# `query` for `RequestBuilder::query`, currently used by the Last.fm client
+# to build request parameters without hand-rolled percent-encoding.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }

@@ -61,10 +61,10 @@ openmls_basic_credential = "0.5.0"
 iroh.workspace = true
 # HTTP client for HttpDirectoryClient. Already a *transitive* dependency of
 # this exact workspace at 0.13.4 (pulled in by iroh/iroh-relay); promoted to
-# a `[workspace.dependencies]` entry (see root Cargo.toml) once `core::anime`
-# and `core::mal_forums` became additional, unrelated direct consumers, so
-# all crates resolve to the same version/feature set rather than each
-# pinning it separately.
+# a `[workspace.dependencies]` entry (see root Cargo.toml) once several live
+# metadata clients became additional, unrelated direct consumers, so all
+# crates resolve to the same version/feature set rather than each pinning it
+# separately.
 reqwest.workspace = true
 
 [dev-dependencies]

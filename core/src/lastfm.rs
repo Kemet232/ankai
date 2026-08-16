@@ -3,10 +3,10 @@
 //! username is currently listening to.
 //!
 //! **Same category of dependency as `core::anime`'s AniList client and
-//! `core::mal_forums`'s MyAnimeList client, not ANKAI's own infrastructure.**
-//! This is ANKAI consuming a public read API someone else runs, the same way
-//! those two modules consume AniList/MyAnimeList. No ADR, no server code,
-//! nothing to accept here.
+//! ANKAI's other third-party metadata clients, not ANKAI's own
+//! infrastructure.** This is ANKAI consuming a public read API someone else
+//! runs, the same way those modules consume public third-party metadata APIs.
+//! No ADR, no server code, nothing to accept here.
 //!
 //! **Why Last.fm and not Spotify/YouTube.** Recorded in `PROGRESS.md`
 //! (session 14): Spotify's "currently playing" data requires a Premium
@@ -54,13 +54,12 @@
 //!   Last.fm client) real parsing source, which does exactly this: treats a
 //!   present `nowplaying` attribute as the now-playing signal and expects no
 //!   `date` element on that track — same "confirm against a real, working
-//!   third-party client's source" methodology `core::mal_forums` used with
-//!   `go-myanimelist`. **This one detail (the now-playing shape itself, not
-//!   the rest of this module) is doc-cross-referenced rather than
-//!   live-captured — flagged honestly here, not silently presented as
-//!   independently verified. A future session with a real scrobbling
-//!   account handy should capture a live now-playing fixture and replace
-//!   this note.**
+//!   third-party client's source" methodology used by the other API clients.
+//!   **This one detail (the now-playing shape itself, not the rest of this
+//!   module) is doc-cross-referenced rather than live-captured — flagged
+//!   honestly here, not silently presented as independently verified. A
+//!   future session with a real scrobbling account handy should capture a
+//!   live now-playing fixture and replace this note.**
 //!
 //! **What this module explicitly does not attempt:**
 //! - No playback position/duration/progress. Last.fm's `user.getRecentTracks`
@@ -72,7 +71,7 @@
 //! - No scrobbling, loving, or any other write to Last.fm. Every function
 //!   here is a `GET`; the shared secret is not used.
 //! - No OAuth2/session-key flow. Only the public, API-key-only read surface.
-//! - No local persistence/caching table, matching `core::mal_forums`'s
+//! - No local persistence/caching table, matching the other live-feed clients'
 //!   posture — every call here is a live, uncached read; callers that want
 //!   to poll periodically own their own refresh cadence.
 //! - No retry/backoff/queueing on failure, matching every other network
@@ -89,7 +88,7 @@ const LASTFM_API_BASE: &str = "https://ws.audioscrobbler.com/2.0/";
 /// The environment variable this module reads a registered application's
 /// Last.fm API key from, at call time (never compiled in, never hardcoded) —
 /// same "opt-in runtime environment variable" posture as
-/// `MAL_CLIENT_ID`/`ANKAI_DIRECTORY_URL` elsewhere in this crate.
+/// `ANKAI_DIRECTORY_URL` elsewhere in this crate.
 const LASTFM_API_KEY_ENV_VAR: &str = "LASTFM_API_KEY";
 
 /// Reads the Last.fm API key from the environment at call time. Returns a
