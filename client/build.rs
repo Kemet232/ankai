@@ -1,4 +1,22 @@
 fn main() {
+    // Track every real `.slint` file in `ui/` for rebuild purposes.
+    // Printing even one `cargo:rerun-if-changed` line (the demo lines below
+    // already did) replaces cargo's default "rerun the build script on any
+    // file change in the crate" fallback with "only rerun for what's
+    // explicitly listed" — a real, easy-to-miss cargo gotcha. Without this
+    // loop, edits to `app.slint`/`theme.slint` (imported by `app.slint`, not
+    // listed anywhere) were silently not triggering slint_build::compile()
+    // to regenerate on an incremental `cargo build`/`cargo run`, so stale
+    // generated UI code kept getting used — hit for real: a real color-
+    // palette edit to both files didn't show up in the running app despite
+    // the source being correct, until this was found and fixed.
+    for entry in std::fs::read_dir("ui").expect("failed to read ui/ directory") {
+        let path = entry.expect("failed to read ui/ directory entry").path();
+        if path.extension().is_some_and(|ext| ext == "slint") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+
     slint_build::compile("ui/app.slint").expect("Slint build failed");
 
     // Separate, additive demo entry point for the FloatingPanel component

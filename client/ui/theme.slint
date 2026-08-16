@@ -20,7 +20,23 @@ export global Theme {
     out property <color> bg-surface: #0D1122; // color.bg.surface
     out property <color> bg-surface-raised: #141A33; // color.bg.surface-raised
     out property <color> accent-cyan: #4CE8F0; // color.accent.cyan
-    out property <color> accent-violet: #8B6CF0; // color.accent.violet
+    // Deepened/resaturated from the original #8B6CF0 to match the human's
+    // reference mockup (measured hero-button/nav-pill color: #6C4CD0) —
+    // #8363E3 lands between the two: clearly deeper/more saturated than the
+    // old pastel violet, while staying legible as text on bg-surface-raised
+    // (contrast-checked: ~4.0:1, comfortably above the 3:1 WCAG floor for
+    // the bold/large text this token is used as, e.g. StatTile numbers,
+    // Top8CardItem rank digits — see 2026-08-16 palette-match session).
+    out property <color> accent-violet: #8363E3; // color.accent.violet (deepened, see comment above)
+    // New: the reference mockup's hot-pink/magenta accent (measured from
+    // the reference image's like/heart badge and hero-card glow: #E82888),
+    // lightened slightly to #F0459A (same ~330° hue, +7% lightness) for
+    // text-legibility against bg-surface-raised (contrast ~4.9:1, meets
+    // WCAG AA normal-text) — the raw sampled value undershot 4.5:1. Didn't
+    // exist in the palette before this session; the reference barely uses
+    // cyan at all, so this replaces most of accent-cyan's former role as a
+    // primary UI accent (nav active state, section labels, card accents).
+    out property <color> accent-pink: #F0459A; // color.accent.pink (new)
     out property <color> accent-gold: #E8C468; // color.accent.gold
     out property <color> silver: #C7CEDB; // color.silver
     out property <color> text-primary: #F2F4FA; // color.text.primary
