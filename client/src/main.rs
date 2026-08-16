@@ -195,6 +195,21 @@ fn initial_letter(name: &str) -> String {
         .unwrap_or_else(|| "A".to_string())
 }
 
+fn open_external_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]);
+        command
+    };
+
+    command.arg(url).spawn().map(|_| ())
+}
+
 /// Recomputes the Profile pane's Top 8 UI state (`featured-communities`/
 /// `unfeatured-communities`) fresh from `core::top8`/`core::communities` and
 /// pushes it into the running `AppWindow`. Called once at startup and again
@@ -2242,6 +2257,17 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_open_profile_menu(move || {
             if let Some(app) = app_weak.upgrade() {
                 app.set_selected_index(app.get_profile_index());
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_open_mal_forum_topic(move |topic_id| {
+            let url = format!("https://myanimelist.net/forum/?topicid={topic_id}");
+            if let Err(error) = open_external_url(&url) {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(format!("Couldn't open MAL: {error}").into());
+                }
             }
         });
     }

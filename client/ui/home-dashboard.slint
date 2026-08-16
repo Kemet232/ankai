@@ -1,0 +1,1143 @@
+// ANKAI Home dashboard
+//
+// This file deliberately owns the Home presentation and its interaction
+// contract, while data loading stays in Rust.  The exported data structures
+// mirror the original definitions in app.slint so integration can move the
+// types here without changing the generated Rust API.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct AnimeRef {
+    id: int,
+    title: string,
+    score: string,
+    cover: image,
+    has-cover: bool,
+}
+
+export struct RecentPostRef {
+    community-name: string,
+    content: string,
+}
+
+export struct FriendRef {
+    device-id: string,
+    account-id: string,
+    online: bool,
+}
+
+export struct MalTopicRef {
+    id: int,
+    title: string,
+    snippet: string,
+    preview: string,
+}
+
+component NeonAction inherits Rectangle {
+    in property <string> label;
+    in property <string> icon: "";
+    in property <bool> primary: false;
+    in property <bool> quiet: false;
+    in property <bool> enabled: true;
+    in property <bool> busy: false;
+    callback activated();
+
+    height: 40px;
+    min-width: 96px;
+    border-radius: 12px;
+    opacity: root.enabled ? 1 : 0.45;
+    background: root.quiet
+        ? (touch.has-hover ? Theme.silver.with-alpha(0.10) : transparent)
+        : root.primary
+            ? (touch.pressed
+                ? Theme.accent-pink.with-alpha(0.72)
+                : touch.has-hover
+                    ? @linear-gradient(115deg, Theme.accent-pink 0%, Theme.accent-violet 100%)
+                    : @linear-gradient(115deg, Theme.accent-violet 0%, Theme.accent-pink.with-alpha(0.82) 100%))
+            : (touch.pressed
+                ? Theme.accent-violet.with-alpha(0.28)
+                : touch.has-hover
+                    ? Theme.accent-violet.with-alpha(0.20)
+                    : Theme.bg-surface-raised.with-alpha(0.76));
+    border-width: root.quiet ? 0px : 1px;
+    border-color: root.primary ? Theme.accent-pink.with-alpha(0.72) : Theme.silver.with-alpha(0.20);
+    drop-shadow-color: root.primary ? Theme.accent-pink.with-alpha(0.24) : transparent;
+    drop-shadow-blur: root.primary && touch.has-hover ? 18px : root.primary ? 10px : 0px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled && !root.busy;
+    accessible-action-default => {
+        if (root.enabled && !root.busy) { root.activated(); }
+    }
+
+    animate background { duration: 120ms; }
+    animate drop-shadow-blur { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        alignment: center;
+
+        if root.busy: Rectangle {
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            border-width: 2px;
+            border-color: Theme.text-primary.with-alpha(0.72);
+        }
+
+        if !root.busy && root.icon != "": Text {
+            text: root.icon;
+            color: root.primary ? Theme.text-primary : Theme.accent-pink;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.busy ? "Working…" : root.label;
+            color: root.primary ? Theme.text-primary : root.quiet ? Theme.text-secondary : Theme.text-primary;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled && !root.busy;
+        mouse-cursor: root.enabled && !root.busy ? pointer : default;
+        clicked => { root.activated(); }
+    }
+}
+
+component IconAction inherits Rectangle {
+    in property <string> glyph;
+    in property <string> hint: "";
+    in property <bool> enabled: true;
+    callback activated();
+
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    opacity: root.enabled ? 1 : 0.4;
+    background: touch.pressed
+        ? Theme.accent-pink.with-alpha(0.24)
+        : touch.has-hover
+            ? Theme.silver.with-alpha(0.10)
+            : Theme.bg-surface-raised.with-alpha(0.62);
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.accent-pink.with-alpha(0.45) : Theme.silver.with-alpha(0.15);
+    accessible-role: button;
+    accessible-label: root.hint == "" ? root.glyph : root.hint;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.activated(); }
+    }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.glyph;
+        color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: 17px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.activated(); }
+    }
+}
+
+component SectionHeading inherits HorizontalLayout {
+    in property <string> eyebrow: "";
+    in property <string> title;
+    in property <string> action-label: "View all";
+    in property <bool> show-action: true;
+    callback action();
+
+    height: 38px;
+    spacing: 12px;
+    alignment: start;
+
+    VerticalLayout {
+        spacing: 1px;
+        horizontal-stretch: 1;
+
+        if root.eyebrow != "": Text {
+            text: root.eyebrow;
+            color: Theme.accent-pink;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: 1.2px;
+        }
+
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: 15px;
+            font-weight: 700;
+        }
+    }
+
+    if root.show-action: Rectangle {
+        width: action-text.preferred-width + 20px;
+        height: 30px;
+        border-radius: 10px;
+        background: action-touch.has-hover ? Theme.accent-violet.with-alpha(0.18) : transparent;
+        accessible-role: button;
+        accessible-label: root.action-label;
+        accessible-action-default => { root.action(); }
+
+        action-text := Text {
+            text: root.action-label + "  ›";
+            color: action-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            font-size: 11px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        action-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.action(); }
+        }
+    }
+}
+
+component PanelState inherits Rectangle {
+    in property <string> state: "empty"; // loading | error | empty
+    in property <string> message;
+    in property <string> empty-action: "";
+    callback retry();
+    callback empty-activated();
+
+    border-radius: 13px;
+    background: root.state == "error" ? Theme.state-busy.with-alpha(0.08) : Theme.bg-void.with-alpha(0.22);
+    border-width: 1px;
+    border-color: root.state == "error" ? Theme.state-busy.with-alpha(0.30) : Theme.silver.with-alpha(0.10);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 9px;
+        alignment: center;
+
+        Text {
+            text: root.state == "loading" ? "✦" : root.state == "error" ? "!" : "◇";
+            color: root.state == "error" ? Theme.state-busy : Theme.accent-violet;
+            font-size: 18px;
+            font-weight: 800;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.message;
+            color: root.state == "error" ? Theme.text-primary : Theme.text-secondary;
+            font-size: 11px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        if root.state == "error": NeonAction {
+            label: "Try again";
+            icon: "↻";
+            activated => { root.retry(); }
+        }
+
+        if root.state == "empty" && root.empty-action != "": NeonAction {
+            label: root.empty-action;
+            activated => { root.empty-activated(); }
+        }
+    }
+}
+
+component HeroPanel inherits Rectangle {
+    in property <AnimeRef> anime;
+    in property <bool> watchlisted: false;
+    in property <bool> action-busy: false;
+    callback watch(int);
+    callback watchlist(int);
+    callback details(int);
+
+    border-radius: 20px;
+    clip: true;
+    background: @linear-gradient(125deg, #160D2D 0%, #172650 58%, #102037 100%);
+    border-width: 1px;
+    border-color: Theme.accent-violet.with-alpha(0.45);
+    drop-shadow-color: Theme.accent-violet.with-alpha(0.24);
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 6px;
+
+    if root.anime.has-cover: Image {
+        x: parent.width * 0.43;
+        y: 0px;
+        width: parent.width * 0.57;
+        height: parent.height;
+        source: root.anime.cover;
+        image-fit: cover;
+        opacity: 0.88;
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: @linear-gradient(90deg, #0B0D1FF2 0%, #0B0D1FD1 43%, #0B0D1F4A 72%, #0B0D1F26 100%);
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 4px;
+        height: parent.height;
+        background: @linear-gradient(180deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
+    }
+
+    VerticalLayout {
+        x: 26px;
+        y: 22px;
+        width: parent.width * 0.65;
+        height: parent.height - 44px;
+        spacing: 9px;
+        alignment: start;
+
+        Text {
+            text: "TRENDING NOW";
+            color: Theme.accent-pink;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1.4px;
+        }
+
+        Text {
+            text: root.anime.title;
+            color: Theme.text-primary;
+            font-size: 27px;
+            font-weight: 800;
+            wrap: word-wrap;
+            max-height: 70px;
+        }
+
+        HorizontalLayout {
+            height: 24px;
+            spacing: 8px;
+            alignment: start;
+
+            Rectangle {
+                height: 23px;
+                width: score-text.preferred-width + 18px;
+                border-radius: 12px;
+                background: Theme.accent-gold.with-alpha(0.12);
+                border-width: 1px;
+                border-color: Theme.accent-gold.with-alpha(0.28);
+
+                score-text := Text {
+                    text: "★  " + root.anime.score;
+                    color: Theme.accent-gold;
+                    font-size: 10px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 23px;
+                width: 74px;
+                border-radius: 12px;
+                background: Theme.state-online.with-alpha(0.10);
+                Text {
+                    text: "●  LIVE";
+                    color: Theme.state-online;
+                    font-size: 9px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: 8px;
+            alignment: start;
+
+            NeonAction {
+                width: 130px;
+                label: "Watch now";
+                icon: "▶";
+                primary: true;
+                busy: root.action-busy;
+                activated => { root.watch(root.anime.id); }
+            }
+
+            NeonAction {
+                width: 128px;
+                label: root.watchlisted ? "In watchlist" : "Watchlist";
+                icon: root.watchlisted ? "✓" : "+";
+                activated => { root.watchlist(root.anime.id); }
+            }
+
+            IconAction {
+                glyph: "•••";
+                activated => { root.details(root.anime.id); }
+            }
+        }
+    }
+}
+
+component PosterCard inherits Rectangle {
+    in property <AnimeRef> anime;
+    callback selected(int);
+
+    width: 156px;
+    height: 232px;
+    border-radius: 16px;
+    clip: true;
+    background: touch.has-hover ? Theme.bg-surface-raised.with-alpha(0.96) : Theme.bg-surface-raised.with-alpha(0.76);
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.accent-violet.with-alpha(0.62) : Theme.silver.with-alpha(0.16);
+    drop-shadow-color: touch.has-hover ? Theme.accent-violet.with-alpha(0.24) : Theme.bg-void.with-alpha(0.36);
+    drop-shadow-blur: touch.has-hover ? 18px : 10px;
+    drop-shadow-offset-y: touch.has-hover ? 5px : 3px;
+    accessible-role: button;
+    accessible-label: "Open " + root.anime.title;
+    accessible-action-default => { root.selected(root.anime.id); }
+
+    animate background { duration: 140ms; }
+    animate border-color { duration: 140ms; }
+    animate drop-shadow-blur { duration: 140ms; }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 168px;
+        background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.28) 0%, Theme.accent-pink.with-alpha(0.15) 100%);
+
+        if root.anime.has-cover: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.anime.cover;
+            image-fit: cover;
+        }
+
+        if !root.anime.has-cover: Text {
+            width: parent.width;
+            height: parent.height;
+            text: "✦";
+            color: Theme.accent-violet.with-alpha(0.8);
+            font-size: 28px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            x: 9px;
+            y: 9px;
+            width: score.preferred-width + 14px;
+            height: 23px;
+            border-radius: 12px;
+            background: Theme.bg-void.with-alpha(0.78);
+            border-width: 1px;
+            border-color: Theme.accent-gold.with-alpha(0.25);
+
+            score := Text {
+                text: "★ " + root.anime.score;
+                color: Theme.accent-gold;
+                font-size: 9px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    VerticalLayout {
+        x: 12px;
+        y: 177px;
+        width: parent.width - 24px;
+        height: 45px;
+        spacing: 3px;
+
+        Text {
+            text: root.anime.title;
+            color: Theme.text-primary;
+            font-size: 12px;
+            font-weight: 700;
+            overflow: elide;
+        }
+
+        Text {
+            text: "View details";
+            color: touch.has-hover ? Theme.accent-pink : Theme.text-secondary;
+            font-size: 10px;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.selected(root.anime.id); }
+    }
+}
+
+component FriendActivityPanel inherits Rectangle {
+    in property <[FriendRef]> friends;
+    in property <string> state: "ready";
+    in property <string> error-message: "";
+    callback friend-selected(string);
+    callback view-all();
+    callback retry();
+
+    border-radius: 20px;
+    background: @linear-gradient(150deg, Theme.bg-surface-raised.with-alpha(0.88) 0%, #152B4BD9 100%);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.18);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.42);
+    drop-shadow-blur: 18px;
+    clip: true;
+
+    Rectangle {
+        height: 2px;
+        width: parent.width;
+        background: @linear-gradient(90deg, Theme.accent-cyan.with-alpha(0.75) 0%, Theme.accent-violet.with-alpha(0.45) 65%, transparent 100%);
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+
+        SectionHeading {
+            eyebrow: "SOCIAL";
+            title: "Friend activity";
+            action-label: "All friends";
+            action => { root.view-all(); }
+        }
+
+        if root.state == "loading": PanelState {
+            vertical-stretch: 1;
+            state: "loading";
+            message: "Checking who is around…";
+        }
+
+        if root.state == "error": PanelState {
+            vertical-stretch: 1;
+            state: "error";
+            message: root.error-message;
+            retry => { root.retry(); }
+        }
+
+        if root.state == "ready" && root.friends.length == 0: PanelState {
+            vertical-stretch: 1;
+            state: "empty";
+            message: "No friends here yet. Add someone to make the dashboard feel alive.";
+            empty-action: "Find friends";
+            empty-activated => { root.view-all(); }
+        }
+
+        if root.state == "ready" && root.friends.length > 0: ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            horizontal-scrollbar-policy: always-off;
+
+            VerticalLayout {
+                spacing: 7px;
+                alignment: start;
+
+                for friend in root.friends: Rectangle {
+                    height: 52px;
+                    border-radius: 13px;
+                    background: friend-touch.has-hover ? Theme.silver.with-alpha(0.09) : Theme.bg-void.with-alpha(0.20);
+                    border-width: 1px;
+                    border-color: friend-touch.has-hover ? Theme.accent-cyan.with-alpha(0.35) : Theme.silver.with-alpha(0.09);
+                    accessible-role: button;
+                    accessible-label: "Open friend " + friend.account-id;
+                    accessible-action-default => { root.friend-selected(friend.account-id); }
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        alignment: start;
+
+                        Rectangle {
+                            width: 34px;
+                            height: 34px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 17px;
+                            background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.8) 0%, Theme.accent-pink.with-alpha(0.72) 100%);
+                            Text {
+                                // Slint strings intentionally expose no
+                                // substring/index operation.  Keep this a
+                                // neutral avatar mark until the real profile
+                                // model grows an avatar/image property.
+                                text: friend.account-id == "" ? "?" : "◎";
+                                color: Theme.text-primary;
+                                font-size: 12px;
+                                font-weight: 800;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                x: 25px;
+                                y: 25px;
+                                width: 9px;
+                                height: 9px;
+                                border-radius: 5px;
+                                background: friend.online ? Theme.state-online : Theme.state-offline;
+                                border-width: 2px;
+                                border-color: Theme.bg-surface-raised;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: friend.account-id;
+                                color: Theme.text-primary;
+                                font-size: 11px;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: friend.online ? "online now" : "offline";
+                                color: friend.online ? Theme.state-online : Theme.text-secondary;
+                                font-size: 9px;
+                            }
+                        }
+
+                        Text {
+                            text: "›";
+                            color: Theme.text-secondary;
+                            font-size: 17px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    friend-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.friend-selected(friend.account-id); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component DiscussionPanel inherits Rectangle {
+    in property <[RecentPostRef]> posts;
+    in property <string> state: "ready";
+    in property <string> error-message: "";
+    callback selected(string);
+    callback view-all();
+    callback retry();
+
+    border-radius: 18px;
+    background: Theme.bg-surface-raised.with-alpha(0.80);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.16);
+    clip: true;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 9px;
+
+        SectionHeading {
+            eyebrow: "COMMUNITY";
+            title: "Hot discussions";
+            action => { root.view-all(); }
+        }
+
+        if root.state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading conversations…"; }
+        if root.state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.error-message; retry => { root.retry(); } }
+        if root.state == "ready" && root.posts.length == 0: PanelState {
+            vertical-stretch: 1;
+            state: "empty";
+            message: "No discussions yet. Start the conversation.";
+            empty-action: "Open communities";
+            empty-activated => { root.view-all(); }
+        }
+
+        if root.state == "ready" && root.posts.length > 0: ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                spacing: 7px;
+                alignment: start;
+                for post in root.posts: Rectangle {
+                    height: 57px;
+                    border-radius: 12px;
+                    background: post-touch.has-hover ? Theme.accent-pink.with-alpha(0.09) : Theme.bg-void.with-alpha(0.18);
+                    accessible-role: button;
+                    accessible-label: "Open discussion in " + post.community-name;
+                    accessible-action-default => { root.selected(post.community-name); }
+                    HorizontalLayout {
+                        padding: 9px;
+                        spacing: 9px;
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 9px;
+                            background: Theme.accent-pink.with-alpha(0.14);
+                            Text { text: "◌"; color: Theme.accent-pink; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 2px;
+                            Text { text: post.content; color: Theme.text-primary; font-size: 10px; font-weight: 600; overflow: elide; }
+                            Text { text: post.community-name; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
+                        }
+                        Text { text: "›"; color: Theme.text-secondary; font-size: 16px; vertical-alignment: center; }
+                    }
+                    post-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(post.community-name); } }
+                }
+            }
+        }
+    }
+}
+
+component HangoutPanel inherits Rectangle {
+    in property <[string]> hangouts;
+    in property <string> state: "ready";
+    in property <string> error-message: "";
+    callback selected(string);
+    callback view-all();
+    callback create();
+    callback retry();
+
+    border-radius: 18px;
+    background: @linear-gradient(145deg, Theme.bg-surface-raised.with-alpha(0.86) 0%, Theme.accent-violet.with-alpha(0.11) 100%);
+    border-width: 1px;
+    border-color: Theme.accent-violet.with-alpha(0.25);
+    clip: true;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 9px;
+
+        SectionHeading {
+            eyebrow: "WATCH TOGETHER";
+            title: "Your hangouts";
+            action => { root.view-all(); }
+        }
+
+        if root.state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading rooms…"; }
+        if root.state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.error-message; retry => { root.retry(); } }
+        if root.state == "ready" && root.hangouts.length == 0: PanelState {
+            vertical-stretch: 1;
+            state: "empty";
+            message: "No rooms yet. Create one when you're ready to watch together.";
+            empty-action: "Create hangout";
+            empty-activated => { root.create(); }
+        }
+
+        if root.state == "ready" && root.hangouts.length > 0: ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                spacing: 7px;
+                alignment: start;
+                for name in root.hangouts: Rectangle {
+                    height: 57px;
+                    border-radius: 12px;
+                    background: room-touch.has-hover ? Theme.accent-violet.with-alpha(0.15) : Theme.bg-void.with-alpha(0.18);
+                    accessible-role: button;
+                    accessible-label: "Open hangout " + name;
+                    accessible-action-default => { root.selected(name); }
+                    HorizontalLayout {
+                        padding: 9px;
+                        spacing: 9px;
+                        Rectangle {
+                            width: 35px;
+                            height: 35px;
+                            border-radius: 10px;
+                            background: @linear-gradient(145deg, Theme.accent-pink.with-alpha(0.55) 0%, Theme.accent-violet.with-alpha(0.60) 100%);
+                            Text { text: "▶"; color: Theme.text-primary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 2px;
+                            Text { text: name; color: Theme.text-primary; font-size: 10px; font-weight: 700; overflow: elide; }
+                            Text { text: "Open room"; color: Theme.text-secondary; font-size: 9px; }
+                        }
+                        Text { text: "JOIN"; color: Theme.accent-violet; font-size: 9px; font-weight: 800; vertical-alignment: center; }
+                    }
+                    room-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(name); } }
+                }
+            }
+        }
+    }
+}
+
+component MalPanel inherits Rectangle {
+    in property <[MalTopicRef]> topics;
+    in property <string> state: "ready";
+    in property <string> error-message: "";
+    callback selected(int);
+    callback view-all();
+    callback retry();
+
+    border-radius: 18px;
+    background: @linear-gradient(145deg, Theme.bg-surface-raised.with-alpha(0.84) 0%, #132B48D9 100%);
+    border-width: 1px;
+    border-color: Theme.accent-cyan.with-alpha(0.20);
+    clip: true;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 9px;
+
+        SectionHeading {
+            eyebrow: "AROUND ANIME";
+            title: "MAL discussions";
+            action => { root.view-all(); }
+        }
+
+        if root.state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading MAL topics…"; }
+        if root.state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.error-message; retry => { root.retry(); } }
+        if root.state == "ready" && root.topics.length == 0: PanelState {
+            vertical-stretch: 1;
+            state: "empty";
+            message: "No MAL topics are available right now.";
+        }
+
+        if root.state == "ready" && root.topics.length > 0: ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: as-needed;
+            horizontal-scrollbar-policy: always-off;
+            VerticalLayout {
+                spacing: 7px;
+                alignment: start;
+                for topic in root.topics: Rectangle {
+                    height: 62px;
+                    border-radius: 12px;
+                    background: topic-touch.has-hover ? Theme.accent-cyan.with-alpha(0.08) : Theme.bg-void.with-alpha(0.18);
+                    accessible-role: button;
+                    accessible-label: "Open MAL discussion " + topic.title;
+                    accessible-action-default => { root.selected(topic.id); }
+                    HorizontalLayout {
+                        padding: 9px;
+                        spacing: 9px;
+                        Rectangle {
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 9px;
+                            background: Theme.accent-cyan.with-alpha(0.12);
+                            Text { text: "M"; color: Theme.accent-cyan; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 2px;
+                            Text { text: topic.title; color: Theme.text-primary; font-size: 10px; font-weight: 600; overflow: elide; }
+                            Text { text: topic.preview == "" ? topic.snippet : topic.preview; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
+                        }
+                        Text { text: "↗"; color: Theme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                    }
+                    topic-touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected(topic.id); } }
+                }
+            }
+        }
+    }
+}
+
+export component HomeDashboard inherits Rectangle {
+    in property <string> display-name: "";
+    in property <string> time-of-day-greeting: "hey";
+    in property <string> online-count-label: "";
+    in property <bool> compact-layout: root.width < 920px;
+
+    in property <[AnimeRef]> trending-anime: [];
+    in property <[AnimeRef]> popular-anime: [];
+    in property <string> anime-state: "loading"; // loading | ready | error
+    in property <string> anime-status: "";
+    in property <bool> hero-watchlisted: false;
+    in property <bool> hero-action-busy: false;
+
+    in property <[FriendRef]> friends: [];
+    in property <string> friends-state: "ready";
+    in property <string> friends-status: "";
+
+    in property <[RecentPostRef]> recent-posts: [];
+    in property <string> discussions-state: "ready";
+    in property <string> discussions-status: "";
+
+    in property <[string]> hangout-names: [];
+    in property <string> hangouts-state: "ready";
+    in property <string> hangouts-status: "";
+
+    in property <[MalTopicRef]> mal-topics: [];
+    in property <string> mal-state: "loading";
+    in property <string> mal-status: "";
+
+    callback refresh-home();
+    callback watch-now(int);
+    callback toggle-watchlist(int);
+    callback open-anime-details(int);
+    callback open-friend(string);
+    callback open-discussion(string);
+    callback open-hangout(string);
+    callback create-hangout();
+    callback open-mal-topic(int);
+    callback view-popular();
+    callback view-friends();
+    callback view-discussions();
+    callback view-hangouts();
+    callback view-mal();
+    callback retry-anime();
+    callback retry-friends();
+    callback retry-discussions();
+    callback retry-hangouts();
+    callback retry-mal();
+
+    background: transparent;
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        vertical-scrollbar-policy: as-needed;
+        horizontal-scrollbar-policy: always-off;
+
+        VerticalLayout {
+            width: parent.width;
+            padding-left: root.compact-layout ? 16px : 28px;
+            padding-right: root.compact-layout ? 16px : 28px;
+            padding-top: 24px;
+            padding-bottom: 34px;
+            spacing: 20px;
+            alignment: start;
+
+            HorizontalLayout {
+                height: 58px;
+                spacing: 12px;
+                alignment: start;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 3px;
+                    alignment: center;
+
+                    Text {
+                        text: root.time-of-day-greeting + ", " + (root.display-name == "" ? "friend" : root.display-name) + "  ✦";
+                        color: Theme.text-primary;
+                        font-size: root.compact-layout ? 20px : 24px;
+                        font-weight: 800;
+                        overflow: elide;
+                    }
+
+                    Text {
+                        text: "Here's what is happening across your anime world.";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+                }
+
+                if !root.compact-layout && root.online-count-label != "": Rectangle {
+                    width: online-label.preferred-width + 28px;
+                    height: 34px;
+                    border-radius: 17px;
+                    background: Theme.state-online.with-alpha(0.09);
+                    border-width: 1px;
+                    border-color: Theme.state-online.with-alpha(0.20);
+                    online-label := Text {
+                        text: "●  " + root.online-count-label + " online";
+                        color: Theme.state-online;
+                        font-size: 10px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                IconAction {
+                    glyph: "↻";
+                    hint: "Refresh Home";
+                    activated => { root.refresh-home(); }
+                }
+            }
+
+            if root.anime-state == "loading": PanelState {
+                height: 298px;
+                state: "loading";
+                message: "Finding what is trending…";
+            }
+
+            if root.anime-state == "error": PanelState {
+                height: 298px;
+                state: "error";
+                message: root.anime-status;
+                retry => { root.retry-anime(); }
+            }
+
+            if root.anime-state == "ready" && root.trending-anime.length == 0: PanelState {
+                height: 298px;
+                state: "empty";
+                message: "No trending anime is available right now.";
+            }
+
+            if root.anime-state == "ready" && root.trending-anime.length > 0 && !root.compact-layout: HorizontalLayout {
+                height: 298px;
+                spacing: 16px;
+                HeroPanel {
+                    horizontal-stretch: 64;
+                    anime: root.trending-anime[0];
+                    watchlisted: root.hero-watchlisted;
+                    action-busy: root.hero-action-busy;
+                    watch(id) => { root.watch-now(id); }
+                    watchlist(id) => { root.toggle-watchlist(id); }
+                    details(id) => { root.open-anime-details(id); }
+                }
+                FriendActivityPanel {
+                    horizontal-stretch: 36;
+                    friends: root.friends;
+                    state: root.friends-state;
+                    error-message: root.friends-status;
+                    friend-selected(account-id) => { root.open-friend(account-id); }
+                    view-all => { root.view-friends(); }
+                    retry => { root.retry-friends(); }
+                }
+            }
+
+            if root.anime-state == "ready" && root.trending-anime.length > 0 && root.compact-layout: VerticalLayout {
+                height: 596px;
+                spacing: 14px;
+                HeroPanel {
+                    height: 284px;
+                    anime: root.trending-anime[0];
+                    watchlisted: root.hero-watchlisted;
+                    action-busy: root.hero-action-busy;
+                    watch(id) => { root.watch-now(id); }
+                    watchlist(id) => { root.toggle-watchlist(id); }
+                    details(id) => { root.open-anime-details(id); }
+                }
+                FriendActivityPanel {
+                    height: 298px;
+                    friends: root.friends;
+                    state: root.friends-state;
+                    error-message: root.friends-status;
+                    friend-selected(account-id) => { root.open-friend(account-id); }
+                    view-all => { root.view-friends(); }
+                    retry => { root.retry-friends(); }
+                }
+            }
+
+            Rectangle {
+                height: 296px;
+                border-radius: 20px;
+                background: Theme.bg-surface.with-alpha(0.64);
+                border-width: 1px;
+                border-color: Theme.silver.with-alpha(0.13);
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+
+                    SectionHeading {
+                        eyebrow: "DISCOVER";
+                        title: "Popular right now";
+                        action => { root.view-popular(); }
+                    }
+
+                    if root.anime-state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading the chart…"; }
+                    if root.anime-state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.anime-status; retry => { root.retry-anime(); } }
+                    if root.anime-state == "ready" && root.popular-anime.length == 0: PanelState { vertical-stretch: 1; state: "empty"; message: "Nothing is charting right now."; }
+
+                    if root.anime-state == "ready" && root.popular-anime.length > 0: ScrollView {
+                        vertical-stretch: 1;
+                        vertical-scrollbar-policy: always-off;
+                        horizontal-scrollbar-policy: as-needed;
+                        HorizontalLayout {
+                            padding-right: 8px;
+                            spacing: 11px;
+                            alignment: start;
+                            for anime in root.popular-anime: PosterCard {
+                                anime: anime;
+                                selected(id) => { root.open-anime-details(id); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !root.compact-layout: HorizontalLayout {
+                height: 292px;
+                spacing: 14px;
+                DiscussionPanel {
+                    horizontal-stretch: 1;
+                    posts: root.recent-posts;
+                    state: root.discussions-state;
+                    error-message: root.discussions-status;
+                    selected(community) => { root.open-discussion(community); }
+                    view-all => { root.view-discussions(); }
+                    retry => { root.retry-discussions(); }
+                }
+                HangoutPanel {
+                    horizontal-stretch: 1;
+                    hangouts: root.hangout-names;
+                    state: root.hangouts-state;
+                    error-message: root.hangouts-status;
+                    selected(name) => { root.open-hangout(name); }
+                    view-all => { root.view-hangouts(); }
+                    create => { root.create-hangout(); }
+                    retry => { root.retry-hangouts(); }
+                }
+                MalPanel {
+                    horizontal-stretch: 1;
+                    topics: root.mal-topics;
+                    state: root.mal-state;
+                    error-message: root.mal-status;
+                    selected(id) => { root.open-mal-topic(id); }
+                    view-all => { root.view-mal(); }
+                    retry => { root.retry-mal(); }
+                }
+            }
+
+            if root.compact-layout: VerticalLayout {
+                height: 890px;
+                spacing: 14px;
+                DiscussionPanel {
+                    height: 286px;
+                    posts: root.recent-posts;
+                    state: root.discussions-state;
+                    error-message: root.discussions-status;
+                    selected(community) => { root.open-discussion(community); }
+                    view-all => { root.view-discussions(); }
+                    retry => { root.retry-discussions(); }
+                }
+                HangoutPanel {
+                    height: 286px;
+                    hangouts: root.hangout-names;
+                    state: root.hangouts-state;
+                    error-message: root.hangouts-status;
+                    selected(name) => { root.open-hangout(name); }
+                    view-all => { root.view-hangouts(); }
+                    create => { root.create-hangout(); }
+                    retry => { root.retry-hangouts(); }
+                }
+                MalPanel {
+                    height: 286px;
+                    topics: root.mal-topics;
+                    state: root.mal-state;
+                    error-message: root.mal-status;
+                    selected(id) => { root.open-mal-topic(id); }
+                    view-all => { root.view-mal(); }
+                    retry => { root.retry-mal(); }
+                }
+            }
+        }
+    }
+}

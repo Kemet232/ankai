@@ -31,6 +31,7 @@ export { SpikeGlassBlurWindow }
 // PROGRESS.md).
 import { FixedPanel } from "floating-panel.slint";
 import { AppNavButton, TopCommandBar } from "shell-components.slint";
+import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, MalTopicRef } from "home-dashboard.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -99,14 +100,6 @@ export struct FriendCard {
 // `has-cover` (fetch failed, still in flight, or AniList had no cover on
 // file for this entry) just means the card renders without a thumbnail —
 // not an error state.
-export struct AnimeRef {
-    id: int,
-    title: string,
-    score: string,
-    cover: image,
-    has-cover: bool,
-}
-
 export struct StremioMediaRef {
     title: string,
     detail: string,
@@ -118,11 +111,6 @@ export struct StremioMediaRef {
 // (ankai_core::forum_posts::list_recent_across_communities) — a post's
 // content plus its real parent community's name, so a mixed feed can still
 // say which community it came from.
-export struct RecentPostRef {
-    community-name: string,
-    content: string,
-}
-
 // One accepted friend (ankai_core::friends::Friend) plus this device's most
 // recently checked on-demand presence result (ankai_core::friends::
 // check_presence — a real, short-timeout live connection attempt, not a
@@ -130,12 +118,6 @@ export struct RecentPostRef {
 // `false` for every row until its real check completes and updates it in
 // place — there is no third "away" state, matching the module's own
 // documented online/offline-only distinction.
-export struct FriendRef {
-    device-id: string,
-    account-id: string,
-    online: bool,
-}
-
 // One MyAnimeList forum topic (ankai_core::mal_forums::ForumTopic), reduced
 // to what the Home dashboard's "MAL Forum Discussions" column renders.
 // `snippet` is pre-formatted display text ("128 replies · by someone") —
@@ -144,19 +126,6 @@ export struct FriendRef {
 // module doc comment for the real, read-only MAL forum API this comes from
 // (Client-ID-only auth; a real honest error, not fabricated data, if
 // MAL_CLIENT_ID isn't set in the environment at runtime).
-export struct MalTopicRef {
-    id: int,
-    title: string,
-    snippet: string,
-    // Real excerpt from the topic's real first post (MAL's raw BBCode body,
-    // stripped/truncated for display — see client::main's bbcode_preview
-    // doc comment and core::mal_forums's "No rendering of forum post
-    // bodies" note on why that stripping lives in the client, not core).
-    // Loads progressively after the topic list itself is on screen, same
-    // shape as cover-art loading; starts empty, not an error state.
-    preview: string,
-}
-
 // ---------------------------------------------------------------------
 // Small glass-styled building blocks for the Profile pane (ADR-0002's
 // spike gate is closed — see this file's header comment above — so this
@@ -1148,6 +1117,7 @@ export component AppWindow inherits Window {
     in-out property <[RecentPostRef]> recent-posts: [];
     in-out property <[FriendRef]> friends: [];
     callback refresh-home();
+    callback open-mal-forum-topic(int);
 
     // Real "Watch Now" action on the Trending Now hero card (main.rs's
     // on-watch-now): adds that anime to the local watchlist with
@@ -1302,7 +1272,67 @@ export component AppWindow inherits Window {
             // data source that was built but never wired into any screen
             // until now.
             // -----------------------------------------------------------
-            if root.selected-index == root.home-index: ScrollView {
+            if root.selected-index == root.home-index: HomeDashboard {
+                width: parent.width;
+                y: 72px;
+                height: parent.height - 72px;
+                display-name: root.display-name;
+                time-of-day-greeting: root.time-of-day-greeting;
+                trending-anime: root.trending-anime;
+                popular-anime: root.popular-anime;
+                anime-state: root.anime-status != "" ? "error" : root.trending-anime.length == 0 ? "loading" : "ready";
+                anime-status: root.anime-status;
+                friends: root.friends;
+                friends-state: "ready";
+                recent-posts: root.recent-posts;
+                discussions-state: "ready";
+                hangout-names: root.hangout-names;
+                hangouts-state: "ready";
+                mal-topics: root.mal-topics;
+                mal-state: root.mal-status != "" ? "error" : root.mal-topics.length == 0 ? "loading" : "ready";
+                mal-status: root.mal-status;
+
+                refresh-home => { root.refresh-home(); }
+                watch-now(id) => { root.watch-now(id); }
+                toggle-watchlist(id) => { root.watch-now(id); }
+                open-anime-details(id) => {
+                    root.global-search-query = "" + id;
+                    root.selected-index = root.watch-index;
+                    root.shell-notice = "Opening title details in Discover.";
+                }
+                open-friend(account-id) => {
+                    root.selected-index = root.profile-index;
+                    root.shell-notice = "Opened your friends area for " + account-id + ".";
+                }
+                open-discussion(community) => {
+                    root.selected-index = root.communities-index;
+                    root.shell-notice = "Browse " + community + " in Communities.";
+                }
+                open-hangout(name) => {
+                    root.selected-index = root.hangouts-index;
+                    root.shell-notice = "Opened hangout: " + name;
+                }
+                create-hangout => {
+                    root.selected-index = root.hangouts-index;
+                    root.shell-notice = "Name your new hangout below.";
+                }
+                open-mal-topic(id) => { root.open-mal-forum-topic(id); }
+                view-popular => { root.selected-index = root.watch-index; }
+                view-friends => { root.selected-index = root.profile-index; }
+                view-discussions => { root.selected-index = root.communities-index; }
+                view-hangouts => { root.selected-index = root.hangouts-index; }
+                view-mal => { root.shell-notice = "Choose a MAL topic to open it in your browser."; }
+                retry-anime => { root.refresh-home(); }
+                retry-friends => { root.refresh-home(); }
+                retry-discussions => { root.refresh-home(); }
+                retry-hangouts => { root.refresh-home(); }
+                retry-mal => { root.refresh-home(); }
+            }
+
+            // Legacy inline Home remains temporarily compiled as a visual
+            // fallback while the extracted dashboard settles, but is never
+            // instantiated. The next cleanup pass can delete it wholesale.
+            if root.selected-index == -1: ScrollView {
                 width: parent.width;
                 y: 72px;
                 height: parent.height - 72px;
