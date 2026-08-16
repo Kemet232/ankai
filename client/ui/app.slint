@@ -764,7 +764,7 @@ component NowPlayingWidget inherits Rectangle {
             width: 34px;
             height: 34px;
             border-radius: 17px;
-            background: root.state == "playing" ? @linear-gradient(135deg, Theme.accent-violet 0%, Theme.accent-cyan 100%) : Theme.silver.with-alpha(0.15);
+            background: root.state == "playing" ? @linear-gradient(135deg, Theme.accent-violet 0%, Theme.accent-pink 100%) : Theme.silver.with-alpha(0.15);
 
             Text {
                 x: 0px;
@@ -834,7 +834,7 @@ component NowPlayingWidget inherits Rectangle {
                         width: 30%;
                         height: parent.height;
                         border-radius: 2px;
-                        background: @linear-gradient(90deg, Theme.accent-cyan 0%, Theme.accent-violet 100%);
+                        background: @linear-gradient(90deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
                         x: 0px;
 
                         animate x {
