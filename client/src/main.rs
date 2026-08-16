@@ -64,6 +64,37 @@ thread_local! {
     static MESSAGING_HANDLES: RefCell<Option<MessagingHandles>> = const { RefCell::new(None) };
 }
 
+// The full `AnimeSummary` list behind the Home dashboard's last real
+// Trending Now load — kept around (beyond the trimmed `AnimeRef` the UI
+// actually renders) purely so the hero card's real "Watch Now" button can
+// look one up by id and call `ankai_core::anime::add_to_watchlist` with a
+// real `AnimeSummary`, not just a title string. Same thread-local-bridge
+// shape as `MESSAGING_HANDLES` above and for the same reason: written from
+// inside a `slint::invoke_from_event_loop` closure (see
+// `spawn_anime_refresh`) and read back from `on_watch_now`'s callback —
+// both guaranteed to run on the single UI thread, so a thread-local
+// `RefCell` is safe without needing the closures themselves to be `Sync`.
+thread_local! {
+    static HOME_TRENDING_ANIME: RefCell<Vec<ankai_core::anime::AnimeSummary>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// A time-of-day-appropriate greeting prefix for the Home dashboard's
+/// header ("good morning"/"good afternoon"/"good evening"), from this
+/// device's real local wall-clock time via `chrono::Local` — computed once
+/// at startup, not kept live while the app stays open (matches
+/// `display-name-initial`'s "startup snapshot" posture). The boundaries
+/// (5/12/18) are an ordinary, non-authoritative convention, not anything
+/// this module claims is precise.
+fn time_of_day_greeting() -> &'static str {
+    use chrono::Timelike;
+    match chrono::Local::now().hour() {
+        5..=11 => "good morning",
+        12..=17 => "good afternoon",
+        _ => "good evening",
+    }
+}
+
 /// Opens (creating if necessary) ANKAI's local encrypted database in this
 /// platform's standard app-data directory, keyed by the device-local
 /// passphrase from `ankai_core::keychain` (OS secure storage, per
@@ -414,6 +445,12 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                         .iter()
                         .filter_map(|a| a.cover_image_url.clone().map(|url| (a.id as i32, url)))
                         .collect();
+                    // Kept alongside the trimmed AnimeRef model below so the
+                    // Home dashboard's hero-card "Watch Now" button
+                    // (on_watch_now) can look a real full AnimeSummary back
+                    // up by id later — see HOME_TRENDING_ANIME's doc
+                    // comment.
+                    HOME_TRENDING_ANIME.with(|store| *store.borrow_mut() = list.clone());
                     let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
                     app.set_trending_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
                         refs,
@@ -471,6 +508,73 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                 Err(err) => {
                     eprintln!("ankai-client: failed to load popular anime: {err}");
                     app.set_anime_status(format!("Couldn't load popular anime: {err}").into());
+                }
+            }
+        });
+    });
+}
+
+/// MAL's real, stable board id for the "Anime Discussion" board — confirmed
+/// via a live request during `core::mal_forums`'s development (see that
+/// module's test fixtures/doc comment), not guessed at. The Home
+/// dashboard's "MAL Forum Discussions" column always reads from this one
+/// board; there's no board picker yet.
+const MAL_ANIME_DISCUSSION_BOARD_ID: i64 = 1;
+
+/// Converts one real MAL `ForumTopic` into the Home dashboard's compact
+/// title/snippet display shape, same "pre-format the fallback-y text in
+/// Rust" reason as `anime_to_ref` above.
+fn mal_topic_to_ref(topic: ankai_core::mal_forums::ForumTopic) -> MalTopicRef {
+    let replies_word = if topic.number_of_posts == 1 {
+        "reply"
+    } else {
+        "replies"
+    };
+    MalTopicRef {
+        title: topic.title.into(),
+        snippet: format!(
+            "{} {replies_word} · started by {}",
+            topic.number_of_posts, topic.created_by.name
+        )
+        .into(),
+    }
+}
+
+/// Fetches real MyAnimeList forum topics for the "Anime Discussion" board
+/// (`core::mal_forums::list_topics_in_board`) and pushes them into the Home
+/// dashboard's MAL Forum Discussions column. Spawned on `handle`, same
+/// "don't block the UI thread on a real third-party network call" reasoning
+/// as `spawn_anime_refresh` above. `mal-status` only ever holds a real error
+/// message: most commonly `MAL_CLIENT_ID` not being set in this device's
+/// environment (see `core::mal_forums`'s module doc comment), reworded here
+/// into something a non-technical reader can act on, but never fabricated —
+/// any other real failure (network error, MAL outage) is shown close to
+/// verbatim.
+fn spawn_mal_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
+    handle.spawn(async move {
+        let result =
+            ankai_core::mal_forums::list_topics_in_board(MAL_ANIME_DISCUSSION_BOARD_ID, 8).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(topics) => {
+                    app.set_mal_status("".into());
+                    let refs: Vec<MalTopicRef> = topics.into_iter().map(mal_topic_to_ref).collect();
+                    app.set_mal_topics(slint::ModelRc::from(Rc::new(slint::VecModel::from(refs))));
+                }
+                Err(err) => {
+                    let msg = err.to_string();
+                    eprintln!("ankai-client: failed to load MAL forum topics: {msg}");
+                    let display = if msg.contains("MAL_CLIENT_ID") {
+                        "MyAnimeList isn't configured on this device (no MAL_CLIENT_ID set in \
+                         the environment)."
+                            .to_string()
+                    } else {
+                        format!("Couldn't load MAL forum topics: {msg}")
+                    };
+                    app.set_mal_status(display.into());
                 }
             }
         });
@@ -642,6 +746,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or_default();
     app.set_display_name_initial(initial_letter(&saved_display_name).into());
     app.set_display_name(saved_display_name.into());
+    app.set_time_of_day_greeting(time_of_day_greeting().into());
 
     let db_for_save = db.clone();
     let app_weak_for_name = app.as_weak();
@@ -1435,23 +1540,63 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Home dashboard: recent posts and friends are plain synchronous local-
     // DB reads (like the rest of this app's startup loads above); trending/
-    // popular anime and friend presence are real network calls, kicked off
-    // asynchronously on the same tokio runtime the P2P/messaging side above
-    // already uses (see spawn_anime_refresh/spawn_friend_presence_checks'
-    // doc comments) so neither a slow AniList response nor an unreachable
-    // friend can stall the window. refresh-home re-runs all four so a
-    // failed AniList load (rate limit, an outage — see core::anime's module
-    // doc comment) or newly-added friends/posts can be retried without
-    // restarting the app.
+    // popular anime, MAL forum topics, and friend presence are real network
+    // calls, kicked off asynchronously on the same tokio runtime the
+    // P2P/messaging side above already uses (see spawn_anime_refresh/
+    // spawn_mal_refresh/spawn_friend_presence_checks' doc comments) so
+    // neither a slow AniList/MAL response nor an unreachable friend can
+    // stall the window. refresh-home re-runs all five so a failed AniList
+    // load (rate limit, an outage — see core::anime's module doc comment),
+    // an unconfigured/unreachable MAL, or newly-added friends/posts can be
+    // retried without restarting the app.
     refresh_recent_posts(&app, &db);
     let initial_friends = refresh_home_friends(&app, &db);
     spawn_anime_refresh(p2p_runtime.handle().clone(), app.as_weak());
+    spawn_mal_refresh(p2p_runtime.handle().clone(), app.as_weak());
     spawn_friend_presence_checks(
         initial_friends,
         p2p_node.clone(),
         p2p_runtime.handle().clone(),
         app.as_weak(),
     );
+
+    // Real "Watch Now" action on the Trending Now hero card: adds the
+    // clicked anime to the local watchlist as WatchStatus::Watching (see
+    // ui/app.slint's watch-now callback doc comment for why this is the
+    // most honest real action available here, absent a video-playback
+    // screen to navigate to). Looks the full AnimeSummary back up from
+    // HOME_TRENDING_ANIME by id since the UI only ever sees the trimmed
+    // AnimeRef shape.
+    {
+        let db_for_watch_now = db.clone();
+        let app_weak_for_watch_now = app.as_weak();
+        let handle_for_watch_now = p2p_runtime.handle().clone();
+        app.on_watch_now(move |id| {
+            let anime = HOME_TRENDING_ANIME
+                .with(|store| store.borrow().iter().find(|a| a.id == id as i64).cloned());
+            let Some(anime) = anime else {
+                eprintln!(
+                    "ankai-client: watch-now clicked for anime id {id}, not found in the last \
+                     trending load"
+                );
+                return;
+            };
+            if let Err(err) = ankai_core::anime::add_to_watchlist(
+                &db_for_watch_now,
+                &anime,
+                ankai_core::anime::WatchStatus::Watching,
+            ) {
+                eprintln!(
+                    "ankai-client: failed to add anime {id} to watchlist from Home's Watch Now \
+                     button: {err}"
+                );
+                return;
+            }
+            if let Some(app) = app_weak_for_watch_now.upgrade() {
+                refresh_watchlist(&app, &db_for_watch_now, &handle_for_watch_now);
+            }
+        });
+    }
 
     {
         let db_for_refresh = db.clone();
@@ -1465,6 +1610,7 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_recent_posts(&app, &db_for_refresh);
             let friends = refresh_home_friends(&app, &db_for_refresh);
             spawn_anime_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
+            spawn_mal_refresh(p2p_handle_for_refresh.clone(), app.as_weak());
             spawn_friend_presence_checks(
                 friends,
                 p2p_node_for_refresh.clone(),

@@ -58,6 +58,14 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+# Real local-clock time-of-day for the Home dashboard's greeting ("good
+# morning"/"good afternoon"/"good evening" — see app.slint's
+# time-of-day-greeting property doc comment). Already resolved as a
+# transitive dependency in Cargo.lock (via reqwest and others), so this just
+# promotes it to a direct one rather than adding a new crate to the build
+# graph. `default-features = false` + `clock` only: this doesn't need
+# chrono's serde/wasm/etc extras, just Local::now().
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [build-dependencies]
 slint-build = "1.17"
