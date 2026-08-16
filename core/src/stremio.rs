@@ -48,6 +48,16 @@ impl AddonClient {
             .await
     }
 
+    /// Returns the canonical manifest URL this client will request.
+    ///
+    /// Keeping this normalization here matters for installed-addon
+    /// persistence: a base URL and the equivalent explicit `manifest.json`
+    /// URL should identify one installation, while configured path segments
+    /// remain part of that identity.
+    pub fn manifest_url(&self) -> Result<String, Error> {
+        Ok(self.endpoint(&["manifest.json"])?.into())
+    }
+
     pub async fn catalog(
         &self,
         media_type: &str,
@@ -153,6 +163,10 @@ pub struct Manifest {
     pub version: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
     #[serde(default)]
     pub resources: Vec<Resource>,
     #[serde(default)]
@@ -335,6 +349,10 @@ mod tests {
             AddonClient::new("https://example.com/c29tZS1jb25maWc=/manifest.json").unwrap();
         assert_eq!(
             client.endpoint(&["manifest.json"]).unwrap().as_str(),
+            "https://example.com/c29tZS1jb25maWc=/manifest.json"
+        );
+        assert_eq!(
+            client.manifest_url().unwrap(),
             "https://example.com/c29tZS1jb25maWc=/manifest.json"
         );
     }
