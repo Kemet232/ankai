@@ -38,6 +38,26 @@ ankai-directory-server = { path = "../server/directory" }
 # so the workspace resolves one copy of each.
 openmls = "0.8.1"
 openmls_basic_credential = "0.5.0"
+# HTTP client for `client::images`' real anime-cover-art fetch (real bytes
+# from AniList's CDN, over HTTPS) — see root Cargo.toml's `reqwest` entry
+# for the full provenance note. `client` didn't need this directly before
+# (ankai-core used it internally for AniList/MAL); now it does its own
+# fetching of the image bytes AniList already gives it a URL for.
+reqwest.workspace = true
+# Real JPEG/PNG decode for `client::images` (fetched cover-art bytes ->
+# `image::DynamicImage` -> `slint::SharedPixelBuffer`/`slint::Image::
+# from_rgba8`, entirely in memory — no file written to disk). Version and
+# feature set (`png`, `jpeg`, no other formats) deliberately match exactly
+# what `i-slint-core`'s own `image-decoders`/`std` feature already pulls in
+# for `slint::Image::load_from_path`'s internal use (see that crate's
+# Cargo.toml) — AniList's real cover images are JPEG (confirmed via the
+# real captured fixture in core::anime's tests), so this adds no new
+# compiled codec surface to the workspace, just a direct reference to the
+# same resolved crate/feature set already being built.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
 
 [build-dependencies]
 slint-build = "1.17"
