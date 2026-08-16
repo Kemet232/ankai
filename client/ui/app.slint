@@ -34,6 +34,7 @@ import { AppNavButton, TopCommandBar } from "shell-components.slint";
 import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, MalTopicRef } from "home-dashboard.slint";
 import { TitleDetail, StremioEpisodeRef } from "title-detail.slint";
 import { AddonManager, AddonCard } from "addon-manager.slint";
+import { PlayerOverlay, PlayerTrackRef } from "player-overlay.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -850,10 +851,41 @@ export component AppWindow inherits Window {
     background: root.player-active ? transparent : Theme.bg-void;
     in-out property <bool> player-active: false;
     in-out property <string> player-title: "";
+    in-out property <bool> player-has-media: false;
+    in-out property <bool> player-video-ready: false;
+    in-out property <bool> player-playing: false;
+    in-out property <bool> player-loading: false;
+    in-out property <bool> player-buffering: false;
+    in-out property <bool> player-seeking: false;
+    in-out property <bool> player-muted: false;
+    in-out property <bool> player-fullscreen: false;
+    in-out property <float> player-position: 0;
+    in-out property <float> player-duration: 0;
+    in-out property <float> player-buffered: 0;
+    in-out property <float> player-buffering-percent: -1;
+    in-out property <float> player-volume: 100;
+    in-out property <float> player-speed: 1;
+    in-out property <string> player-elapsed-label: "00:00";
+    in-out property <string> player-duration-label: "--:--";
+    in-out property <string> player-error: "";
+    in-out property <[PlayerTrackRef]> player-audio-tracks: [];
+    in-out property <[PlayerTrackRef]> player-subtitle-tracks: [];
     callback toggle-player-pause();
     callback close-player();
     callback player-frame();
+    callback player-state-tick();
+    callback player-seek-relative(float);
+    callback player-seek(float);
+    callback player-toggle-mute();
+    callback player-set-volume(float);
+    callback player-set-speed(float);
+    callback player-select-audio(int);
+    callback player-select-subtitle(int);
+    callback player-disable-subtitles();
+    callback player-toggle-fullscreen();
+    callback player-retry();
     Timer { interval: 16ms; running: root.player-active; triggered => { root.player-frame(); } }
+    Timer { interval: 120ms; running: root.player-active; triggered => { root.player-state-tick(); } }
 
     property <[string]> nav-items: [
         "Home",
@@ -3035,21 +3067,45 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.player-active: Rectangle {
-                background: transparent;
-                Rectangle {
-                    x: 24px; y: parent.height - 74px; width: parent.width - 48px; height: 54px;
-                    border-radius: 18px;
-                    background: Theme.bg-surface-raised.with-alpha(0.86);
-                    border-width: 1px;
-                    border-color: Theme.silver.with-alpha(0.20);
-                    HorizontalLayout {
-                        padding: 10px; spacing: 12px;
-                        Text { text: root.player-title; color: Theme.text-primary; font-size: 13px; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
-                        Button { text: "Play / Pause"; clicked => { root.toggle-player-pause(); } }
-                        Button { text: "Close"; clicked => { root.close-player(); } }
-                    }
-                }
+            if root.player-active: PlayerOverlay {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                media-title: root.player-title;
+                has-media: root.player-has-media;
+                video-ready: root.player-video-ready;
+                fallback-art: root.stremio-selected-poster;
+                has-fallback-art: root.stremio-selected-has-poster;
+                is-playing: root.player-playing;
+                is-loading: root.player-loading;
+                is-buffering: root.player-buffering;
+                is-seeking: root.player-seeking;
+                is-muted: root.player-muted;
+                is-fullscreen: root.player-fullscreen;
+                position-seconds: root.player-position;
+                duration-seconds: root.player-duration;
+                buffered-seconds: root.player-buffered;
+                buffering-percent: root.player-buffering-percent;
+                volume: root.player-volume;
+                playback-speed: root.player-speed;
+                elapsed-label: root.player-elapsed-label;
+                duration-label: root.player-duration-label;
+                error-message: root.player-error;
+                audio-tracks: root.player-audio-tracks;
+                subtitle-tracks: root.player-subtitle-tracks;
+                toggle-playback => { root.toggle-player-pause(); }
+                seek-relative(seconds) => { root.player-seek-relative(seconds); }
+                seek-requested(seconds) => { root.player-seek(seconds); }
+                mute-toggled => { root.player-toggle-mute(); }
+                volume-requested(value) => { root.player-set-volume(value); }
+                speed-requested(value) => { root.player-set-speed(value); }
+                audio-track-requested(id) => { root.player-select-audio(id); }
+                subtitle-track-requested(id) => { root.player-select-subtitle(id); }
+                subtitles-disabled => { root.player-disable-subtitles(); }
+                fullscreen-toggled => { root.player-toggle-fullscreen(); }
+                close-requested => { root.close-player(); }
+                retry-requested => { root.player-retry(); }
             }
 
             if root.selected-index == root.settings-index: VerticalLayout {

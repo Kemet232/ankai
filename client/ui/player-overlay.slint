@@ -1,0 +1,1245 @@
+// ANKAI bounded cinema player overlay.
+//
+// This component owns presentation and input only. The host supplies the
+// libmpv render surface as a child (inserted at `@children` below), maps the
+// typed state properties from `playback::PlayerState`, and handles the
+// callbacks at the bottom of this contract. Keeping the render surface inside
+// this clipped component is intentional: mpv must render to the surface FBO,
+// not to the application's default framebuffer, or it will paint over the
+// entire Slint window.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct PlayerTrackRef {
+    // Slint's `int` is 32-bit. mpv track ids are normally small sequential
+    // values; the Rust adapter must reject an id that cannot be narrowed.
+    id: int,
+    label: string,
+    language: string,
+    codec: string,
+    selected: bool,
+    external: bool,
+    forced: bool,
+}
+
+component PlayerControl inherits FocusScope {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> prominent: false;
+    in property <bool> active: false;
+    in property <bool> compact-text: false;
+    in property <length> control-width: 40px;
+    in property <length> control-height: 40px;
+    callback activated();
+
+    width: root.control-width;
+    height: root.control-height;
+    focus-on-tab-navigation: root.enabled;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.activated(); }
+    }
+
+    key-pressed(event) => {
+        if (root.enabled && (event.text == Key.Return || event.text == Key.Space)) {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+
+    face := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: root.prominent ? parent.width / 2 : 12px;
+        background: !root.enabled
+            ? Theme.silver.with-alpha(0.06)
+            : control-touch.pressed
+                ? Theme.accent-pink.with-alpha(0.48)
+                : root.prominent
+                    ? @linear-gradient(135deg, Theme.accent-pink 0%, Theme.accent-violet 100%)
+                    : root.active
+                        ? Theme.accent-violet.with-alpha(0.34)
+                        : control-touch.has-hover || root.has-focus
+                            ? Theme.silver.with-alpha(0.14)
+                            : Theme.bg-surface-raised.with-alpha(0.58);
+        border-width: 1px;
+        border-color: root.has-focus
+            ? Theme.accent-pink.with-alpha(0.85)
+            : root.active
+                ? Theme.accent-violet.with-alpha(0.62)
+                : Theme.silver.with-alpha(0.16);
+        drop-shadow-color: root.prominent ? Theme.accent-pink.with-alpha(0.26) : transparent;
+        drop-shadow-blur: root.prominent && (control-touch.has-hover || root.has-focus) ? 20px : root.prominent ? 11px : 0px;
+
+        animate background, border-color, drop-shadow-blur { duration: 120ms; }
+
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.glyph;
+            color: root.enabled ? Theme.text-primary : Theme.text-secondary.with-alpha(0.55);
+            font-size: root.prominent ? 21px : root.compact-text ? 10px : 16px;
+            font-weight: root.compact-text ? 800 : 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        control-touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                root.focus();
+                root.activated();
+            }
+        }
+    }
+}
+
+component PlayerTextControl inherits FocusScope {
+    in property <string> text;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <length> control-width: 72px;
+    callback activated();
+
+    width: root.control-width;
+    height: 36px;
+    focus-on-tab-navigation: root.enabled;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if (root.enabled) { root.activated(); }
+    }
+
+    key-pressed(event) => {
+        if (root.enabled && (event.text == Key.Return || event.text == Key.Space)) {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 11px;
+        background: text-touch.pressed
+            ? Theme.accent-violet.with-alpha(0.34)
+            : root.active
+                ? Theme.accent-violet.with-alpha(0.30)
+                : text-touch.has-hover || root.has-focus
+                    ? Theme.silver.with-alpha(0.13)
+                    : Theme.bg-surface-raised.with-alpha(0.58);
+        border-width: 1px;
+        border-color: root.has-focus
+            ? Theme.accent-pink.with-alpha(0.80)
+            : root.active
+                ? Theme.accent-violet.with-alpha(0.62)
+                : Theme.silver.with-alpha(0.16);
+
+        animate background, border-color { duration: 120ms; }
+
+        Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.text;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: 10px;
+            font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        text-touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                root.focus();
+                root.activated();
+            }
+        }
+    }
+}
+
+component SeekTimeline inherits FocusScope {
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <float> buffered-seconds: 0;
+    in property <bool> controls-enabled: true;
+    in property <string> timeline-label: "Playback position";
+    out property <bool> scrubbing: false;
+    out property <float> display-position: root.scrubbing ? root.preview-position : root.position-seconds;
+    property <float> preview-position: 0;
+    callback previewed(float);
+    callback committed(float);
+    callback interacted();
+
+    height: 24px;
+    enabled: root.controls-enabled && root.duration-seconds > 0;
+    focus-on-tab-navigation: root.enabled;
+    accessible-role: slider;
+    accessible-label: root.timeline-label;
+    accessible-enabled: root.enabled;
+    accessible-value: root.display-position;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: max(root.duration-seconds, 0);
+    accessible-value-step: 10;
+    accessible-action-set-value(value) => {
+        if (root.enabled && value.is-float()) {
+            root.commit-value(value.to-float());
+        }
+    }
+    accessible-action-increment => {
+        if (root.enabled) { root.commit-value(root.display-position + 10); }
+    }
+    accessible-action-decrement => {
+        if (root.enabled) { root.commit-value(root.display-position - 10); }
+    }
+
+    key-pressed(event) => {
+        if (!root.enabled) { return reject; }
+        if (event.text == Key.RightArrow) {
+            root.commit-value(root.display-position + 10);
+            return accept;
+        }
+        if (event.text == Key.LeftArrow) {
+            root.commit-value(root.display-position - 10);
+            return accept;
+        }
+        if (event.text == Key.Home) {
+            root.commit-value(0);
+            return accept;
+        }
+        if (event.text == Key.End) {
+            root.commit-value(root.duration-seconds);
+            return accept;
+        }
+        reject
+    }
+
+    function position-at(pointer-x: length) -> float {
+        clamp(pointer-x / max(root.width, 1px) * root.duration-seconds, 0, root.duration-seconds)
+    }
+
+    function commit-value(value: float) {
+        root.interacted();
+        root.committed(clamp(value, 0, root.duration-seconds));
+    }
+
+    Rectangle {
+        x: 0px;
+        y: (parent.height - 5px) / 2;
+        width: parent.width;
+        height: seek-touch.has-hover || root.has-focus || root.scrubbing ? 7px : 5px;
+        border-radius: self.height / 2;
+        background: Theme.silver.with-alpha(0.19);
+
+        animate height, y { duration: 100ms; }
+
+        Rectangle {
+            width: parent.width * clamp(root.buffered-seconds / max(root.duration-seconds, 1), 0, 1);
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: Theme.silver.with-alpha(0.32);
+        }
+
+        Rectangle {
+            width: parent.width * clamp(root.display-position / max(root.duration-seconds, 1), 0, 1);
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: @linear-gradient(90deg, Theme.accent-violet 0%, Theme.accent-pink 100%);
+            drop-shadow-color: Theme.accent-pink.with-alpha(0.42);
+            drop-shadow-blur: 8px;
+        }
+    }
+
+    Rectangle {
+        x: clamp(root.width * root.display-position / max(root.duration-seconds, 1) - self.width / 2, 0px, root.width - self.width);
+        y: (parent.height - self.height) / 2;
+        width: seek-touch.has-hover || root.has-focus || root.scrubbing ? 14px : 10px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.text-primary;
+        border-width: 3px;
+        border-color: Theme.accent-pink;
+        drop-shadow-color: Theme.accent-pink.with-alpha(0.62);
+        drop-shadow-blur: 10px;
+
+        animate x, width, height { duration: 90ms; }
+    }
+
+    seek-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        changed pressed => {
+            if (self.pressed) {
+                root.focus();
+                root.interacted();
+                root.scrubbing = true;
+                root.preview-position = root.position-at(self.mouse-x);
+                root.previewed(root.preview-position);
+            } else if (root.scrubbing) {
+                root.scrubbing = false;
+                root.committed(root.preview-position);
+            }
+        }
+        moved => {
+            if (root.scrubbing) {
+                root.preview-position = root.position-at(self.mouse-x);
+                root.previewed(root.preview-position);
+                root.interacted();
+            }
+        }
+    }
+}
+
+component VolumeTimeline inherits FocusScope {
+    in property <float> value: 100;
+    in property <bool> controls-enabled: true;
+    property <bool> adjusting: false;
+    property <float> preview-value: 100;
+    out property <float> display-value: root.adjusting ? root.preview-value : root.value;
+    callback changed(float);
+    callback interacted();
+
+    width: 92px;
+    height: 28px;
+    enabled: root.controls-enabled;
+    focus-on-tab-navigation: root.enabled;
+    accessible-role: slider;
+    accessible-label: "Volume";
+    accessible-enabled: root.enabled;
+    accessible-value: root.display-value;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    accessible-value-step: 5;
+    accessible-action-set-value(value) => {
+        if (root.enabled && value.is-float()) { root.set-value(value.to-float()); }
+    }
+    accessible-action-increment => {
+        if (root.enabled) { root.set-value(root.display-value + 5); }
+    }
+    accessible-action-decrement => {
+        if (root.enabled) { root.set-value(root.display-value - 5); }
+    }
+
+    key-pressed(event) => {
+        if (!root.enabled) { return reject; }
+        if (event.text == Key.RightArrow || event.text == Key.UpArrow) {
+            root.set-value(root.display-value + 5);
+            return accept;
+        }
+        if (event.text == Key.LeftArrow || event.text == Key.DownArrow) {
+            root.set-value(root.display-value - 5);
+            return accept;
+        }
+        reject
+    }
+
+    function value-at(pointer-x: length) -> float {
+        clamp(pointer-x / max(root.width, 1px) * 100, 0, 100)
+    }
+
+    function set-value(value: float) {
+        root.interacted();
+        root.changed(clamp(value, 0, 100));
+    }
+
+    Rectangle {
+        x: 0px;
+        y: (parent.height - 4px) / 2;
+        width: parent.width;
+        height: volume-touch.has-hover || root.has-focus || root.adjusting ? 6px : 4px;
+        border-radius: self.height / 2;
+        background: Theme.silver.with-alpha(0.18);
+
+        Rectangle {
+            width: parent.width * clamp(root.display-value / 100, 0, 1);
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: Theme.text-primary.with-alpha(0.82);
+        }
+    }
+
+    Rectangle {
+        x: clamp(root.width * root.display-value / 100 - self.width / 2, 0px, root.width - self.width);
+        y: (parent.height - self.height) / 2;
+        width: volume-touch.has-hover || root.has-focus || root.adjusting ? 12px : 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.text-primary;
+    }
+
+    volume-touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        changed pressed => {
+            if (self.pressed) {
+                root.focus();
+                root.adjusting = true;
+                root.preview-value = root.value-at(self.mouse-x);
+                root.set-value(root.preview-value);
+            } else {
+                root.adjusting = false;
+            }
+        }
+        moved => {
+            if (root.adjusting) {
+                root.preview-value = root.value-at(self.mouse-x);
+                root.set-value(root.preview-value);
+            }
+        }
+    }
+}
+
+component TrackChoice inherits FocusScope {
+    in property <PlayerTrackRef> track;
+    callback selected(int);
+
+    height: 42px;
+    accessible-role: button;
+    accessible-label: (root.track.selected ? "Selected " : "Select ") + root.track.label;
+    accessible-action-default => { root.selected(root.track.id); }
+    key-pressed(event) => {
+        if (event.text == Key.Return || event.text == Key.Space) {
+            root.selected(root.track.id);
+            return accept;
+        }
+        reject
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 10px;
+        background: choice-touch.has-hover || root.has-focus
+            ? Theme.silver.with-alpha(0.10)
+            : root.track.selected
+                ? Theme.accent-violet.with-alpha(0.20)
+                : transparent;
+        border-width: root.track.selected || root.has-focus ? 1px : 0px;
+        border-color: root.has-focus ? Theme.accent-pink.with-alpha(0.78) : Theme.accent-violet.with-alpha(0.44);
+
+        HorizontalLayout {
+            padding-left: 11px;
+            padding-right: 10px;
+            spacing: 10px;
+            alignment: center;
+
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                border-radius: 4px;
+                background: root.track.selected ? Theme.accent-pink : Theme.silver.with-alpha(0.24);
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 1px;
+                alignment: center;
+
+                Text {
+                    text: root.track.label == "" ? "Track " + root.track.id : root.track.label;
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    font-weight: root.track.selected ? 700 : 500;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: (root.track.language == "" ? "Unknown language" : root.track.language)
+                        + (root.track.codec == "" ? "" : "  ·  " + root.track.codec)
+                        + (root.track.external ? "  ·  External" : "")
+                        + (root.track.forced ? "  ·  Forced" : "");
+                    color: Theme.text-secondary;
+                    font-size: 9px;
+                    overflow: elide;
+                }
+            }
+
+            if root.track.selected: Text {
+                text: "✓";
+                color: Theme.accent-pink;
+                font-size: 13px;
+                font-weight: 800;
+                vertical-alignment: center;
+            }
+        }
+
+        choice-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.focus();
+                root.selected(root.track.id);
+            }
+        }
+    }
+}
+
+export component PlayerOverlay inherits Rectangle {
+    // Content/state supplied by the Rust adapter.
+    in property <string> media-title: "Nothing playing";
+    in property <string> episode-title: "";
+    in property <string> source-label: "";
+    in property <string> quality-label: "";
+    in property <string> elapsed-label: "00:00";
+    in property <string> duration-label: "--:--";
+    in property <bool> has-media: false;
+    in property <bool> video-ready: false;
+    in property <image> fallback-art;
+    in property <bool> has-fallback-art: false;
+    in property <bool> is-playing: false;
+    in property <bool> is-loading: false;
+    in property <bool> is-buffering: false;
+    in property <bool> is-seeking: false;
+    in property <bool> is-muted: false;
+    in property <bool> is-fullscreen: false;
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <float> buffered-seconds: 0;
+    in property <float> buffering-percent: -1;
+    in property <float> volume: 100;
+    in property <float> playback-speed: 1;
+    in property <string> error-message: "";
+    in property <[PlayerTrackRef]> audio-tracks: [];
+    in property <[PlayerTrackRef]> subtitle-tracks: [];
+    in property <string> selected-audio-label: "Audio";
+    in property <string> selected-subtitle-label: "CC";
+    in property <bool> auto-hide-controls: true;
+
+    // Host-visible presentation state. A host may force the chrome visible
+    // (for example while a settings flyout is open).
+    in-out property <bool> controls-visible: true;
+    out property <string> playback-status: root.error-message != ""
+        ? "Playback error"
+        : root.is-loading
+            ? "Opening stream"
+            : root.is-buffering
+                ? (root.buffering-percent >= 0 ? "Buffering " + round(root.buffering-percent) + "%" : "Buffering")
+                : root.is-seeking
+                    ? "Seeking"
+                    : root.is-playing
+                        ? "Playing"
+                        : root.has-media
+                            ? "Paused"
+                            : "Idle";
+    property <string> open-menu: ""; // "speed" | "audio" | "subtitle"
+    property <int> loading-step: 0;
+
+    // Playback requests. The component never mutates backend truth directly.
+    callback toggle-playback();
+    callback seek-relative(float);
+    callback seek-previewed(float);
+    callback seek-requested(float);
+    callback mute-toggled();
+    callback volume-requested(float);
+    callback speed-requested(float);
+    callback audio-track-requested(int);
+    callback subtitle-track-requested(int);
+    callback subtitles-disabled();
+    callback fullscreen-toggled();
+    callback close-requested();
+    callback retry-requested();
+    callback user-interacted();
+
+    min-width: 560px;
+    min-height: 360px;
+    preferred-width: 960px;
+    preferred-height: 540px;
+    clip: true;
+    border-radius: 20px;
+    // The current host renders libmpv into Slint's default framebuffer before
+    // drawing this chrome. Once video is ready, keep the root transparent so
+    // that frame remains visible through the clipped well. `render_to_fbo`
+    // remains available for a future texture-backed child surface.
+    background: root.video-ready ? transparent : Theme.bg-void;
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.22);
+    drop-shadow-color: Theme.bg-void.with-alpha(0.76);
+    drop-shadow-blur: 34px;
+    drop-shadow-offset-y: 12px;
+    accessible-role: groupbox;
+    accessible-label: "Video player: " + root.media-title;
+    forward-focus: player-keys;
+
+    function reveal-controls() {
+        root.controls-visible = true;
+        idle-timer.restart();
+        root.user-interacted();
+    }
+
+    function close-menus() {
+        root.open-menu = "";
+    }
+
+    function toggle-menu(menu: string) {
+        root.reveal-controls();
+        root.open-menu = root.open-menu == menu ? "" : menu;
+    }
+
+    player-keys := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-click: true;
+        key-pressed(event) => {
+            root.reveal-controls();
+            if (event.text == Key.Space) {
+                root.toggle-playback();
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                root.seek-relative(-10);
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.seek-relative(10);
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                root.volume-requested(clamp(root.volume + 5, 0, 100));
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.volume-requested(clamp(root.volume - 5, 0, 100));
+                return accept;
+            }
+            if (event.text == "m" || event.text == "M") {
+                root.mute-toggled();
+                return accept;
+            }
+            if (event.text == "f" || event.text == "F") {
+                root.fullscreen-toggled();
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                if (root.open-menu != "") {
+                    root.close-menus();
+                } else if (root.is-fullscreen) {
+                    root.fullscreen-toggled();
+                } else {
+                    root.close-requested();
+                }
+                return accept;
+            }
+            reject
+        }
+    }
+
+    idle-timer := Timer {
+        interval: 3200ms;
+        running: root.auto-hide-controls && root.is-playing && root.controls-visible && root.open-menu == "" && !seek.scrubbing;
+        triggered => { root.controls-visible = false; }
+    }
+
+    loading-timer := Timer {
+        interval: 360ms;
+        running: root.is-loading || root.is-buffering || root.is-seeking;
+        triggered => { root.loading-step = Math.mod(root.loading-step + 1, 3); }
+    }
+
+    // Clipped render well. The host's libmpv/FBO surface is inserted here.
+    video-well := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        clip: true;
+        border-radius: root.border-radius;
+        background: root.video-ready ? transparent : #02030A;
+
+        if root.has-fallback-art && !root.video-ready: Image {
+            source: root.fallback-art;
+            width: parent.width;
+            height: parent.height;
+            image-fit: cover;
+            opacity: 0.35;
+        }
+
+        if !root.video-ready && !root.has-fallback-art: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: @radial-gradient(circle, Theme.accent-violet.with-alpha(0.22) 0%, Theme.bg-void 70%);
+        }
+
+        @children
+    }
+
+    // Clicking the picture toggles playback; double-clicking follows desktop
+    // player convention and toggles fullscreen. This layer remains below all
+    // visible chrome, so controls keep input priority.
+    surface-touch := TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        enabled: root.has-media && root.error-message == "";
+        mouse-cursor: pointer;
+        changed pressed => {
+            if (self.pressed) {
+                player-keys.focus();
+                root.reveal-controls();
+            }
+        }
+        clicked => {
+            if (root.open-menu != "") {
+                root.close-menus();
+            } else {
+                root.toggle-playback();
+            }
+        }
+        double-clicked => { root.fullscreen-toggled(); }
+    }
+
+    // Cinema scrims keep the title and transport legible over bright footage.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: 116px;
+        background: @linear-gradient(180deg, #02030ADE 0%, #02030A00 100%);
+        opacity: root.controls-visible ? 1 : 0;
+        animate opacity { duration: 220ms; easing: ease-in-out; }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: parent.height - 176px;
+        width: parent.width;
+        height: 176px;
+        background: @linear-gradient(180deg, #02030A00 0%, #02030AF0 100%);
+        opacity: root.controls-visible ? 1 : 0;
+        animate opacity { duration: 220ms; easing: ease-in-out; }
+    }
+
+    top-chrome := Rectangle {
+        x: 22px;
+        y: root.controls-visible ? 18px : 8px;
+        width: parent.width - 44px;
+        height: 54px;
+        background: transparent;
+        opacity: root.controls-visible ? 1 : 0;
+
+        animate opacity, y { duration: 220ms; easing: ease-out; }
+
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: center;
+
+            Rectangle {
+                width: 4px;
+                height: 34px;
+                border-radius: 2px;
+                background: @linear-gradient(180deg, Theme.accent-pink 0%, Theme.accent-violet 100%);
+                drop-shadow-color: Theme.accent-pink.with-alpha(0.55);
+                drop-shadow-blur: 10px;
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 2px;
+                alignment: center;
+
+                Text {
+                    text: root.media-title;
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 750;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.episode-title
+                        + (root.episode-title != "" && root.source-label != "" ? "  ·  " : "")
+                        + root.source-label;
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    overflow: elide;
+                }
+            }
+
+            Rectangle {
+                height: 26px;
+                width: status-text.preferred-width + 24px;
+                border-radius: 13px;
+                background: Theme.bg-surface-raised.with-alpha(0.72);
+                border-width: 1px;
+                border-color: root.error-message != ""
+                    ? Theme.state-busy.with-alpha(0.55)
+                    : root.is-buffering || root.is-loading || root.is-seeking
+                        ? Theme.accent-gold.with-alpha(0.52)
+                        : root.is-playing
+                            ? Theme.state-online.with-alpha(0.48)
+                            : Theme.silver.with-alpha(0.18);
+
+                HorizontalLayout {
+                    padding-left: 9px;
+                    padding-right: 9px;
+                    spacing: 7px;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: root.error-message != ""
+                            ? Theme.state-busy
+                            : root.is-buffering || root.is-loading || root.is-seeking
+                                ? Theme.accent-gold
+                                : root.is-playing
+                                    ? Theme.state-online
+                                    : Theme.state-offline;
+                    }
+
+                    status-text := Text {
+                        text: root.playback-status;
+                        color: Theme.text-primary;
+                        font-size: 9px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if root.quality-label != "": Rectangle {
+                width: quality-text.preferred-width + 16px;
+                height: 26px;
+                border-radius: 8px;
+                background: Theme.accent-violet.with-alpha(0.24);
+                border-width: 1px;
+                border-color: Theme.accent-violet.with-alpha(0.44);
+
+                quality-text := Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.quality-label;
+                    color: Theme.text-primary;
+                    font-size: 9px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            PlayerControl {
+                glyph: "×";
+                label: "Close player";
+                control-width: 36px;
+                control-height: 36px;
+                enabled: root.controls-visible;
+                activated => {
+                    root.reveal-controls();
+                    root.close-requested();
+                }
+            }
+        }
+    }
+
+    // Honest loading/buffering/seeking state. The percentage is shown only
+    // when mpv reports it; the animated dots never pretend to be progress.
+    if (root.is-loading || root.is-buffering || root.is-seeking) && root.error-message == "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 - 12px;
+        width: 186px;
+        height: 72px;
+        border-radius: 18px;
+        background: Theme.bg-void.with-alpha(0.76);
+        border-width: 1px;
+        border-color: Theme.silver.with-alpha(0.18);
+        drop-shadow-color: Theme.bg-void.with-alpha(0.58);
+        drop-shadow-blur: 22px;
+
+        VerticalLayout {
+            padding: 13px;
+            spacing: 8px;
+            alignment: center;
+
+            HorizontalLayout {
+                spacing: 7px;
+                alignment: center;
+                for dot[i] in [0, 1, 2]: Rectangle {
+                    width: root.loading-step == i ? 10px : 7px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: root.loading-step == i ? Theme.accent-pink : Theme.accent-violet.with-alpha(0.54);
+                    animate width, height, background { duration: 180ms; }
+                }
+            }
+
+            Text {
+                text: root.playback-status;
+                color: Theme.text-primary;
+                font-size: 11px;
+                font-weight: 650;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    if root.error-message != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 - 12px;
+        width: min(420px, parent.width - 64px);
+        height: 154px;
+        border-radius: 20px;
+        background: Theme.bg-surface-raised.with-alpha(0.94);
+        border-width: 1px;
+        border-color: Theme.state-busy.with-alpha(0.46);
+        drop-shadow-color: Theme.state-busy.with-alpha(0.18);
+        drop-shadow-blur: 26px;
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+
+            Text {
+                text: "Playback hit a problem";
+                color: Theme.text-primary;
+                font-size: 15px;
+                font-weight: 750;
+            }
+
+            Text {
+                text: root.error-message;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                PlayerTextControl {
+                    text: "CLOSE";
+                    label: "Close player";
+                    control-width: 72px;
+                    activated => { root.close-requested(); }
+                }
+                PlayerTextControl {
+                    text: "↻  RETRY";
+                    label: "Retry playback";
+                    control-width: 94px;
+                    active: true;
+                    activated => { root.retry-requested(); }
+                }
+            }
+        }
+    }
+
+    // Large, discoverable center action when playback is paused. It fades out
+    // completely while video is moving and never masks an error or spinner.
+    center-play := PlayerControl {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 - 10px;
+        control-width: 66px;
+        control-height: 66px;
+        glyph: root.is-playing ? "Ⅱ" : "▶";
+        label: root.is-playing ? "Pause" : "Play";
+        prominent: true;
+        enabled: root.has-media && !root.is-loading && !root.is-buffering && root.error-message == "";
+        opacity: !root.is-playing && !root.is-loading && !root.is-buffering && root.error-message == "" ? 1 : 0;
+        visible: root.error-message == "";
+        activated => {
+            root.reveal-controls();
+            root.toggle-playback();
+        }
+        animate opacity { duration: 180ms; }
+    }
+
+    bottom-chrome := Rectangle {
+        x: 22px;
+        y: root.controls-visible ? parent.height - 106px : parent.height - 88px;
+        width: parent.width - 44px;
+        height: 88px;
+        background: transparent;
+        opacity: root.controls-visible ? 1 : 0;
+
+        animate opacity, y { duration: 220ms; easing: ease-out; }
+
+        VerticalLayout {
+            spacing: 9px;
+
+            HorizontalLayout {
+                height: 24px;
+                spacing: 10px;
+                alignment: center;
+
+                seek := SeekTimeline {
+                    horizontal-stretch: 1;
+                    position-seconds: root.position-seconds;
+                    duration-seconds: root.duration-seconds;
+                    buffered-seconds: root.buffered-seconds;
+                    controls-enabled: root.controls-visible && root.has-media && root.error-message == "";
+                    previewed(value) => { root.seek-previewed(value); }
+                    committed(value) => {
+                        root.reveal-controls();
+                        root.seek-requested(value);
+                    }
+                    interacted => { root.reveal-controls(); }
+                }
+
+                Text {
+                    width: 102px;
+                    text: (seek.scrubbing ? "Seeking" : root.elapsed-label) + "  /  " + root.duration-label;
+                    color: seek.scrubbing ? Theme.accent-pink : Theme.text-secondary;
+                    font-size: 10px;
+                    font-weight: 650;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 7px;
+                alignment: center;
+
+                PlayerControl {
+                    glyph: root.is-playing ? "Ⅱ" : "▶";
+                    label: root.is-playing ? "Pause" : "Play";
+                    prominent: true;
+                    control-width: 44px;
+                    control-height: 44px;
+                    enabled: root.controls-visible && root.has-media && !root.is-loading && root.error-message == "";
+                    activated => {
+                        root.reveal-controls();
+                        root.toggle-playback();
+                    }
+                }
+
+                PlayerControl {
+                    glyph: "−10";
+                    label: "Go back 10 seconds";
+                    compact-text: true;
+                    enabled: root.controls-visible && root.has-media && root.duration-seconds > 0;
+                    activated => {
+                        root.reveal-controls();
+                        root.seek-relative(-10);
+                    }
+                }
+
+                PlayerControl {
+                    glyph: "+10";
+                    label: "Go forward 10 seconds";
+                    compact-text: true;
+                    enabled: root.controls-visible && root.has-media && root.duration-seconds > 0;
+                    activated => {
+                        root.reveal-controls();
+                        root.seek-relative(10);
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                PlayerControl {
+                    glyph: root.is-muted || root.volume <= 0 ? "⊘" : "♪";
+                    label: root.is-muted ? "Unmute" : "Mute";
+                    active: root.is-muted;
+                    enabled: root.controls-visible && root.has-media;
+                    activated => {
+                        root.reveal-controls();
+                        root.mute-toggled();
+                    }
+                }
+
+                if root.width >= 720px: VolumeTimeline {
+                    value: root.is-muted ? 0 : root.volume;
+                    controls-enabled: root.controls-visible && root.has-media;
+                    changed(value) => { root.volume-requested(value); }
+                    interacted => { root.reveal-controls(); }
+                }
+
+                if root.width >= 790px: PlayerTextControl {
+                    text: root.selected-audio-label;
+                    label: "Choose audio track";
+                    active: root.open-menu == "audio";
+                    control-width: 74px;
+                    enabled: root.controls-visible && root.has-media;
+                    activated => { root.toggle-menu("audio"); }
+                }
+
+                if root.width >= 680px: PlayerTextControl {
+                    text: root.selected-subtitle-label;
+                    label: "Choose subtitles";
+                    active: root.open-menu == "subtitle";
+                    control-width: 62px;
+                    enabled: root.controls-visible && root.has-media;
+                    activated => { root.toggle-menu("subtitle"); }
+                }
+
+                PlayerTextControl {
+                    text: root.playback-speed == 1 ? "1×" : round(root.playback-speed * 100) / 100 + "×";
+                    label: "Playback speed";
+                    active: root.open-menu == "speed";
+                    control-width: 54px;
+                    enabled: root.controls-visible && root.has-media;
+                    activated => { root.toggle-menu("speed"); }
+                }
+
+                PlayerControl {
+                    glyph: root.is-fullscreen ? "▣" : "⛶";
+                    label: root.is-fullscreen ? "Exit fullscreen" : "Enter fullscreen";
+                    active: root.is-fullscreen;
+                    enabled: root.controls-visible;
+                    activated => {
+                        root.reveal-controls();
+                        root.fullscreen-toggled();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.open-menu == "speed": Rectangle {
+        x: parent.width - self.width - 64px;
+        y: parent.height - bottom-chrome.height - self.height - 24px;
+        width: 286px;
+        height: 104px;
+        border-radius: 16px;
+        background: Theme.bg-surface-raised.with-alpha(0.96);
+        border-width: 1px;
+        border-color: Theme.silver.with-alpha(0.22);
+        drop-shadow-color: Theme.bg-void.with-alpha(0.62);
+        drop-shadow-blur: 24px;
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            Text {
+                text: "PLAYBACK SPEED";
+                color: Theme.text-secondary;
+                font-size: 9px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+
+            HorizontalLayout {
+                spacing: 4px;
+                PlayerTextControl { text: "0.5×"; label: "Half speed"; control-width: 39px; active: root.playback-speed == 0.5; activated => { root.speed-requested(0.5); root.close-menus(); } }
+                PlayerTextControl { text: "0.75×"; label: "Three-quarter speed"; control-width: 39px; active: root.playback-speed == 0.75; activated => { root.speed-requested(0.75); root.close-menus(); } }
+                PlayerTextControl { text: "1×"; label: "Normal speed"; control-width: 39px; active: root.playback-speed == 1; activated => { root.speed-requested(1); root.close-menus(); } }
+                PlayerTextControl { text: "1.25×"; label: "One and a quarter speed"; control-width: 39px; active: root.playback-speed == 1.25; activated => { root.speed-requested(1.25); root.close-menus(); } }
+                PlayerTextControl { text: "1.5×"; label: "One and a half speed"; control-width: 39px; active: root.playback-speed == 1.5; activated => { root.speed-requested(1.5); root.close-menus(); } }
+                PlayerTextControl { text: "2×"; label: "Double speed"; control-width: 39px; active: root.playback-speed == 2; activated => { root.speed-requested(2); root.close-menus(); } }
+            }
+        }
+    }
+
+    if root.open-menu == "audio": Rectangle {
+        x: parent.width - self.width - 112px;
+        y: parent.height - bottom-chrome.height - self.height - 24px;
+        width: 272px;
+        height: min(232px, max(88px, 49px + root.audio-tracks.length * 42px));
+        border-radius: 16px;
+        clip: true;
+        background: Theme.bg-surface-raised.with-alpha(0.96);
+        border-width: 1px;
+        border-color: Theme.silver.with-alpha(0.22);
+        drop-shadow-color: Theme.bg-void.with-alpha(0.62);
+        drop-shadow-blur: 24px;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 7px;
+
+            Text {
+                text: "AUDIO TRACK";
+                color: Theme.text-secondary;
+                font-size: 9px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+
+            if root.audio-tracks.length == 0: Text {
+                text: "No alternate audio tracks";
+                color: Theme.text-secondary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                vertical-stretch: 1;
+            }
+
+            if root.audio-tracks.length > 0: ScrollView {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 3px;
+                    for track in root.audio-tracks: TrackChoice {
+                        track: track;
+                        selected(id) => {
+                            root.audio-track-requested(id);
+                            root.close-menus();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.open-menu == "subtitle": Rectangle {
+        x: parent.width - self.width - 82px;
+        y: parent.height - bottom-chrome.height - self.height - 24px;
+        width: 272px;
+        height: min(242px, max(132px, 94px + root.subtitle-tracks.length * 42px));
+        border-radius: 16px;
+        clip: true;
+        background: Theme.bg-surface-raised.with-alpha(0.96);
+        border-width: 1px;
+        border-color: Theme.silver.with-alpha(0.22);
+        drop-shadow-color: Theme.bg-void.with-alpha(0.62);
+        drop-shadow-blur: 24px;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 7px;
+
+            Text {
+                text: "SUBTITLES";
+                color: Theme.text-secondary;
+                font-size: 9px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+
+            PlayerTextControl {
+                text: "SUBTITLES OFF";
+                label: "Turn subtitles off";
+                control-width: 252px;
+                activated => {
+                    root.subtitles-disabled();
+                    root.close-menus();
+                }
+            }
+
+            if root.subtitle-tracks.length == 0: Text {
+                text: "No subtitle tracks available";
+                color: Theme.text-secondary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                vertical-stretch: 1;
+            }
+
+            if root.subtitle-tracks.length > 0: ScrollView {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 3px;
+                    for track in root.subtitle-tracks: TrackChoice {
+                        track: track;
+                        selected(id) => {
+                            root.subtitle-track-requested(id);
+                            root.close-menus();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -87,6 +87,7 @@ thread_local! {
     static STREMIO_MEDIA_SOURCES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static STREMIO_EPISODES: RefCell<Vec<ankai_core::stremio::Video>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
+    static LAST_PLAYBACK_URL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone)]
@@ -362,6 +363,100 @@ fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
         }
         Err(error) => app.set_stremio_status(format!("Couldn't reload addons: {error}").into()),
     }
+}
+
+fn playback_time_label(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "--:--".into();
+    }
+    let total = seconds.round() as u64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+fn sync_player_state(app: &AppWindow, state: &playback::PlayerState) {
+    use playback::{PlaybackPhase, TrackKind};
+
+    app.set_player_has_media(state.has_media);
+    app.set_player_video_ready(
+        state.has_media
+            && !matches!(
+                state.phase,
+                PlaybackPhase::Idle | PlaybackPhase::Loading | PlaybackPhase::Error
+            ),
+    );
+    app.set_player_playing(state.phase == PlaybackPhase::Playing);
+    app.set_player_loading(state.phase == PlaybackPhase::Loading);
+    app.set_player_buffering(state.phase == PlaybackPhase::Buffering);
+    app.set_player_seeking(state.seeking);
+    app.set_player_muted(state.muted);
+    app.set_player_position(state.position_seconds.unwrap_or(0.0) as f32);
+    app.set_player_duration(state.duration_seconds.unwrap_or(0.0) as f32);
+    app.set_player_buffered(state.position_seconds.unwrap_or(0.0) as f32);
+    app.set_player_buffering_percent(state.buffering_percent.unwrap_or(-1.0) as f32);
+    app.set_player_volume(state.volume as f32);
+    app.set_player_speed(state.speed as f32);
+    app.set_player_elapsed_label(
+        state
+            .position_seconds
+            .map(playback_time_label)
+            .unwrap_or_else(|| "00:00".into())
+            .into(),
+    );
+    app.set_player_duration_label(
+        state
+            .duration_seconds
+            .map(playback_time_label)
+            .unwrap_or_else(|| "--:--".into())
+            .into(),
+    );
+    app.set_player_error(state.last_error.clone().unwrap_or_default().into());
+    if let Some(title) = state
+        .media_title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
+        app.set_player_title(title.into());
+    }
+
+    let to_track_ref = |track: &playback::MediaTrack| {
+        i32::try_from(track.id).ok().map(|id| PlayerTrackRef {
+            id,
+            label: track
+                .title
+                .clone()
+                .or_else(|| track.language.clone())
+                .unwrap_or_else(|| format!("Track {}", track.id))
+                .into(),
+            language: track.language.clone().unwrap_or_default().into(),
+            codec: track.codec.clone().unwrap_or_default().into(),
+            selected: track.selected,
+            external: track.external,
+            forced: track.forced,
+        })
+    };
+    let audio = state
+        .tracks
+        .iter()
+        .filter(|track| matches!(track.kind, TrackKind::Audio))
+        .filter_map(to_track_ref)
+        .collect::<Vec<_>>();
+    let subtitles = state
+        .tracks
+        .iter()
+        .filter(|track| matches!(track.kind, TrackKind::Subtitle))
+        .filter_map(to_track_ref)
+        .collect::<Vec<_>>();
+    app.set_player_audio_tracks(slint::ModelRc::from(Rc::new(slint::VecModel::from(audio))));
+    app.set_player_subtitle_tracks(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        subtitles,
+    ))));
 }
 
 /// A time-of-day-appropriate greeting prefix for the Home dashboard's
@@ -2559,6 +2654,8 @@ fn main() -> Result<(), slint::PlatformError> {
                                     false,
                                 );
                             };
+                            LAST_PLAYBACK_URL
+                                .with(|last_url| *last_url.borrow_mut() = Some(url.to_owned()));
                             match player.load(url) {
                                 Ok(()) => ("Playing in ANKAI with libmpv.".into(), true),
                                 Err(err) => (format!("Error: {err}"), false),
@@ -2579,6 +2676,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 if playing {
                     app.set_player_title(app.get_stremio_selected_title());
                     app.set_player_active(true);
+                    app.set_player_has_media(true);
+                    app.set_player_loading(true);
+                    app.set_player_error("".into());
                     app.window().request_redraw();
                 }
             }
@@ -2588,12 +2688,18 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let app_weak = app.as_weak();
         app.on_toggle_player_pause(move || {
-            VIDEO_PLAYER.with(|slot| {
+            let state = VIDEO_PLAYER.with(|slot| {
                 if let Some(player) = slot.borrow_mut().as_mut() {
-                    let _ = player.toggle_pause();
+                    player.toggle_pause().ok()?;
+                    Some(player.state().clone())
+                } else {
+                    None
                 }
             });
             if let Some(app) = app_weak.upgrade() {
+                if let Some(state) = state.as_ref() {
+                    sync_player_state(&app, state);
+                }
                 app.window().request_redraw();
             }
         });
@@ -2608,6 +2714,7 @@ fn main() -> Result<(), slint::PlatformError> {
             });
             if let Some(app) = app_weak.upgrade() {
                 app.set_player_active(false);
+                sync_player_state(&app, &playback::PlayerState::default());
             }
         });
     }
@@ -2616,6 +2723,217 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_player_frame(move || {
             if let Some(app) = app_weak.upgrade() {
                 app.window().request_redraw();
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_state_tick(move || {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.poll_events()?;
+                player.refresh_state()?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_seek_relative(move |seconds| {
+            let state = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let player = slot.as_mut()?;
+                player.seek_relative(seconds as f64).ok()?;
+                Some(player.state().clone())
+            });
+            if let (Some(app), Some(state)) = (app_weak.upgrade(), state.as_ref()) {
+                sync_player_state(&app, state);
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_seek(move |seconds| {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.seek_absolute(seconds as f64)?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_toggle_mute(move || {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.toggle_mute()?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_set_volume(move |volume| {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.set_volume(volume as f64)?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_set_speed(move |speed| {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.set_speed(speed as f64)?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_select_audio(move |track_id| {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.set_audio_track(Some(i64::from(track_id)))?;
+                player.refresh_state()?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_select_subtitle(move |track_id| {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.set_subtitle_track(Some(i64::from(track_id)))?;
+                player.refresh_state()?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_disable_subtitles(move || {
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(player) = slot.as_mut() else {
+                    return Ok::<_, playback::PlayerError>(None);
+                };
+                player.set_subtitle_track(None)?;
+                player.refresh_state()?;
+                Ok(Some(player.state().clone()))
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => {}
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_toggle_fullscreen(move || {
+            if let Some(app) = app_weak.upgrade() {
+                let fullscreen = !app.get_player_fullscreen();
+                app.window().set_fullscreen(fullscreen);
+                app.set_player_fullscreen(fullscreen);
+            }
+        });
+    }
+    {
+        let app_weak = app.as_weak();
+        app.on_player_retry(move || {
+            let url = LAST_PLAYBACK_URL.with(|last_url| last_url.borrow().clone());
+            let result = VIDEO_PLAYER.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                match (slot.as_mut(), url.as_deref()) {
+                    (Some(player), Some(url)) => {
+                        player.load(url)?;
+                        Ok::<_, playback::PlayerError>(Some(player.state().clone()))
+                    }
+                    _ => Ok(None),
+                }
+            });
+            if let Some(app) = app_weak.upgrade() {
+                match result {
+                    Ok(Some(state)) => sync_player_state(&app, &state),
+                    Ok(None) => app.set_player_error("No previous stream to retry.".into()),
+                    Err(error) => app.set_player_error(error.to_string().into()),
+                }
             }
         });
     }
