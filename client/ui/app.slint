@@ -1399,43 +1399,35 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                 }
 
+                                // Handle (real, only if a directory username has actually
+                                // been claimed — core::directory/session-12's real
+                                // device-scoped username system, not fabricated) plus an
+                                // "online" indicator. Unlike a friend's PresenceBadge (a
+                                // real on-demand network reachability check), "you" are
+                                // trivially online right now because this client is the
+                                // thing running — that's honest, not a network claim.
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    if root.claimed-username != "": Text {
+                                        text: "@" + root.claimed-username;
+                                        color: Theme.text-secondary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+
+                                    PresenceBadge {
+                                        status: "online";
+                                    }
+                                }
+
                                 Text {
                                     text: root.display-name == "" ? "Set a display name in Settings to personalize your profile." : "This is your ANKAI profile.";
                                     color: Theme.text-secondary;
                                     font-size: 13px;
                                     wrap: word-wrap;
-                                }
-
-                                // One static "charm" (achievement badge), kept deliberately
-                                // minimal per this session's no-fake-gamification rule: this
-                                // is not a real unlock/rules system, just an honestly-labeled
-                                // always-on badge for everyone using this early build. See
-                                // PROGRESS.md's session-12 notes on why a full charms system
-                                // isn't built.
-                                HorizontalLayout {
-                                    alignment: start;
-
-                                    Rectangle {
-                                        height: 22px;
-                                        border-radius: 11px;
-                                        background: Theme.accent-gold.with-alpha(0.16);
-                                        border-width: 1px;
-                                        border-color: Theme.accent-gold.with-alpha(0.4);
-
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            alignment: start;
-
-                                            Text {
-                                                text: "🌟 Early Adopter — everyone on this build has it, not a real unlock";
-                                                color: Theme.accent-gold;
-                                                font-size: 10px;
-                                                font-weight: 600;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -1515,138 +1507,257 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // ==== Tab 0: "My Page" — header (above) plus Top 8,
-                    // Currently Watching, and Friends. ====
+                    // ==== Tab 0: "My Page" — header (above) plus a Top 8 /
+                    // Currently Watching two-column row, a Guestbook-preview
+                    // / My Charms two-column row, then Friends. Matches the
+                    // reference image's top-right-quadrant layout: the two
+                    // module rows sit side by side rather than stacked. ====
                     if root.profile-tab-index == 0: VerticalLayout {
                         spacing: 24px;
 
-                    // ---- Top 8 Communities: the showcase piece ----
-                    VerticalLayout {
-                        spacing: 12px;
+                    // ---- Row 1: Top 8 Communities | Currently Watching ----
+                    HorizontalLayout {
+                        spacing: 20px;
 
-                        Text {
-                            text: "Top 8 Communities";
-                            color: Theme.text-primary;
-                            font-size: 16px;
-                            font-weight: 700;
-                        }
-
-                        Text {
-                            text: "Feature up to 8 of your communities on your profile, in whatever order you like. There's no \"Top 8 friends\" yet — ANKAI doesn't have a real contacts/friends model built, so this is communities for now.";
-                            color: Theme.text-secondary;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
-
-                        if root.featured-communities.length == 0: Rectangle {
-                            border-radius: 14px;
-                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 16px;
+                            background: Theme.bg-surface-raised.with-alpha(0.32);
                             border-width: 1px;
                             border-color: Theme.silver.with-alpha(0.12);
 
                             VerticalLayout {
                                 padding: 16px;
+                                spacing: 12px;
 
                                 Text {
-                                    text: "No featured communities yet — add some below.";
+                                    text: "Top 8 Communities";
+                                    color: Theme.text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: "Feature up to 8 of your communities on your profile, in whatever order you like. There's no \"Top 8 friends\" yet — ANKAI doesn't have a real contacts/friends model built, so this is communities for now.";
                                     color: Theme.text-secondary;
-                                    font-size: 13px;
+                                    font-size: 11px;
                                     wrap: word-wrap;
                                 }
+
+                                if root.featured-communities.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
+
+                                    VerticalLayout {
+                                        padding: 16px;
+
+                                        Text {
+                                            text: "No featured communities yet — add some below.";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 10px;
+
+                                    for entry[i] in root.featured-communities: Top8CardItem {
+                                        rank: i + 1;
+                                        comm-name: entry.name;
+                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                        can-move-up: i > 0;
+                                        can-move-down: i < root.featured-communities.length - 1;
+                                        move-up => {
+                                            root.move-featured-community-up(entry.id);
+                                        }
+                                        move-down => {
+                                            root.move-featured-community-down(entry.id);
+                                        }
+                                        remove => {
+                                            root.unfeature-community(entry.id);
+                                        }
+                                    }
+                                }
+
+                                if root.unfeatured-communities.length > 0: VerticalLayout {
+                                    spacing: 10px;
+
+                                    Rectangle { height: 4px; }
+
+                                    Text {
+                                        text: "Add to Top 8";
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                    }
+
+                                    for entry in root.unfeatured-communities: HorizontalLayout {
+                                        alignment: start;
+
+                                        AddCommunityChip {
+                                            comm-name: entry.name;
+                                            enabled: root.featured-communities.length < 8;
+                                            add => {
+                                                root.feature-community(entry.id);
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
 
-                        VerticalLayout {
-                            spacing: 10px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 16px;
+                            background: Theme.bg-surface-raised.with-alpha(0.32);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
 
-                            for entry[i] in root.featured-communities: Top8CardItem {
-                                rank: i + 1;
-                                comm-name: entry.name;
-                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
-                                can-move-up: i > 0;
-                                can-move-down: i < root.featured-communities.length - 1;
-                                move-up => {
-                                    root.move-featured-community-up(entry.id);
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 12px;
+
+                                Text {
+                                    text: "Currently Watching";
+                                    color: Theme.text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
                                 }
-                                move-down => {
-                                    root.move-featured-community-down(entry.id);
+
+                                Text {
+                                    text: "Anime tracked here comes from AniList's real public catalog, plus a real local watchlist on this device. This is a brand-new feature, so an empty list here just means nothing's been added yet, not that anything is broken.";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
                                 }
-                                remove => {
-                                    root.unfeature-community(entry.id);
+
+                                if root.watching-anime.length == 0: Rectangle {
+                                    border-radius: 14px;
+                                    background: Theme.bg-surface-raised.with-alpha(0.4);
+                                    border-width: 1px;
+                                    border-color: Theme.silver.with-alpha(0.12);
+
+                                    VerticalLayout {
+                                        padding: 16px;
+
+                                        Text {
+                                            text: "Nothing on your watchlist yet.";
+                                            color: Theme.text-secondary;
+                                            font-size: 13px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
                                 }
-                            }
-                        }
 
-                        if root.unfeatured-communities.length > 0: VerticalLayout {
-                            spacing: 10px;
+                                VerticalLayout {
+                                    spacing: 10px;
 
-                            Rectangle { height: 4px; }
-
-                            Text {
-                                text: "Add to Top 8";
-                                color: Theme.text-secondary;
-                                font-size: 12px;
-                                font-weight: 600;
-                            }
-
-                            for entry in root.unfeatured-communities: HorizontalLayout {
-                                alignment: start;
-
-                                AddCommunityChip {
-                                    comm-name: entry.name;
-                                    enabled: root.featured-communities.length < 8;
-                                    add => {
-                                        root.feature-community(entry.id);
+                                    for entry[i] in root.watching-anime: WatchlistCardItem {
+                                        anime-title: entry.title;
+                                        progress-text: entry.progress;
+                                        accent: root.top8-accent-cycle[Math.mod(i, 4)];
                                     }
                                 }
                             }
                         }
                     }
 
-                    // ---- Currently Watching: real ankai_core::anime
-                    // watchlist entries (status == Watching only) ----
-                    VerticalLayout {
-                        spacing: 12px;
+                    // ---- Row 2: Guestbook preview | My Charms. The
+                    // guestbook card repeats the same honest "not built yet"
+                    // framing as the full Guestbook tab (not a lesser/fake
+                    // version of it) — this is just a compact preview of the
+                    // same real state, matching the reference's layout,
+                    // which shows a guestbook module here as well as its own
+                    // nav tab. Charms: exactly the one real static badge
+                    // that already existed (moved out of the header into its
+                    // own module to match the reference's placement) — see
+                    // its comment below for why there isn't a second one. ----
+                    HorizontalLayout {
+                        spacing: 20px;
 
-                        Text {
-                            text: "Currently Watching";
-                            color: Theme.text-primary;
-                            font-size: 16px;
-                            font-weight: 700;
-                        }
-
-                        Text {
-                            text: "Anime tracked here comes from AniList's real public catalog, plus a real local watchlist on this device. This is a brand-new feature, so an empty list here just means nothing's been added yet, not that anything is broken.";
-                            color: Theme.text-secondary;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
-
-                        if root.watching-anime.length == 0: Rectangle {
-                            border-radius: 14px;
-                            background: Theme.bg-surface-raised.with-alpha(0.4);
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 16px;
+                            background: Theme.bg-surface-raised.with-alpha(0.32);
                             border-width: 1px;
                             border-color: Theme.silver.with-alpha(0.12);
 
                             VerticalLayout {
                                 padding: 16px;
+                                spacing: 8px;
 
                                 Text {
-                                    text: "Nothing on your watchlist yet.";
+                                    text: "Guestbook";
+                                    color: Theme.text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                }
+
+                                Text {
+                                    text: "Not built yet — nobody can write here. A real guestbook needs other people's devices to write entries onto this profile over the network, and that networked-write path doesn't exist in ANKAI yet.";
                                     color: Theme.text-secondary;
-                                    font-size: 13px;
+                                    font-size: 12px;
                                     wrap: word-wrap;
                                 }
                             }
                         }
 
-                        VerticalLayout {
-                            spacing: 10px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 16px;
+                            background: Theme.bg-surface-raised.with-alpha(0.32);
+                            border-width: 1px;
+                            border-color: Theme.silver.with-alpha(0.12);
 
-                            for entry[i] in root.watching-anime: WatchlistCardItem {
-                                anime-title: entry.title;
-                                progress-text: entry.progress;
-                                accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                            VerticalLayout {
+                                padding: 16px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "My Charms";
+                                    color: Theme.text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                }
+
+                                // One static charm, deliberately kept alone per
+                                // this session's no-fake-gamification rule: not
+                                // a real unlock/rules system, just an
+                                // honestly-labeled always-on badge for everyone
+                                // using this early build. See PROGRESS.md's
+                                // session-12 notes on why a full charms system
+                                // isn't built — a second charm here would need
+                                // a second real, non-fabricated criterion, and
+                                // none exists yet.
+                                HorizontalLayout {
+                                    alignment: start;
+
+                                    Rectangle {
+                                        height: 22px;
+                                        border-radius: 11px;
+                                        background: Theme.accent-gold.with-alpha(0.16);
+                                        border-width: 1px;
+                                        border-color: Theme.accent-gold.with-alpha(0.4);
+
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            alignment: start;
+
+                                            Text {
+                                                text: "🌟 Early Adopter — everyone on this build has it, not a real unlock";
+                                                color: Theme.accent-gold;
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
