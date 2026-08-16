@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-16 (session 13)
+Last updated: 2026-08-16 (session 14)
 
 ## What ANKAI is
 
@@ -70,8 +70,9 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Cross-community recent-activity feed | done — `core::forum_posts::list_recent_across_communities`: real posts pulled from every local community into one most-recent-first feed, each correctly tagged with its real community name — the data source for "Hot Discussions" | `core/src/forum_posts.rs` |
 | Real friends system + on-demand presence (`core::friends`) | done — real P2P friend-request/accept flow (signed, real crypto, rides the existing P2P transport as a lightweight non-MLS message kind since a request has to work *before* any conversation/group exists), a real `friends`/`friend_requests` DB schema, and genuine presence: `check_presence` makes a real ~3s-timeout connection attempt right now rather than returning a stored flag — proven by a test that closes a node mid-test and watches the same call flip from online to offline. Device-scoped, not account-scoped (same honest limitation as Top 8/usernames) | `core/src/friends.rs` |
 | MyAnimeList forum discussions (`core::mal_forums`) | done — real read-only client (boards/topics/topic-posts), Client-ID-only auth (no OAuth login needed — confirmed empirically), reads the real credential from an env var at runtime, never hardcoded. Real live-network test against MAL's actual servers | `core/src/mal_forums.rs` |
-| Home dashboard (new screen) | done — real Trending/Popular (AniList), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence, not a placeholder anymore). No "Around the Web" — Reddit access was blocked all session and the human has since dropped the idea entirely (see below); not on the roadmap anymore | `client/ui/app.slint`, `client/src/main.rs` |
-| My Page redesign (tabs) | done — banner/avatar header retained, tabbed into My Page / Guestbook / Stats / Settings; Top 8 (existing) plus a new real "Currently Watching" module (AniList watchlist); real friends list + real pending-request Accept/Decline; Guestbook stays an honest empty-state placeholder (needs other people writing to your profile, which needs more than exists yet); Stats tab shows real counts (communities/Top 8/watchlist/friends) | `client/ui/app.slint`, `client/src/main.rs` |
+| Home dashboard (new screen) | **rebuilt session 14 as a real multi-column grid**, matching the reference's structure 1:1: header row, a two-column Trending Now hero + Friend Activity row, a horizontally-scrolling Popular Right Now row, and a three-column Hot Discussions / Watch Parties / MAL Forum Discussions row. Real Trending/Popular (AniList, now with real cover art — see image loading below), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence). Reddit's old slot is now real MyAnimeList forum topics (`core::mal_forums`), not a placeholder — no "Around the Web"/Reddit anywhere; the human dropped that idea entirely, not on the roadmap | `client/ui/app.slint`, `client/src/main.rs` |
+| My Page redesign (tabs) | **precision pass in session 14**: removed a fabricated always-on "Early Adopter" header badge, replaced with a real presence indicator (you're trivially online because this client is the one running — an honest claim, not a network one) plus your real claimed username if you have one; restructured into the reference's side-by-side module rows (Top 8 + Currently Watching, then Guestbook preview + My Charms) instead of a stacked column. Currently Watching now shows real cover art. Real friends list + real pending-request Accept/Decline; Guestbook and My Charms stay honest, clearly-labeled placeholders (no real networked-write path / no real unlock system exist yet); Stats tab shows real counts | `client/ui/app.slint`, `client/src/main.rs` |
+| Real in-memory remote image loading (`client::images`) | done — real anime cover art fetched from AniList's own CDN via `reqwest`, decoded via the `image` crate, handed to Slint as a `slint::Image` built from the decoded RGBA buffer. No disk cache, ever (explicit human instruction) — a process-lifetime in-memory `HashMap<url, slint::Image>` only. Wired into Home's Trending Now hero, Popular Right Now, and My Page's Currently Watching. Two real bugs fixed during integration: a Slint `ImageFit` compile error from a `cover` property name colliding with the `ImageFit` enum's own `cover` value, and a `Send`-safety bug (the non-`Send` `slint::Image` can't be built on a background tokio task and handed to `invoke_from_event_loop` — fixed by only sending raw RGBA bytes across the thread boundary and building the `slint::Image` back on the UI thread) | `client/src/images.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. **Not wired into the real app** — the human changed their mind mid-session and no longer wants live dragging, just a fixed layout matching their reference image, so wiring this onto the real Home/Messages/Hangouts panes is now a smaller task than originally scoped (no drag interaction needed, just fixed positioning reusing the same glass-panel visual work) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
@@ -591,23 +592,79 @@ all verified clean on the fully merged tree, and the real app was compiled
 and launched for the human at the end of the session, per their request to
 "finish for today."
 
+**Session 14 (2026-08-16) ran three parallel agents** to close the human's
+standing complaint that "the UI looks nothing like the reference" and that
+real images/MAL forum posts weren't visible yet: real in-memory remote image
+loading, the Home dashboard grid rebuild (+ wiring in MAL forums, missing
+since session 13), and a My Page precision pass (removing a fabricated
+badge, matching the reference's two-column module rows). All three were cut
+off mid-task by the recurring session-limit/stuck-agent pattern (see
+sessions 10-13) and finished by the orchestrator directly: diagnosed and
+fixed two real bugs the image-loading agent left unresolved (a Slint
+`ImageFit` compile error, a `slint::Image`-isn't-`Send` bug — see phase
+table above for both), then ran full `build`/`test`/`clippy -D warnings`/
+`fmt --check` on each worktree individually before merging.
+
+**Merging three branches that all touched `client/ui/app.slint` and
+`client/src/main.rs` produced real conflicts**, resolved using the same
+"reconstruct from clean per-branch `git show` extracts" technique
+documented in session 13's notes (the interleaved-diff problem recurs
+whenever two branches restructure the *same* region of the file rather than
+adding non-overlapping content — not a sign of real disagreement, just the
+diff algorithm getting confused). One real signature-mismatch bug surfaced
+by the merge itself (not caught by either agent, since neither had the
+other's changes): `on_watch_now`'s callback still called `refresh_watchlist`
+with the old two-argument signature after the image-loading branch added a
+required `tokio::runtime::Handle` parameter for kicking off cover fetches on
+watchlist refresh — fixed by capturing a cloned handle into the closure the
+same way `db`/`app_weak` already were.
+
+**Verified visually end-to-end after merging**: launched the real app,
+confirmed frontmost via `osascript` before every capture (hit the
+documented wrong-window failure mode once more — `osascript` reported
+"Terminal" as frontmost right after a click un-focused the app window;
+deleted that capture immediately without viewing it, re-activated, and
+re-verified frontmost immediately before *and* after the retry). Home shows
+real AniList cover art loading into the Trending hero and the Popular Right
+Now scroll row, and real MAL Forum Discussions with genuine topics/reply
+counts. Clicking "Watch Now" on the Trending hero card genuinely adds the
+anime to the real watchlist and it shows up with real cover art on My
+Page's Currently Watching module — the full pipeline works, not just each
+piece in isolation.
+
+**Also registered a real, free Last.fm API account** (human's own account,
+human completed the CAPTCHA/submit themselves per the standing
+never-touch-bot-checks-or-credentials rule) as the "now playing" data source
+after Spotify was confirmed blocked (Premium-account requirement, verified
+live in session 13) and YouTube was confirmed to have no official API. The
+resulting API key + shared secret were saved directly to
+`~/.ankai_lastfm_credentials.env` (chmod 600, outside the repo, values never
+echoed into chat/any repo file — same handling as the existing MAL
+credentials file) and are ready for a `core::lastfm` backend track
+whenever that's picked up; nothing built against it yet this session.
+
 Remaining steps, none locked:
 
-1. **Wire the fixed-position (no-drag) floating-panel layout onto the real
+1. **Build a `core::lastfm` "now playing" backend** against the real,
+   already-registered free API key/secret in
+   `~/.ankai_lastfm_credentials.env` (`user.getRecentTracks`'s `nowplaying`
+   flag) and wire a real widget into My Page — this only became legitimate
+   once real Last.fm credentials existed; don't add a "Now Playing" UI
+   element before this backend is real, per the standing no-fake-data rule.
+2. **Wire the fixed-position (no-drag) floating-panel layout onto the real
    Home/Messages/Hangouts panes**, matching the human's reference image as
-   closely as the real data allows. This is the most immediate next step —
-   explicitly requested, not yet done. Reuse `floating-panel.slint`'s glass
+   closely as the real data allows. Reuse `floating-panel.slint`'s glass
    styling; the drag mechanism itself isn't needed per the human's latest
    direction.
-2. Communities/Hangouts/Settings panes still have the old plain content
+3. Communities/Hangouts/Settings panes still have the old plain content
    styling (only their shared chrome, Home, and My Page got the real
-   visual treatment this session and last).
-3. Multi-conversation messaging UI — still hasn't started (queued since
+   visual treatment so far).
+4. Multi-conversation messaging UI — still hasn't started (queued since
    session 11).
-4. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+5. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
-5. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
+6. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
    held back — real payments/money, needs a human product/legal decision
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
