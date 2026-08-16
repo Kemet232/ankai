@@ -211,6 +211,11 @@ ones requiring a live third-party paid-service integration require a
 separate legal/licensing review gate before being offered, in addition to
 the technical capability-permission gate every provider goes through.
 
+Release artifacts follow the fail-closed build-attestation, dependency-closure,
+loader verification, and native-per-platform signing process in
+[`../releasing-libmpv.md`](../releasing-libmpv.md). A development machine's
+package-manager libmpv is never a valid release input.
+
 ### Licensing manifest entries required
 
 | Component | License | How ANKAI uses it | Notes |

@@ -51,3 +51,8 @@ in [`docs/adr/0007-open-source-model.md`](./docs/adr/0007-open-source-model.md).
 ## Contributing
 
 Not yet open for external contribution — pre-alpha, architecture in flux.
+
+Release packaging for the no-install libmpv runtime is documented in
+[`docs/releasing-libmpv.md`](./docs/releasing-libmpv.md). The release scripts
+reject default/GPL mpv builds; release CI must run the bundled dependency-
+closure verifier on each native target.
