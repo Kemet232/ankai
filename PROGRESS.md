@@ -73,6 +73,10 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Home dashboard (new screen) | **rebuilt session 14 as a real multi-column grid**, matching the reference's structure 1:1: header row, a two-column Trending Now hero + Friend Activity row, a horizontally-scrolling Popular Right Now row, and a three-column Hot Discussions / Watch Parties / MAL Forum Discussions row. Real Trending/Popular (AniList, now with real cover art — see image loading below), real Hot Discussions (cross-community feed), real "Your Hangouts," real Friend Activity (genuine friends list + on-demand presence). Reddit's old slot is now real MyAnimeList forum topics (`core::mal_forums`), not a placeholder — no "Around the Web"/Reddit anywhere; the human dropped that idea entirely, not on the roadmap | `client/ui/app.slint`, `client/src/main.rs` |
 | My Page redesign (tabs) | **precision pass in session 14**: removed a fabricated always-on "Early Adopter" header badge, replaced with a real presence indicator (you're trivially online because this client is the one running — an honest claim, not a network one) plus your real claimed username if you have one; restructured into the reference's side-by-side module rows (Top 8 + Currently Watching, then Guestbook preview + My Charms) instead of a stacked column. Currently Watching now shows real cover art. Real friends list + real pending-request Accept/Decline; Guestbook and My Charms stay honest, clearly-labeled placeholders (no real networked-write path / no real unlock system exist yet); Stats tab shows real counts | `client/ui/app.slint`, `client/src/main.rs` |
 | Real in-memory remote image loading (`client::images`) | done — real anime cover art fetched from AniList's own CDN via `reqwest`, decoded via the `image` crate, handed to Slint as a `slint::Image` built from the decoded RGBA buffer. No disk cache, ever (explicit human instruction) — a process-lifetime in-memory `HashMap<url, slint::Image>` only. Wired into Home's Trending Now hero, Popular Right Now, and My Page's Currently Watching. Two real bugs fixed during integration: a Slint `ImageFit` compile error from a `cover` property name colliding with the `ImageFit` enum's own `cover` value, and a `Send`-safety bug (the non-`Send` `slint::Image` can't be built on a background tokio task and handed to `invoke_from_event_loop` — fixed by only sending raw RGBA bytes across the thread boundary and building the `slint::Image` back on the UI thread) | `client/src/images.rs`, `client/ui/app.slint`, `client/src/main.rs` |
+| MAL Forum Discussions real post previews | done — each topic card now shows a real excerpt from its actual first post (`core::mal_forums::get_topic_posts`, one extra fetch per topic, loaded progressively), not just title/reply-count. Real MAL post bodies are raw phpBB-style BBCode; a small client-side formatter (not core — matches `core::mal_forums`'s own "rendering post bodies is a UI-layer concern" note) strips tags, drops `[img]...[/img]` content and bare image URLs (both were observed leaking full CDN URLs into the preview text on a real live topic before this was caught), decodes HTML entities, and truncates | `client/src/main.rs` |
+| `client/build.rs` rerun-if-changed bug | **fixed** — the build script only ever listed two floating-panel-demo files in `cargo:rerun-if-changed`, and printing any such line replaces cargo's default "rerun on any file change" fallback with "only rerun for what's listed." Edits to `app.slint`/`theme.slint` could silently stop triggering Slint regeneration on an incremental build once a target directory already had cached output — caught for real when a color-palette-only edit compiled clean but rendered the old colors. Fixed by globbing every real `ui/*.slint` file into its own rerun-if-changed line | `client/build.rs` |
+| Color palette rework (pink/violet, matching the reference) | done — the reference mockup uses a hot pink/magenta accent plus blue-violet, barely any cyan; ANKAI's palette leaned cyan/violet/gold. Real colors sampled directly from the reference image via pixel-level histogram analysis (not guessed): `#E82888` (a "like" count badge) → `theme.slint`'s new `accent-pink` (`#F0459A`, lightened for AA contrast), and `#6C4CD0` (primary buttons) → deepened `accent-violet` (`#8B6CF0` → `#8363E3`). `accent-cyan` usages replaced app-wide (nav pill, section labels, hero glow, avatar gradients, tab pills, accent-cycle arrays, Now Playing widget) except where cyan was already paired with violet in a gradient | `client/ui/theme.slint`, `client/ui/app.slint` |
+| Last.fm "Now Playing" backend (`core::lastfm`) | done — real, read-only client for Last.fm's public `user.getrecenttracks` endpoint (API-key-only, no OAuth needed for this call — confirmed live). Returns `Ok(Some(NowPlaying))` only when Last.fm's own `nowplaying` flag is genuinely set, `Ok(None)` for an honest "nothing playing" (including zero scrobble history), `Err` for a real failure — never fabricated. No elapsed/duration data exists on this endpoint, so the My Page widget's progress bar is an explicitly-decorative indeterminate pulse, not a real scrubber. Wired via a `slint::Timer` periodic refresh (not one-shot); Last.fm username is a local-only Settings field, separate from the API key. Real live test (`cargo test -p ankai-core --test lastfm_live -- --ignored`) confirmed against a real public account and a real nonexistent-username 404 | `core/src/lastfm.rs`, `core/tests/lastfm_live.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | Floating draggable-window component (standalone demo only) | done as a real, working component — a reusable `FloatingPanel` (glass-styled, real drag-to-move via the established TouchArea-origin-capture technique, real close callback, "bring to front" via a z-order-hint pattern) with its own demo entry point (`cargo run -p client -- --floating-demo`), verified with a real synthesized OS-level drag that moved a panel on screen. **Not wired into the real app** — the human changed their mind mid-session and no longer wants live dragging, just a fixed layout matching their reference image, so wiring this onto the real Home/Messages/Hangouts panes is now a smaller task than originally scoped (no drag interaction needed, just fixed positioning reusing the same glass-panel visual work) | `client/ui/floating-panel.slint`, `client/ui/floating-panel-demo.slint` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
@@ -643,28 +647,74 @@ echoed into chat/any repo file — same handling as the existing MAL
 credentials file) and are ready for a `core::lastfm` backend track
 whenever that's picked up; nothing built against it yet this session.
 
+**Session 14 continued** after the human reviewed the above and asked for
+three more things directly: real cover art on the Trending Now hero card
+(it was text-only), real excerpts on MAL Forum Discussions cards ("not just
+the title... like a lil preview"), and to run more agents in parallel. Two
+were fixed directly (hero cover art, MAL preview text — see phase table),
+surfacing two real bugs along the way: `[img]...[/img]`/bare image URLs
+leaking raw CDN links into the MAL preview text (fixed with a small
+BBCode-to-plain-text formatter in the client), and — much bigger — a real
+`client/build.rs` bug where `cargo:rerun-if-changed` only ever listed two
+floating-panel-demo files, so **incremental builds could silently render
+stale UI code after a `.slint`-only edit with no compile error to catch
+it**. Found while verifying a color-palette agent's work looked unchanged
+in a real screenshot despite correct source; fixed by globbing every real
+`ui/*.slint` file into its own rerun-if-changed line (see phase table). Any
+future session doing `.slint`-only edits should know this was a real,
+previously-live footgun, not assume every visual check tonight before the
+fix was trustworthy for pure-Slint changes (Rust-visible API changes, e.g.
+new struct fields, were self-checking — a stale build.rs would have thrown
+a real compile error for those, and none did).
+
+Three more parallel agents were launched (color palette rework, a real
+`core::lastfm` backend, wiring the fixed-position floating panels) — two of
+the three hit the account session limit mid-task (a continuation of the
+recurring pattern from sessions 10-13) and were finished/verified directly
+by the orchestrator, same recovery pattern as every other time. **Color
+palette** and **Last.fm backend** are both done, verified (build/test/
+clippy/fmt clean, plus a real live-API test for Last.fm), and merged into
+`main` — see phase table above for both. **Floating panels did not land**:
+that worktree branched from a stale `main` snapshot from *before* this
+entire session-14 round (missing 9+ commits), and its real progress when
+cut off was ~40 lines of setup (an import, duplicate cover-art properties
+already superseded by the real image-loading work) with no actual panel UI
+built yet — not worth reconciling against that much drift for that little
+real progress. Abandoned rather than merged; still genuinely queued for a
+future session to build fresh against current `main` (which already has
+real cover art, so it won't need to duplicate that part).
+
+**Also hit a real, isolated macOS permission failure** late in this round:
+`osascript -e 'tell application "System Events" to click at {x,y}'`
+started failing with "osascript is not allowed assistive access" for the
+click-at-coordinates form specifically — `keystroke` and frontmost-name
+queries via the same `tell application "System Events"` block kept working
+fine, so this wasn't a full permission revocation, just that one command
+form. Not resolved this session; the Now Playing widget's *rendering* was
+therefore verified via code review + the real live API test + unit tests
+rather than a live screenshot of My Page with a configured username — worth
+a real click-through screenshot next session once this is sorted out (try
+re-granting Terminal/whatever host process Accessibility access in System
+Settings, or fall back to the Claude-in-Chrome-style `computer` tool's
+click primitive if working in a context that has it, rather than raw
+`osascript click at`).
+
 Remaining steps, none locked:
 
-1. **Build a `core::lastfm` "now playing" backend** against the real,
-   already-registered free API key/secret in
-   `~/.ankai_lastfm_credentials.env` (`user.getRecentTracks`'s `nowplaying`
-   flag) and wire a real widget into My Page — this only became legitimate
-   once real Last.fm credentials existed; don't add a "Now Playing" UI
-   element before this backend is real, per the standing no-fake-data rule.
-2. **Wire the fixed-position (no-drag) floating-panel layout onto the real
+1. **Wire the fixed-position (no-drag) floating-panel layout onto the real
    Home/Messages/Hangouts panes**, matching the human's reference image as
-   closely as the real data allows. Reuse `floating-panel.slint`'s glass
-   styling; the drag mechanism itself isn't needed per the human's latest
-   direction.
-3. Communities/Hangouts/Settings panes still have the old plain content
+   closely as the real data allows. Build fresh against current `main`
+   (don't try to resurrect the abandoned worktree — see above); reuse
+   `floating-panel.slint`'s glass styling, no drag mechanism needed.
+2. Communities/Hangouts/Settings panes still have the old plain content
    styling (only their shared chrome, Home, and My Page got the real
    visual treatment so far).
-4. Multi-conversation messaging UI — still hasn't started (queued since
+3. Multi-conversation messaging UI — still hasn't started (queued since
    session 11).
-5. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
+4. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
-6. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
+5. The remaining ADR-0003 spikes (3-5), the creator marketplace (explicitly
    held back — real payments/money, needs a human product/legal decision
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
