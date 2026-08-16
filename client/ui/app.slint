@@ -2427,162 +2427,193 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.messages-index: VerticalLayout {
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
-
-                Text {
-                    text: "Messages";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                Text {
-                    text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
+            if root.selected-index == root.messages-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
 
                 VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Your invite (address + MLS key package — share this with a peer)";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    LineEdit {
-                        width: 500px;
-                        read-only: true;
-                        text: root.own-peer-address;
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Peer's invite";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    LineEdit {
-                        width: 500px;
-                        placeholder-text: "Paste a peer's invite here";
-                        text <=> root.peer-address-input;
-                    }
-                }
-
-                if root.directory-enabled: VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Or, look up a peer by their Device ID (experimental — directory server configured)";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            width: 340px;
-                            placeholder-text: "Peer's Device ID (hex)";
-                            text <=> root.peer-device-id-input;
-                            accepted => {
-                                root.lookup-peer-by-device-id(root.peer-device-id-input);
-                            }
-                        }
-
-                        Button {
-                            text: "Look up";
-                            clicked => {
-                                root.lookup-peer-by-device-id(root.peer-device-id-input);
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: "Or by their username, if they've claimed one:";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            width: 340px;
-                            placeholder-text: "Peer's username";
-                            text <=> root.peer-username-input;
-                            accepted => {
-                                root.lookup-peer-by-username(root.peer-username-input);
-                            }
-                        }
-
-                        Button {
-                            text: "Look up";
-                            clicked => {
-                                root.lookup-peer-by-username(root.peer-username-input);
-                            }
-                        }
-                    }
-
-                    if root.lookup-status != "": Text {
-                        text: root.lookup-status;
-                        color: Theme.state-busy;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    LineEdit {
-                        width: 340px;
-                        placeholder-text: "Type a message";
-                        text <=> root.message-input;
-                        accepted => {
-                            root.send-message(root.peer-address-input, root.message-input);
+                    Text {
+                        text: "Messages";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Messages are real MLS (RFC 9420) end-to-end encrypted, one 2-member group per peer, and persisted to the encrypted local DB. There's still no discovery service: share your invite below with a peer out-of-band and paste theirs in to start.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // ---- Connect a Peer: fixed (non-draggable) glass
+                    // "window", matching the reference image's floating-
+                    // window look — see FixedPanel's doc comment in
+                    // floating-panel.slint. ----
+                    FixedPanel {
+                        panel-title: "Connect a Peer";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Your invite (address + MLS key package — share this with a peer)";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                LineEdit {
+                                    width: 500px;
+                                    read-only: true;
+                                    text: root.own-peer-address;
+                                }
+                            }
+
+                            VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Peer's invite";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                }
+
+                                LineEdit {
+                                    width: 500px;
+                                    placeholder-text: "Paste a peer's invite here";
+                                    text <=> root.peer-address-input;
+                                }
+                            }
+
+                            if root.directory-enabled: VerticalLayout {
+                                spacing: 4px;
+
+                                Text {
+                                    text: "Or, look up a peer by their Device ID (experimental — directory server configured)";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    LineEdit {
+                                        width: 340px;
+                                        placeholder-text: "Peer's Device ID (hex)";
+                                        text <=> root.peer-device-id-input;
+                                        accepted => {
+                                            root.lookup-peer-by-device-id(root.peer-device-id-input);
+                                        }
+                                    }
+
+                                    Button {
+                                        text: "Look up";
+                                        clicked => {
+                                            root.lookup-peer-by-device-id(root.peer-device-id-input);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: "Or by their username, if they've claimed one:";
+                                    color: Theme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    LineEdit {
+                                        width: 340px;
+                                        placeholder-text: "Peer's username";
+                                        text <=> root.peer-username-input;
+                                        accepted => {
+                                            root.lookup-peer-by-username(root.peer-username-input);
+                                        }
+                                    }
+
+                                    Button {
+                                        text: "Look up";
+                                        clicked => {
+                                            root.lookup-peer-by-username(root.peer-username-input);
+                                        }
+                                    }
+                                }
+
+                                if root.lookup-status != "": Text {
+                                    text: root.lookup-status;
+                                    color: Theme.state-busy;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
                         }
                     }
 
-                    Button {
-                        text: "Send";
-                        clicked => {
-                            root.send-message(root.peer-address-input, root.message-input);
+                    // ---- Conversation: the "DM chat window" from the
+                    // reference image — compose row + message log, in its
+                    // own fixed glass panel. ----
+                    FixedPanel {
+                        panel-title: "Conversation";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                LineEdit {
+                                    width: 340px;
+                                    placeholder-text: "Type a message";
+                                    text <=> root.message-input;
+                                    accepted => {
+                                        root.send-message(root.peer-address-input, root.message-input);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Send";
+                                    clicked => {
+                                        root.send-message(root.peer-address-input, root.message-input);
+                                    }
+                                }
+                            }
+
+                            if root.send-status != "": Text {
+                                text: root.send-status;
+                                color: Theme.state-busy;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: "Messages (most recent first, persisted to the encrypted local DB)";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                            }
+
+                            for entry in root.message-log: Text {
+                                text: "• " + entry;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
                         }
                     }
-                }
-
-                if root.send-status != "": Text {
-                    text: root.send-status;
-                    color: Theme.state-busy;
-                    font-size: 12px;
-                }
-
-                Text {
-                    text: "Messages (most recent first, persisted to the encrypted local DB)";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                }
-
-                for entry in root.message-log: Text {
-                    text: "• " + entry;
-                    color: Theme.text-secondary;
-                    font-size: 14px;
-                    wrap: word-wrap;
                 }
             }
 
@@ -2715,50 +2746,80 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.hangouts-index: VerticalLayout {
-                padding: 32px;
-                spacing: 16px;
-                alignment: start;
+            if root.selected-index == root.hangouts-index: ScrollView {
+                width: parent.width;
+                height: parent.height;
 
-                Text {
-                    text: "Hangouts";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                Text {
-                    text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
+                VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    LineEdit {
-                        width: 240px;
-                        placeholder-text: "New hangout name";
-                        text <=> root.new-hangout-name;
-                        accepted => {
-                            root.create-hangout(root.new-hangout-name);
+                    Text {
+                        text: "Hangouts";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Create a watch-party session you host. This is local-only hosting metadata for now: no real-time playback sync, no video playback, and no other participants yet.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // "Hangout Room" — the reference image's floating
+                    // watch-party window, fixed (non-draggable) here — see
+                    // FixedPanel's doc comment in floating-panel.slint.
+                    FixedPanel {
+                        panel-title: "Create a Hangout";
+
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+                            alignment: start;
+
+                            LineEdit {
+                                width: 240px;
+                                placeholder-text: "New hangout name";
+                                text <=> root.new-hangout-name;
+                                accepted => {
+                                    root.create-hangout(root.new-hangout-name);
+                                }
+                            }
+
+                            Button {
+                                text: "Create";
+                                clicked => {
+                                    root.create-hangout(root.new-hangout-name);
+                                }
+                            }
                         }
                     }
 
-                    Button {
-                        text: "Create";
-                        clicked => {
-                            root.create-hangout(root.new-hangout-name);
+                    FixedPanel {
+                        panel-title: "Your Hangouts";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            if root.hangout-names.length == 0: Text {
+                                text: "You haven't created any Hangouts yet.";
+                                color: Theme.text-secondary;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            for name in root.hangout-names: Text {
+                                text: "• " + name;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                            }
                         }
                     }
-                }
-
-                for name in root.hangout-names: Text {
-                    text: "• " + name;
-                    color: Theme.text-secondary;
-                    font-size: 14px;
                 }
             }
 
