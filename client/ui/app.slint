@@ -39,10 +39,21 @@ export struct CommunityRef {
 // Slint has no string-fallback builtin, so this pre-resolution happens in
 // Rust rather than here. `progress` is pre-formatted ("12 / 24 episodes" or
 // "12 episodes watched" if the total isn't known yet) for the same reason.
+// `cover`/`has-cover`: real decoded cover art, fetched+decoded in memory by
+// `client::images` (see that module's doc comment — no disk cache) from
+// `WatchlistEntry::cover_image_url`'s real AniList CDN URL. `cover` starts
+// as an empty default `image` and `has-cover` starts `false`; main.rs flips
+// `has-cover` to `true` and fills `cover` in place once the real fetch
+// completes. A permanently-`false` `has-cover` (no URL on file, a failed
+// fetch, or a fetch still in flight) is not an error state — the card just
+// renders without a thumbnail, same look this app had before this feature
+// existed.
 export struct WatchlistCard {
     anilist-id: int,
     title: string,
     progress: string,
+    cover: image,
+    has-cover: bool,
 }
 
 // One friend (accepted or a pending incoming request)'s display data,
@@ -65,20 +76,25 @@ export struct FriendCard {
 // ---------------------------------------------------------------------
 
 // One AniList anime entry, reduced to exactly what the Home dashboard's
-// Trending Now / Popular Right Now cards render. Real cover art (a remote
-// HTTP image URL, `ankai_core::anime::AnimeSummary::cover_image_url`) is
-// deliberately not fetched here — Slint 1.17's `Image` element loads from a
-// local path/compile-time `@image-url`, not directly from a network URL,
-// and building a fetch-decode-cache pipeline (e.g. via the `image` crate)
-// for one dashboard widget was judged out of scope for this pass; see
-// PROGRESS.md/this session's report for the honest call. `title` is
+// Trending Now / Popular Right Now cards render. `title` is
 // English-preferred-then-romaji (already resolved on the Rust side, since
 // Slint has no such fallback expression); `score` is pre-formatted display
-// text ("Score: 88" or "Not yet rated") for the same reason.
+// text ("Score: 88" or "Not yet rated") for the same reason. `cover`/
+// `has-cover`: real cover art fetched from AniList's own CDN
+// (`ankai_core::anime::AnimeSummary::cover_image_url`) and decoded entirely
+// in memory by `client::images` (no disk cache — see that module's doc
+// comment). `cover` starts as an empty default `image` and `has-cover`
+// starts `false`; main.rs flips `has-cover` to `true` and fills `cover` in
+// place once the real async fetch completes. A permanently-`false`
+// `has-cover` (fetch failed, still in flight, or AniList had no cover on
+// file for this entry) just means the card renders without a thumbnail —
+// not an error state.
 export struct AnimeRef {
     id: int,
     title: string,
     score: string,
+    cover: image,
+    has-cover: bool,
 }
 
 // One entry in the "Hot Discussions" cross-community feed
@@ -306,6 +322,17 @@ component HomeCardItem inherits Rectangle {
     in property <string> title-text;
     in property <string> subtitle-text: "";
     in property <color> accent;
+    // Real cover art (see AnimeRef's doc comment) — `cover-image` renders
+    // once `has-cover` is true; until then (loading, failed, or no URL on
+    // file) this shows the same accent-tinted placeholder tile the app
+    // rendered everywhere before this feature existed. Named `cover-image`
+    // rather than `cover` specifically so it doesn't collide with the
+    // `ImageFit` enum's own `cover` value used by `image-fit` below — a
+    // property named `cover` in scope shadows that enum value and Slint's
+    // compiler rejects `image-fit: cover;` as "cannot convert image to
+    // enum ImageFit" (hit for real while building this).
+    in property <image> cover-image;
+    in property <bool> has-cover: false;
 
     border-radius: 16px;
     background: Theme.bg-surface-raised.with-alpha(0.7);
@@ -324,6 +351,21 @@ component HomeCardItem inherits Rectangle {
             width: 4px;
             border-radius: 2px;
             background: root.accent;
+        }
+
+        Rectangle {
+            width: 40px;
+            height: 56px;
+            border-radius: 6px;
+            clip: true;
+            background: root.accent.with-alpha(0.18);
+
+            if root.has-cover: Image {
+                source: root.cover-image;
+                width: 100%;
+                height: 100%;
+                image-fit: cover;
+            }
         }
 
         VerticalLayout {
@@ -437,6 +479,13 @@ component WatchlistCardItem inherits Rectangle {
     in property <string> anime-title;
     in property <string> progress-text;
     in property <color> accent;
+    // Real cover art — see WatchlistCard's doc comment. Same
+    // has-cover-gated thumbnail-or-placeholder shape as HomeCardItem, and
+    // the same `cover-image`-not-`cover` naming (see that component's
+    // comment for why: avoiding a name collision with ImageFit's `cover`
+    // enum value).
+    in property <image> cover-image;
+    in property <bool> has-cover: false;
 
     border-radius: 16px;
     background: Theme.bg-surface-raised.with-alpha(0.7);
@@ -455,6 +504,21 @@ component WatchlistCardItem inherits Rectangle {
             width: 4px;
             border-radius: 2px;
             background: root.accent;
+        }
+
+        Rectangle {
+            width: 36px;
+            height: 48px;
+            border-radius: 6px;
+            clip: true;
+            background: root.accent.with-alpha(0.18);
+
+            if root.has-cover: Image {
+                source: root.cover-image;
+                width: 100%;
+                height: 100%;
+                image-fit: cover;
+            }
         }
 
         VerticalLayout {
@@ -1104,7 +1168,7 @@ export component AppWindow inherits Window {
                         }
 
                         Text {
-                            text: "Real-time trending anime from AniList. Cover art isn't rendered here yet — Slint doesn't load images directly from a network URL, so this is title/score text only for now.";
+                            text: "Real-time trending anime from AniList, with real cover art fetched from AniList's own CDN.";
                             color: Theme.text-secondary;
                             font-size: 11px;
                             wrap: word-wrap;
@@ -1135,6 +1199,8 @@ export component AppWindow inherits Window {
                                 title-text: entry.title;
                                 subtitle-text: entry.score;
                                 accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                cover-image: entry.cover;
+                                has-cover: entry.has-cover;
                             }
                         }
                     }
@@ -1175,6 +1241,8 @@ export component AppWindow inherits Window {
                                 title-text: entry.title;
                                 subtitle-text: entry.score;
                                 accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                cover-image: entry.cover;
+                                has-cover: entry.has-cover;
                             }
                         }
                     }
@@ -1647,6 +1715,8 @@ export component AppWindow inherits Window {
                                 anime-title: entry.title;
                                 progress-text: entry.progress;
                                 accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                cover-image: entry.cover;
+                                has-cover: entry.has-cover;
                             }
                         }
                     }

@@ -30,6 +30,7 @@ mod floating_panel_demo {
 }
 
 mod directory;
+mod images;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -172,7 +173,13 @@ fn watchlist_progress(entry: &ankai_core::anime::WatchlistEntry) -> String {
 /// deliberately not a full watchlist browser). Called once at startup and
 /// again after any watchlist mutation, same "recompute fresh from core"
 /// shape as `refresh_top8`.
-fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db) {
+///
+/// Each entry's cached `cover_image_url` (real AniList CDN URL) starts out
+/// unfetched (`cover: default`, `has_cover: false`) and is filled in
+/// asynchronously afterward via `client::images::load_cover_image`, run on
+/// `handle` — same "text now, image once it loads" shape
+/// `spawn_anime_refresh` already uses for the Home dashboard's cards.
+fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db, handle: &tokio::runtime::Handle) {
     let watching =
         ankai_core::anime::list_watchlist(db, Some(ankai_core::anime::WatchStatus::Watching))
             .unwrap_or_else(|err| {
@@ -186,12 +193,51 @@ fn refresh_watchlist(app: &AppWindow, db: &ankai_core::db::Db) {
             anilist_id: entry.anilist_id as i32,
             title: watchlist_title(entry).into(),
             progress: watchlist_progress(entry).into(),
+            cover: slint::Image::default(),
+            has_cover: false,
         })
         .collect();
 
     app.set_watching_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(cards))));
 
+    for entry in &watching {
+        let Some(url) = entry.cover_image_url.clone() else {
+            continue;
+        };
+        let anilist_id = entry.anilist_id as i32;
+        let app_weak = app.as_weak();
+        images::load_cover_image(url, handle.clone(), app_weak, move |app, image| {
+            set_watchlist_cover(app.get_watching_anime(), anilist_id, image);
+        });
+    }
+
     refresh_stats(app, db);
+}
+
+/// Updates a single row of the "Currently Watching" model in place once its
+/// real cover image finishes loading — matched by `anilist_id` rather than
+/// index, since the model can in principle be reloaded (a fresh
+/// `refresh_watchlist`) while an earlier load's fetch is still in flight.
+/// A no-op if the row is no longer present (same "just don't apply it"
+/// tolerance `spawn_friend_presence_checks` already has for its own
+/// in-flight-vs-reloaded race).
+fn set_watchlist_cover(model: slint::ModelRc<WatchlistCard>, anilist_id: i32, image: slint::Image) {
+    let Some(vec_model) = model
+        .as_any()
+        .downcast_ref::<slint::VecModel<WatchlistCard>>()
+    else {
+        return;
+    };
+    for i in 0..vec_model.row_count() {
+        if let Some(mut row) = vec_model.row_data(i) {
+            if row.anilist_id == anilist_id {
+                row.cover = image;
+                row.has_cover = true;
+                vec_model.set_row_data(i, row);
+                break;
+            }
+        }
+    }
 }
 
 /// Recomputes the My Page Friends section (accepted friends + pending
@@ -313,6 +359,29 @@ fn anime_to_ref(anime: ankai_core::anime::AnimeSummary) -> AnimeRef {
         id: anime.id as i32,
         title: title.into(),
         score: score.into(),
+        cover: slint::Image::default(),
+        has_cover: false,
+    }
+}
+
+/// Updates a single row of a Home dashboard anime model (trending or
+/// popular — both share `AnimeRef`'s shape) in place once its real cover
+/// image finishes loading. Matched by AniList id rather than index, same
+/// "reload can race an in-flight fetch, tolerate it" shape as
+/// `set_watchlist_cover`/`spawn_friend_presence_checks`.
+fn set_anime_cover(model: slint::ModelRc<AnimeRef>, id: i32, image: slint::Image) {
+    let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<AnimeRef>>() else {
+        return;
+    };
+    for i in 0..vec_model.row_count() {
+        if let Some(mut row) = vec_model.row_data(i) {
+            if row.id == id {
+                row.cover = image;
+                row.has_cover = true;
+                vec_model.set_row_data(i, row);
+                break;
+            }
+        }
     }
 }
 
@@ -326,6 +395,7 @@ fn anime_to_ref(anime: ankai_core::anime::AnimeSummary) -> AnimeRef {
 /// startup or freeze the UI thread on a refresh click.
 fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
     let app_weak_trending = app_weak.clone();
+    let handle_trending = handle.clone();
     handle.spawn(async move {
         let result = ankai_core::anime::trending_anime(10).await;
         let _ = slint::invoke_from_event_loop(move || {
@@ -335,10 +405,30 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
             match result {
                 Ok(list) => {
                     app.set_anime_status("".into());
+                    // Cover art (see `AnimeRef`'s doc comment) loads
+                    // asynchronously after the text-only cards are already
+                    // on screen: collect (id, url) pairs before `list` is
+                    // consumed by `anime_to_ref` below, then kick off one
+                    // real fetch per entry that actually has a cover URL.
+                    let covers: Vec<(i32, String)> = list
+                        .iter()
+                        .filter_map(|a| a.cover_image_url.clone().map(|url| (a.id as i32, url)))
+                        .collect();
                     let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
                     app.set_trending_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
                         refs,
                     ))));
+                    for (id, url) in covers {
+                        let app_weak = app_weak_trending.clone();
+                        images::load_cover_image(
+                            url,
+                            handle_trending.clone(),
+                            app_weak,
+                            move |app, image| {
+                                set_anime_cover(app.get_trending_anime(), id, image);
+                            },
+                        );
+                    }
                 }
                 Err(err) => {
                     eprintln!("ankai-client: failed to load trending anime: {err}");
@@ -349,6 +439,7 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
     });
 
     let app_weak_popular = app_weak.clone();
+    let handle_popular = handle.clone();
     handle.spawn(async move {
         let result = ankai_core::anime::popular_anime(10).await;
         let _ = slint::invoke_from_event_loop(move || {
@@ -357,10 +448,25 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
             };
             match result {
                 Ok(list) => {
+                    let covers: Vec<(i32, String)> = list
+                        .iter()
+                        .filter_map(|a| a.cover_image_url.clone().map(|url| (a.id as i32, url)))
+                        .collect();
                     let refs: Vec<AnimeRef> = list.into_iter().map(anime_to_ref).collect();
                     app.set_popular_anime(slint::ModelRc::from(Rc::new(slint::VecModel::from(
                         refs,
                     ))));
+                    for (id, url) in covers {
+                        let app_weak = app_weak_popular.clone();
+                        images::load_cover_image(
+                            url,
+                            handle_popular.clone(),
+                            app_weak,
+                            move |app, image| {
+                                set_anime_cover(app.get_popular_anime(), id, image);
+                            },
+                        );
+                    }
                 }
                 Err(err) => {
                     eprintln!("ankai-client: failed to load popular anime: {err}");
@@ -697,8 +803,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // AniList and add" UI built in this pass — that's real, separate future
     // work (this module's own AniList search/trending/popular functions are
     // fully built and tested, just not wired into any UI screen yet).
-    refresh_watchlist(&app, &db);
-
+    // Deferred until after the P2P/tokio runtime is set up below —
+    // refresh_watchlist needs a `tokio::runtime::Handle` to kick off real
+    // async cover-art fetches (see client::images), same runtime everything
+    // else in this file already shares.
     let hangouts = ankai_core::hangouts::list(&db).expect("failed to list hangouts");
     let hangout_names: Vec<slint::SharedString> =
         hangouts.into_iter().map(|h| h.name.into()).collect();
@@ -740,6 +848,11 @@ fn main() -> Result<(), slint::PlatformError> {
             .block_on(ankai_core::p2p::P2pNode::bind())
             .expect("failed to bind local P2P endpoint"),
     );
+
+    // Now that a tokio runtime/handle exists, finish "Currently Watching"'s
+    // setup (see the comment above this block) — real cover-art fetches
+    // (client::images) get kicked off asynchronously on this same runtime.
+    refresh_watchlist(&app, &db, p2p_runtime.handle());
 
     // This device's standing invite: its dialable address plus a freshly
     // built KeyPackage (MLS's prekey equivalent), so a peer who pastes it
