@@ -20,6 +20,7 @@ pub mod mal_forums;
 pub mod messaging;
 pub mod mls_provider;
 pub mod p2p;
+pub mod playback_progress;
 pub mod protocol;
 pub mod stremio;
 pub mod top8;
