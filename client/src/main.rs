@@ -674,6 +674,60 @@ fn spawn_friend_presence_checks(
     }
 }
 
+/// The local `settings` table key a real Last.fm username is persisted
+/// under (see `core::db`'s `settings` table) — same shape as
+/// `"display_name"`, distinct from `"directory_username"` (that one is an
+/// ANKAI directory-server identity, this one is a Last.fm account name).
+const LASTFM_USERNAME_SETTING_KEY: &str = "lastfm_username";
+
+/// Fetches `username`'s real Last.fm now-playing state
+/// (`ankai_core::lastfm::current_now_playing`) and pushes exactly one of the
+/// four real states into My Page's Now Playing widget — see
+/// `ui/app.slint`'s `now-playing-state` doc comment for what each of
+/// "idle"/"error"/"playing" means (this function never sets
+/// "not-configured"; that's the caller's job when there's no username at
+/// all, since this function always requires one). Spawned on `handle`, same
+/// "don't block the UI thread on a real third-party network call" reasoning
+/// as `spawn_mal_refresh`/`spawn_anime_refresh`.
+fn spawn_lastfm_refresh(
+    handle: tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+    username: String,
+) {
+    handle.spawn(async move {
+        let result = ankai_core::lastfm::current_now_playing(&username).await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Some(now_playing)) => {
+                    app.set_now_playing_state("playing".into());
+                    app.set_now_playing_artist(now_playing.artist.into());
+                    app.set_now_playing_track(now_playing.track.into());
+                    app.set_now_playing_album(now_playing.album.unwrap_or_default().into());
+                    app.set_now_playing_error("".into());
+                }
+                Ok(None) => {
+                    app.set_now_playing_state("idle".into());
+                    app.set_now_playing_artist("".into());
+                    app.set_now_playing_track("".into());
+                    app.set_now_playing_album("".into());
+                    app.set_now_playing_error("".into());
+                }
+                Err(err) => {
+                    eprintln!("ankai-client: failed to load Last.fm now-playing: {err}");
+                    app.set_now_playing_state("error".into());
+                    app.set_now_playing_artist("".into());
+                    app.set_now_playing_track("".into());
+                    app.set_now_playing_album("".into());
+                    app.set_now_playing_error(err.to_string().into());
+                }
+            }
+        });
+    });
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Prefer the Skia renderer for full-effects mode per ADR-0002. If Skia
     // can't be selected (missing at compile time, or backend init fails at
@@ -1619,6 +1673,89 @@ fn main() -> Result<(), slint::PlatformError> {
             );
         });
     }
+
+    // Now Playing (core::lastfm). A Last.fm username is a local-only
+    // setting (see ui/app.slint's now-playing-state doc comment for the
+    // real four-state machine this drives). "not-configured" is the honest
+    // default whenever nothing's saved — set explicitly here rather than
+    // relying on AppWindow's property default alone, so it's correct on
+    // every load path (startup, and after clearing the field in Settings).
+    let saved_lastfm_username = db
+        .get_setting(LASTFM_USERNAME_SETTING_KEY)
+        .expect("failed to read lastfm_username setting")
+        .unwrap_or_default();
+    app.set_lastfm_username(saved_lastfm_username.clone().into());
+    if saved_lastfm_username.trim().is_empty() {
+        app.set_now_playing_state("not-configured".into());
+    } else {
+        spawn_lastfm_refresh(
+            p2p_runtime.handle().clone(),
+            app.as_weak(),
+            saved_lastfm_username,
+        );
+    }
+
+    {
+        let db_for_lastfm_save = db.clone();
+        let app_weak_for_lastfm_save = app.as_weak();
+        let handle_for_lastfm_save = p2p_runtime.handle().clone();
+        app.on_save_lastfm_username(move |username| {
+            let username = username.trim().to_string();
+            if let Err(err) = db_for_lastfm_save.set_setting(LASTFM_USERNAME_SETTING_KEY, &username)
+            {
+                eprintln!("ankai-client: failed to save Last.fm username: {err}");
+            }
+            let Some(app) = app_weak_for_lastfm_save.upgrade() else {
+                return;
+            };
+            app.set_lastfm_username(username.clone().into());
+            if username.is_empty() {
+                app.set_now_playing_state("not-configured".into());
+                app.set_now_playing_artist("".into());
+                app.set_now_playing_track("".into());
+                app.set_now_playing_album("".into());
+                app.set_now_playing_error("".into());
+            } else {
+                spawn_lastfm_refresh(handle_for_lastfm_save.clone(), app.as_weak(), username);
+            }
+        });
+    }
+
+    // Real periodic re-check, not just a one-shot startup fetch: Last.fm's
+    // nowplaying state changes as songs change, so this has to actually
+    // keep polling to stay honest. Reads the *current* saved username fresh
+    // on every tick (a plain, synchronous local-DB read — Db isn't Send,
+    // but slint::Timer callbacks run on the UI thread, so this is exactly
+    // as safe as any other direct `db` access in this file) rather than
+    // capturing it once at setup time, so a username saved/cleared in
+    // Settings takes effect on the very next tick without a restart. Kept
+    // alive for the app's whole lifetime by binding it here, in the same
+    // scope as `app.run()` below — a slint::Timer stops firing once
+    // dropped, so this must not go out of scope before the event loop
+    // starts.
+    let db_for_lastfm_timer = db.clone();
+    let app_weak_for_lastfm_timer = app.as_weak();
+    let handle_for_lastfm_timer = p2p_runtime.handle().clone();
+    let lastfm_timer = slint::Timer::default();
+    lastfm_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(30),
+        move || {
+            let Some(app) = app_weak_for_lastfm_timer.upgrade() else {
+                return;
+            };
+            let username = db_for_lastfm_timer
+                .get_setting(LASTFM_USERNAME_SETTING_KEY)
+                .unwrap_or_default()
+                .unwrap_or_default();
+            if username.trim().is_empty() {
+                // Stays "not-configured" — already set by the save/startup
+                // path above, nothing to poll.
+                return;
+            }
+            spawn_lastfm_refresh(handle_for_lastfm_timer.clone(), app.as_weak(), username);
+        },
+    );
 
     // Home is the default landing pane (see ui/app.slint's selected-index
     // doc comment) — set explicitly here too, rather than relying solely on
