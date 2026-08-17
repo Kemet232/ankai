@@ -1,0 +1,417 @@
+// Catalog-aware Board/Discover surface (S21 of
+// docs/roadmaps/stremio-competitive-parity.md).
+//
+// Replaces the old single merged shelf: instead of collapsing every addon's
+// default (or search) catalog into one flat list, each eligible catalog on
+// each enabled addon renders as its own row (a "shelf"), with its own
+// addon/catalog attribution, its own skip-pagination ("Load more") and
+// loading/error/empty state, and an honest disclosure when it's showing a
+// stale cached page instead of a live one. Type/addon/catalog/genre filter
+// pills above the rows are generated from real manifest data — see
+// client/src/main.rs's `rebuild_board_ui` for how the option lists and rows
+// are built from `ankai_core::board`.
+//
+// Item cards are rendered from a flat `items` array shared with the rest of
+// the Stremio surface (`stremio-media` in app.slint): each row only carries
+// an `item-start`/`item-count` window into it, so every existing
+// `open-stremio-media`/episode/stream/playback callback keeps working
+// unchanged — only how that flat list gets populated changed.
+
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct StremioMediaRef {
+    title: string,
+    detail: string,
+    poster: image,
+    has-poster: bool,
+}
+
+export struct BoardRowRef {
+    row-key: string,
+    addon-name: string,
+    catalog-name: string,
+    media-type: string,
+    item-start: int,
+    item-count: int,
+    loading: bool,
+    initialized: bool,
+    has-more: bool,
+    error-message: string,
+    cache-notice: string,
+}
+
+export struct FilterOption {
+    label: string,
+    value: string,
+}
+
+component FilterPill inherits Rectangle {
+    in property <string> label: "";
+    in property <bool> active: false;
+    callback activated();
+
+    height: 30px;
+    width: pill-label.preferred-width + 22px;
+    border-radius: 15px;
+    background: root.active
+        ? @linear-gradient(110deg, Theme.accent-pink 0%, Theme.accent-violet 100%)
+        : touch.has-hover || keyboard-focus.has-focus
+            ? Theme.bg-surface-raised.with-alpha(0.88)
+            : Theme.bg-surface-raised.with-alpha(0.52);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? Theme.accent-cyan
+        : root.active ? Theme.accent-pink.with-alpha(0.68) : Theme.silver.with-alpha(0.15);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+
+    animate background { duration: Theme.reduced-motion ? 0ms : 110ms; }
+
+    pill-label := Text {
+        text: root.label;
+        color: root.active ? Theme.text-primary : Theme.text-secondary;
+        font-size: 11px;
+        font-weight: root.active ? 800 : 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    keyboard-focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { keyboard-focus.focus(); root.activated(); }
+    }
+}
+
+component FilterPillRow inherits Rectangle {
+    in property <string> section-label: "";
+    in property <[FilterOption]> options: [];
+    in property <string> selected: "";
+    callback chosen(string);
+
+    // A selector with nothing beyond its own "All …" entry has no real
+    // choice to offer — generated straight from manifest data, so an addon
+    // that declares only one type/catalog/genre simply hides that row
+    // instead of rendering a pointless single always-active pill.
+    height: root.options.length > 1 ? 50px : 0px;
+    visible: root.options.length > 1;
+    clip: true;
+
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: root.section-label;
+            color: Theme.text-secondary;
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: 0.7px;
+        }
+        ScrollView {
+            height: 30px;
+            vertical-scrollbar-policy: always-off;
+            horizontal-scrollbar-policy: as-needed;
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                for opt in root.options: FilterPill {
+                    label: opt.label;
+                    active: opt.value == root.selected;
+                    activated => { root.chosen(opt.value); }
+                }
+            }
+        }
+    }
+}
+
+component ItemCard inherits Rectangle {
+    in property <StremioMediaRef> item;
+    callback opened();
+
+    width: 142px;
+    height: 232px;
+    border-radius: 12px;
+    clip: true;
+    background: touch.has-hover ? Theme.accent-violet.with-alpha(0.20) : Theme.bg-surface-raised.with-alpha(0.75);
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? Theme.accent-cyan
+        : touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.14);
+    accessible-role: button;
+    accessible-label: "Open " + root.item.title;
+    accessible-action-default => { root.opened(); }
+
+    keyboard-focus := FocusScope {
+        focus-on-tab-navigation: true;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.opened();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 174px;
+            background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.38) 0%, Theme.bg-void 100%);
+            if root.item.has-poster: Image { source: root.item.poster; width: parent.width; height: parent.height; image-fit: cover; }
+            if !root.item.has-poster: Text { text: "ANKAI"; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            Text { text: root.item.title; color: Theme.text-primary; font-size: 12px; font-weight: 600; overflow: elide; }
+            Text { text: root.item.detail; color: Theme.text-secondary; font-size: 10px; overflow: elide; }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { keyboard-focus.focus(); root.opened(); }
+    }
+}
+
+component LoadMoreCard inherits Rectangle {
+    in property <bool> busy: false;
+    callback activated();
+
+    width: 96px;
+    height: 232px;
+    border-radius: 12px;
+    background: touch.has-hover ? Theme.accent-violet.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.45);
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.16);
+    accessible-role: button;
+    accessible-label: root.busy ? "Loading more" : "Load more";
+    accessible-action-default => { if (!root.busy) { root.activated(); } }
+
+    Text {
+        text: root.busy ? "…" : "Load\nmore";
+        color: Theme.accent-cyan;
+        font-size: 12px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.busy ? default : pointer;
+        clicked => { if (!root.busy) { root.activated(); } }
+    }
+}
+
+component BoardShelf inherits Rectangle {
+    in property <BoardRowRef> row-data;
+    in property <[StremioMediaRef]> all-items;
+    callback open-item(int);
+    callback load-more();
+    callback retry();
+
+    background: Theme.bg-surface-raised.with-alpha(0.30);
+    border-radius: 16px;
+    border-width: 1px;
+    border-color: Theme.silver.with-alpha(0.10);
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 1px;
+                Text { text: root.row-data.catalog-name; color: Theme.text-primary; font-size: 14px; font-weight: 800; overflow: elide; }
+                Text { text: root.row-data.addon-name + "  ·  " + root.row-data.media-type; color: Theme.text-secondary; font-size: 9px; overflow: elide; }
+            }
+        }
+
+        if root.row-data.cache-notice != "": Text {
+            text: root.row-data.cache-notice;
+            color: Theme.state-busy;
+            font-size: 9px;
+            wrap: word-wrap;
+        }
+
+        if root.row-data.loading && root.row-data.item-count == 0: Rectangle {
+            height: 60px;
+            Text { text: "Loading…"; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+        }
+
+        if root.row-data.error-message != "" && root.row-data.item-count == 0: Rectangle {
+            height: 60px;
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    text: "Couldn't load: " + root.row-data.error-message;
+                    color: Theme.state-busy;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                retry-touch := TouchArea {
+                    width: 70px;
+                    mouse-cursor: pointer;
+                    clicked => { root.retry(); }
+                    Rectangle {
+                        border-radius: 10px;
+                        background: retry-touch.has-hover ? Theme.accent-violet.with-alpha(0.30) : Theme.bg-surface-raised.with-alpha(0.7);
+                        border-width: 1px;
+                        border-color: Theme.state-busy.with-alpha(0.4);
+                        Text { text: "Retry"; color: Theme.text-primary; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+
+        if root.row-data.initialized && root.row-data.item-count == 0 && root.row-data.error-message == "": Text {
+            text: "No items in this catalog yet.";
+            color: Theme.text-secondary;
+            font-size: 10px;
+        }
+
+        if root.row-data.item-count > 0: ScrollView {
+            height: 232px;
+            vertical-scrollbar-policy: always-off;
+            horizontal-scrollbar-policy: as-needed;
+            HorizontalLayout {
+                spacing: 10px;
+                padding-right: 8px;
+                alignment: start;
+                for i in root.row-data.item-count: ItemCard {
+                    item: root.all-items[root.row-data.item-start + i];
+                    opened => { root.open-item(i); }
+                }
+                if root.row-data.has-more: LoadMoreCard {
+                    busy: root.row-data.loading;
+                    activated => { root.load-more(); }
+                }
+            }
+        }
+    }
+}
+
+export component Board inherits Rectangle {
+    in property <[BoardRowRef]> rows: [];
+    in property <[StremioMediaRef]> items: [];
+    in property <bool> search-active: false;
+
+    in property <[FilterOption]> types: [];
+    in property <string> selected-type: "";
+    in property <[FilterOption]> addons: [];
+    in property <string> selected-addon: "";
+    in property <[FilterOption]> catalogs: [];
+    in property <string> selected-catalog: "";
+    in property <[FilterOption]> genres: [];
+    in property <string> selected-genre: "";
+
+    in-out property <string> deep-link-input: "";
+
+    callback select-type(string);
+    callback select-addon(string);
+    callback select-catalog(string);
+    callback select-genre(string);
+    callback open-item(string, int);
+    callback load-more(string);
+    callback retry(string);
+    callback open-link(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 16px;
+
+        Rectangle {
+            border-radius: 14px;
+            background: Theme.bg-void.with-alpha(0.5);
+            border-width: link-edit.has-focus ? 2px : 1px;
+            border-color: link-edit.has-focus ? Theme.accent-cyan : Theme.silver.with-alpha(0.16);
+            height: 44px;
+            HorizontalLayout {
+                padding-left: 13px;
+                padding-right: 9px;
+                spacing: 9px;
+                Text { text: "🔗"; color: Theme.text-secondary; font-size: 15px; vertical-alignment: center; }
+                link-edit := LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> root.deep-link-input;
+                    placeholder-text: "Open a link — ankai://…, stremio://…, or an addon manifest URL";
+                    accessible-label: "Open a deep link";
+                    accepted => {
+                        if (root.deep-link-input != "") {
+                            root.open-link(root.deep-link-input);
+                        }
+                    }
+                }
+            }
+        }
+
+        FilterPillRow { section-label: "TYPE"; options: root.types; selected: root.selected-type; chosen(v) => { root.select-type(v); } }
+        FilterPillRow { section-label: "ADDON"; options: root.addons; selected: root.selected-addon; chosen(v) => { root.select-addon(v); } }
+        FilterPillRow { section-label: "CATALOG"; options: root.catalogs; selected: root.selected-catalog; chosen(v) => { root.select-catalog(v); } }
+        FilterPillRow { section-label: "GENRE"; options: root.genres; selected: root.selected-genre; chosen(v) => { root.select-genre(v); } }
+
+        if root.search-active: Rectangle {
+            height: 252px;
+            ScrollView {
+                width: parent.width;
+                height: parent.height;
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    for item[i] in root.items: ItemCard {
+                        item: item;
+                        opened => { root.open-item("search", i); }
+                    }
+                }
+            }
+        }
+
+        if !root.search-active && root.rows.length == 0: Rectangle {
+            height: 120px;
+            border-radius: 16px;
+            background: Theme.bg-surface-raised.with-alpha(0.4);
+            border-width: 1px;
+            border-color: Theme.silver.with-alpha(0.12);
+            Text {
+                text: "No browsable catalogs yet. Install or enable an addon below.";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
+        if !root.search-active: VerticalLayout {
+            spacing: 14px;
+            for row in root.rows: BoardShelf {
+                row-data: row;
+                all-items: root.items;
+                // `open-item`'s in-row callback carries the row-local index;
+                // this bubbles it up as the global `stremio-media` index
+                // (row.item-start + i) so the caller can index straight into
+                // the flat list without needing to know each row's offset.
+                open-item(i) => { root.open-item(row.row-key, row.item-start + i); }
+                load-more => { root.load-more(row.row-key); }
+                retry => { root.retry(row.row-key); }
+            }
+        }
+    }
+}
