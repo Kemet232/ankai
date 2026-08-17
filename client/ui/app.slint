@@ -2545,7 +2545,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: "Connect any public Stremio addon. Catalogs and streams are fetched live; ANKAI does not alter the addon URL or its embedded configuration.";
+                        text: "Browse and search your installed addons' catalogs live. Manage which addons are connected in Settings → Addons.";
                         color: Theme.text-secondary;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -2574,21 +2574,11 @@ export component AppWindow inherits Window {
                         Button { text: "Search"; clicked => { root.search-stremio(root.stremio-search-query); } }
                     }
 
-                    AddonManager {
-                        height: 520px;
-                        addons: root.installed-addons;
-                        manifest-url <=> root.stremio-addon-url;
-                        state: root.addon-manager-state;
-                        error-message: root.addon-manager-error;
-                        install-busy: root.stremio-loading;
-                        actions-enabled: !root.stremio-loading;
-                        install(url) => { root.load-stremio-addon(url); }
-                        retry => { root.refresh-addon-registry(); }
-                        toggle(id, enabled) => { root.toggle-installed-addon(id, enabled); }
-                        refresh(id) => { root.refresh-installed-addon(id); }
-                        move-up(id) => { root.move-installed-addon-up(id); }
-                        move-down(id) => { root.move-installed-addon-down(id); }
-                        remove(id) => { root.remove-installed-addon(id); }
+                    if root.installed-addons.length == 0: Text {
+                        text: "No addons installed yet — add one in Settings → Addons to see catalogs here.";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
 
                     Text {
@@ -2765,6 +2755,39 @@ export component AppWindow inherits Window {
                                 text: "Reduce interface motion";
                                 checked <=> root.reduced-motion;
                                 toggled => { root.save-reduced-motion(self.checked); }
+                            }
+                        }
+                    }
+
+                    FixedPanel {
+                        panel-title: "Addons";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Connect any public Stremio addon. Catalogs and streams are fetched live for Discover and Board; ANKAI does not alter the addon URL or its embedded configuration.";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            AddonManager {
+                                height: 520px;
+                                addons: root.installed-addons;
+                                manifest-url <=> root.stremio-addon-url;
+                                state: root.addon-manager-state;
+                                error-message: root.addon-manager-error;
+                                install-busy: root.stremio-loading;
+                                actions-enabled: !root.stremio-loading;
+                                install(url) => { root.load-stremio-addon(url); }
+                                retry => { root.refresh-addon-registry(); }
+                                toggle(id, enabled) => { root.toggle-installed-addon(id, enabled); }
+                                refresh(id) => { root.refresh-installed-addon(id); }
+                                move-up(id) => { root.move-installed-addon-up(id); }
+                                move-down(id) => { root.move-installed-addon-down(id); }
+                                remove(id) => { root.remove-installed-addon(id); }
                             }
                         }
                     }

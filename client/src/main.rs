@@ -4254,7 +4254,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             });
             if let Some(app) = app_weak.upgrade() {
-                app.set_stremio_status(message.into());
+                app.set_stremio_status(message.clone().into());
+                if !playing {
+                    // The status line above sits near the top of the detail
+                    // panel, well above the "PLAY FROM" row a user just
+                    // clicked in — easy to scroll past and never see. Mirror
+                    // non-playable outcomes (unsupported transport, missing
+                    // resolver, a real fetch error) into the shell's toast,
+                    // which renders in a fixed screen position regardless of
+                    // scroll, so clicking a stream that can't play yet is
+                    // never silent.
+                    app.set_shell_notice(message.into());
+                }
                 if playing {
                     ACTIVE_PLAYBACK_KEY.with(|active| {
                         *active.borrow_mut() =
