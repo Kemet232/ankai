@@ -2108,110 +2108,114 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.communities-index && root.selected-community-id == "": VerticalLayout {
-                y: 72px;
+            if root.selected-index == root.communities-index && root.selected-community-id == "": ScrollView {
                 width: parent.width;
+                y: 72px;
                 height: parent.height - 72px;
-                padding: root.narrow-content ? 16px : 32px;
-                spacing: 16px;
-                alignment: start;
+                horizontal-scrollbar-policy: always-off;
 
-                Text {
-                    text: "Communities";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
+                VerticalLayout {
+                    width: parent.width;
+                    padding: root.narrow-content ? 16px : 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    LineEdit {
-                        width: root.narrow-content ? 150px : 240px;
-                        placeholder-text: "New community name";
-                        text <=> root.new-community-name;
-                        accepted => {
-                            root.create-community(root.new-community-name);
-                        }
-                    }
-
-                    Button {
-                        text: "Create";
-                        enabled: root.new-community-name != "";
-                        clicked => {
-                            root.create-community(root.new-community-name);
-                        }
-                    }
-                }
-
-                Text {
-                    text: "Select a community to view or post in its discussion thread.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                }
-
-                if root.community-names.length == 0: Rectangle {
-                    height: 110px;
-                    border-radius: 14px;
-                    background: Theme.bg-surface-raised.with-alpha(0.5);
-                    border-width: 1px;
-                    border-color: Theme.silver.with-alpha(0.12);
                     Text {
-                        width: parent.width - 28px;
-                        height: parent.height;
-                        x: 14px;
-                        text: "No communities yet. Create one above to start a local discussion.";
+                        text: "Communities";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "Select a community to view or post in its discussion thread.";
                         color: Theme.text-secondary;
                         font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
                         wrap: word-wrap;
                     }
-                }
 
-                if root.community-names.length > 0: ScrollView {
-                    vertical-stretch: 1;
-                    horizontal-scrollbar-policy: always-off;
+                    // ---- Create a Community: fixed (non-draggable) glass
+                    // "window", matching Messages' "Connect a Peer" /
+                    // Hangouts' "Create a Hangout" precedent — see
+                    // FixedPanel's doc comment in floating-panel.slint. ----
+                    FixedPanel {
+                        panel-title: "Create a Community";
 
-                    VerticalLayout {
-                        spacing: 6px;
-                        for name[i] in root.community-names: Rectangle {
-                            height: 40px;
-                            border-radius: 9px;
-                            background: community-touch.has-hover ? Theme.silver.with-alpha(0.08) : transparent;
-                            border-width: community-focus.has-focus ? 2px : 0px;
-                            border-color: Theme.accent-cyan;
-                            accessible-role: button;
-                            accessible-label: "Open community " + name;
-                            accessible-action-default => { root.open-community(root.community-ids[i], name); }
+                        HorizontalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+                            alignment: start;
 
-                            community-focus := FocusScope {
-                                focus-on-tab-navigation: true;
-                                key-pressed(event) => {
-                                    if event.text == Key.Return || event.text == " " {
-                                        root.open-community(root.community-ids[i], name);
-                                        return accept;
-                                    }
-                                    return reject;
+                            LineEdit {
+                                width: root.narrow-content ? 150px : 240px;
+                                placeholder-text: "New community name";
+                                text <=> root.new-community-name;
+                                accepted => {
+                                    root.create-community(root.new-community-name);
                                 }
                             }
 
-                            Text {
-                                x: 8px;
-                                width: parent.width - 16px;
-                                height: parent.height;
-                                vertical-alignment: center;
-                                text: "• " + name;
+                            Button {
+                                text: "Create";
+                                enabled: root.new-community-name != "";
+                                clicked => {
+                                    root.create-community(root.new-community-name);
+                                }
+                            }
+                        }
+                    }
+
+                    FixedPanel {
+                        panel-title: "Your Communities";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            if root.community-names.length == 0: Text {
+                                text: "No communities yet. Create one above to start a local discussion.";
                                 color: Theme.text-secondary;
-                                font-size: 14px;
+                                font-size: 13px;
+                                wrap: word-wrap;
                             }
 
-                            community-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    community-focus.focus();
-                                    root.open-community(root.community-ids[i], name);
+                            for name[i] in root.community-names: Rectangle {
+                                height: 52px;
+                                border-radius: 13px;
+                                background: community-touch.has-hover ? root.top8-accent-cycle[Math.mod(i, 4)].with-alpha(0.18) : Theme.bg-void.with-alpha(0.22);
+                                border-width: community-focus.has-focus ? 2px : 1px;
+                                border-color: community-focus.has-focus ? Theme.accent-cyan : community-touch.has-hover ? root.top8-accent-cycle[Math.mod(i, 4)].with-alpha(0.46) : Theme.silver.with-alpha(0.12);
+                                accessible-role: button;
+                                accessible-label: "Open community " + name;
+                                accessible-action-default => { root.open-community(root.community-ids[i], name); }
+
+                                community-focus := FocusScope {
+                                    focus-on-tab-navigation: true;
+                                    key-pressed(event) => {
+                                        if event.text == Key.Return || event.text == " " {
+                                            root.open-community(root.community-ids[i], name);
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    spacing: 10px;
+                                    Rectangle { width: 4px; border-radius: 2px; background: root.top8-accent-cycle[Math.mod(i, 4)]; }
+                                    Text { text: "#"; color: root.top8-accent-cycle[Math.mod(i, 4)]; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                    Text { text: name; color: Theme.text-primary; font-size: 13px; font-weight: 650; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                    Text { text: "OPEN  ›"; color: Theme.text-secondary; font-size: 9px; font-weight: 750; vertical-alignment: center; }
+                                }
+
+                                community-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        community-focus.focus();
+                                        root.open-community(root.community-ids[i], name);
+                                    }
                                 }
                             }
                         }
@@ -2219,93 +2223,117 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.communities-index && root.selected-community-id != "": VerticalLayout {
-                y: 72px;
+            if root.selected-index == root.communities-index && root.selected-community-id != "": ScrollView {
                 width: parent.width;
+                y: 72px;
                 height: parent.height - 72px;
-                padding: root.narrow-content ? 16px : 32px;
-                spacing: 16px;
-                alignment: start;
+                horizontal-scrollbar-policy: always-off;
 
-                HorizontalLayout {
-                    spacing: 8px;
+                VerticalLayout {
+                    width: parent.width;
+                    padding: root.narrow-content ? 16px : 32px;
+                    spacing: 16px;
                     alignment: start;
 
-                    Button {
-                        text: "< Back to communities";
-                        clicked => {
-                            root.selected-community-id = "";
-                            root.selected-community-name = "";
-                        }
-                    }
-                }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
 
-                Text {
-                    text: root.selected-community-name;
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                Text {
-                    text: "Posts here are flat and local-only for now: no replies/threading, no editing or deleting, and no author beyond \"this device\" — a community's posts only live on this device until real sync is built.";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-
-                    LineEdit {
-                        width: root.narrow-content ? 150px : min(400px, parent.width);
-                        placeholder-text: "Write a post";
-                        text <=> root.new-post-content;
-                        accepted => {
-                            root.create-post(root.selected-community-id, root.new-post-content);
+                        Button {
+                            text: "< Back to communities";
+                            clicked => {
+                                root.selected-community-id = "";
+                                root.selected-community-name = "";
+                            }
                         }
                     }
 
-                    Button {
-                        text: "Post";
-                        enabled: root.new-post-content != "";
-                        clicked => {
-                            root.create-post(root.selected-community-id, root.new-post-content);
-                        }
+                    Text {
+                        text: root.selected-community-name;
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
                     }
-                }
 
-                Text {
-                    text: "Discussion (oldest first)";
-                    color: Theme.text-secondary;
-                    font-size: 12px;
-                }
+                    // ---- Community header + composer: fixed glass
+                    // "window", same family as Messages/Hangouts panels. ----
+                    FixedPanel {
+                        panel-title: "Post to " + root.selected-community-name;
 
-                if root.community-posts.length == 0: Text {
-                    text: "No posts yet. Be the first to start this local discussion.";
-                    color: Theme.text-secondary;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
 
-                if root.community-posts.length > 0: ScrollView {
-                    vertical-stretch: 1;
-                    horizontal-scrollbar-policy: always-off;
-                    VerticalLayout {
-                        spacing: 10px;
-                        for post in root.community-posts: Rectangle {
-                            min-height: 44px;
-                            border-radius: 10px;
-                            background: Theme.bg-surface-raised.with-alpha(0.42);
                             Text {
-                                x: 12px;
-                                y: 9px;
-                                width: parent.width - 24px;
-                                text: post;
+                                text: "Posts here are flat and local-only for now: no replies/threading, no editing or deleting, and no author beyond \"this device\" — a community's posts only live on this device until real sync is built.";
                                 color: Theme.text-secondary;
-                                font-size: 14px;
+                                font-size: 12px;
                                 wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                LineEdit {
+                                    width: root.narrow-content ? 150px : min(400px, parent.width);
+                                    placeholder-text: "Write a post";
+                                    text <=> root.new-post-content;
+                                    accepted => {
+                                        root.create-post(root.selected-community-id, root.new-post-content);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Post";
+                                    enabled: root.new-post-content != "";
+                                    clicked => {
+                                        root.create-post(root.selected-community-id, root.new-post-content);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    FixedPanel {
+                        panel-title: "Discussion (oldest first)";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            if root.community-posts.length == 0: Text {
+                                text: "No posts yet. Be the first to start this local discussion.";
+                                color: Theme.text-secondary;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            for post[i] in root.community-posts: Rectangle {
+                                min-height: 44px;
+                                border-radius: 10px;
+                                background: Theme.bg-surface-raised.with-alpha(0.5);
+                                border-width: 1px;
+                                border-color: Theme.silver.with-alpha(0.14);
+
+                                HorizontalLayout {
+                                    padding: 10px;
+                                    spacing: 10px;
+
+                                    Rectangle {
+                                        width: 3px;
+                                        border-radius: 1.5px;
+                                        background: root.top8-accent-cycle[Math.mod(i, 4)];
+                                    }
+
+                                    Text {
+                                        text: post;
+                                        color: Theme.text-secondary;
+                                        font-size: 14px;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2680,6 +2708,7 @@ export component AppWindow inherits Window {
                 y: 72px;
                 width: parent.width;
                 height: parent.height - 72px;
+                horizontal-scrollbar-policy: always-off;
 
                 VerticalLayout {
                     width: parent.width;
@@ -2687,134 +2716,156 @@ export component AppWindow inherits Window {
                     spacing: 16px;
                     alignment: start;
 
-                Text {
-                    text: "Settings";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 700;
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-
                     Text {
-                        text: "Display name";
-                        color: Theme.text-secondary;
-                        font-size: 14px;
-                        vertical-alignment: center;
-                    }
-
-                    LineEdit {
-                        width: root.narrow-content ? 150px : 240px;
-                        text <=> root.display-name;
-                        accepted => {
-                            root.save-display-name(root.display-name);
-                        }
-                    }
-
-                    Button {
-                        text: "Save";
-                        clicked => {
-                            root.save-display-name(root.display-name);
-                        }
-                    }
-                }
-
-                CheckBox {
-                    text: "Reduce interface motion";
-                    checked <=> root.reduced-motion;
-                    toggled => { root.save-reduced-motion(self.checked); }
-                }
-
-                if root.directory-enabled: VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Directory username (experimental — directory server configured)";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    Text {
-                        text: "Unlike display name, this is claimed on the directory server and unique across everyone who uses it — first to claim a name keeps it, and only this device can change it once claimed. Lowercase letters, digits, and underscores only, 3-20 characters. Tied to this device only for now, not a person/account (ANKAI has no multi-device model yet).";
-                        color: Theme.text-secondary;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-
-                    if root.claimed-username != "": Text {
-                        text: "Currently claimed: " + root.claimed-username;
+                        text: "Settings";
                         color: Theme.text-primary;
-                        font-size: 13px;
+                        font-size: 22px;
+                        font-weight: 700;
                     }
 
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
+                    // ---- Profile: display name + accessibility, matching
+                    // Profile/Messages/Hangouts' fixed glass "window" family
+                    // — see FixedPanel's doc comment in floating-panel.slint. ----
+                    FixedPanel {
+                        panel-title: "Profile";
 
-                        LineEdit {
-                            width: root.narrow-content ? 150px : 240px;
-                            placeholder-text: "e.g. ash_ketchum";
-                            text <=> root.username-input;
-                            accepted => {
-                                root.claim-username(root.username-input);
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 14px;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                Text {
+                                    text: "Display name";
+                                    color: Theme.text-secondary;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                }
+
+                                LineEdit {
+                                    width: root.narrow-content ? 150px : 240px;
+                                    text <=> root.display-name;
+                                    accepted => {
+                                        root.save-display-name(root.display-name);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Save";
+                                    clicked => {
+                                        root.save-display-name(root.display-name);
+                                    }
+                                }
                             }
-                        }
 
-                        Button {
-                            text: "Claim";
-                            enabled: root.username-input != "";
-                            clicked => {
-                                root.claim-username(root.username-input);
-                            }
-                        }
-                    }
-
-                    if root.username-status != "": Text {
-                        text: root.username-status;
-                        color: Theme.state-busy;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                    VerticalLayout {
-                    spacing: 4px;
-
-                    Text {
-                        text: "Last.fm username";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    Text {
-                        text: "Shows what you're really listening to right now on My Page (via Last.fm's public API — works if your player scrobbles to Last.fm directly or through a Spotify/Apple Music bridge). Not an ANKAI account; just the Last.fm username whose real \"now playing\" state to display.";
-                        color: Theme.text-secondary;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-
-                        LineEdit {
-                            width: root.narrow-content ? 150px : 240px;
-                            placeholder-text: "e.g. rj";
-                            text <=> root.lastfm-username;
-                            accepted => {
-                                root.save-lastfm-username(root.lastfm-username);
-                            }
-                        }
-
-                        Button {
-                            text: "Save";
-                            clicked => {
-                                root.save-lastfm-username(root.lastfm-username);
+                            CheckBox {
+                                text: "Reduce interface motion";
+                                checked <=> root.reduced-motion;
+                                toggled => { root.save-reduced-motion(self.checked); }
                             }
                         }
                     }
+
+                    if root.directory-enabled: FixedPanel {
+                        panel-title: "Directory Identity";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Directory username (experimental — directory server configured)";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: "Unlike display name, this is claimed on the directory server and unique across everyone who uses it — first to claim a name keeps it, and only this device can change it once claimed. Lowercase letters, digits, and underscores only, 3-20 characters. Tied to this device only for now, not a person/account (ANKAI has no multi-device model yet).";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            if root.claimed-username != "": Text {
+                                text: "Currently claimed: " + root.claimed-username;
+                                color: Theme.text-primary;
+                                font-size: 13px;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                LineEdit {
+                                    width: root.narrow-content ? 150px : 240px;
+                                    placeholder-text: "e.g. ash_ketchum";
+                                    text <=> root.username-input;
+                                    accepted => {
+                                        root.claim-username(root.username-input);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Claim";
+                                    enabled: root.username-input != "";
+                                    clicked => {
+                                        root.claim-username(root.username-input);
+                                    }
+                                }
+                            }
+
+                            if root.username-status != "": Text {
+                                text: root.username-status;
+                                color: Theme.state-busy;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    FixedPanel {
+                        panel-title: "Last.fm";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            Text {
+                                text: "Last.fm username";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                            }
+
+                            Text {
+                                text: "Shows what you're really listening to right now on My Page (via Last.fm's public API — works if your player scrobbles to Last.fm directly or through a Spotify/Apple Music bridge). Not an ANKAI account; just the Last.fm username whose real \"now playing\" state to display.";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+
+                                LineEdit {
+                                    width: root.narrow-content ? 150px : 240px;
+                                    placeholder-text: "e.g. rj";
+                                    text <=> root.lastfm-username;
+                                    accepted => {
+                                        root.save-lastfm-username(root.lastfm-username);
+                                    }
+                                }
+
+                                Button {
+                                    text: "Save";
+                                    clicked => {
+                                        root.save-lastfm-username(root.lastfm-username);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
