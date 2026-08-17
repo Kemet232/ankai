@@ -1,5 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("account error: {0}")]
+    Account(String),
     #[error("database error: {0}")]
     Db(String),
     #[error("directory error: {0}")]

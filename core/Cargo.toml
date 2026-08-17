@@ -53,3 +53,20 @@ reqwest.workspace = true
 # the workspace lockfile transitively, and is intentionally used without an
 # HTML scraper because the integration never requests arbitrary page HTML.
 roxmltree = "0.21"
+# Real Ed25519 keypair for the account-root-key model, per
+# docs/adr/0009-account-system.md — used directly (not via
+# `openmls_basic_credential::SignatureKeyPair`, unlike device keys) because
+# an account root key needs deterministic construction from a recovery
+# phrase's raw entropy (`SigningKey::from_bytes`), which `SignatureKeyPair`
+# doesn't expose. Already a transitive dependency at this exact major
+# version (via `openmls_basic_credential`, confirmed by reading its source
+# in docs/adr/0008-identity-discovery-service.md's research) — pinning "2"
+# here reuses that resolved version rather than introducing a second major
+# version into the graph, same reasoning `server/directory`'s Cargo.toml
+# already documents for its own direct `ed25519-dalek` dependency.
+ed25519-dalek = "2"
+# BIP39 mnemonic recovery phrase + self-certifying account-id hashing, per
+# docs/adr/0009-account-system.md — see root Cargo.toml for the
+# feature/provenance rationale on both.
+bip39.workspace = true
+blake3.workspace = true

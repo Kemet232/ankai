@@ -1,0 +1,57 @@
+[package]
+name = "ankai-accounts-server"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+# Reference implementation of docs/adr/0009-account-system.md: a real
+# HTTP+JSON server (binary target below) for the account-root-key model —
+# registering/listing/revoking a device's authorization onto an account,
+# plus opaque encrypted-recovery-blob storage. Plus (library target)
+# AccountsClient, a real network client proving the same request-signing
+# story the server enforces. See this crate's src/lib.rs doc comment and
+# the ADR for what is and isn't decided/built here. Sibling to
+# server/directory (not an extension of it) — see the ADR's "Hosting"
+# section for why this is a separate crate: different domain (durable
+# account/device authorization records vs. ephemeral KeyPackage/EndpointAddr
+# discovery), different auth model (self-certifying account ids, not TOFU).
+
+[[bin]]
+name = "ankai-accounts-server"
+path = "src/main.rs"
+
+[lib]
+name = "ankai_accounts_server"
+path = "src/lib.rs"
+
+[dependencies]
+ankai-core = { path = "../../core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
+# SQLite storage — same reasoning as server/directory's Cargo.toml: a small,
+# low-QPS CRUD service with no confidential contents of its own (device
+# registrations are signed public-key material; recovery blobs are already
+# client-side ciphertext before they ever reach this server, per
+# docs/adr/0004-e2ee-stack.md — this server never sees plaintext or keys).
+rusqlite.workspace = true
+# HTTP+JSON transport, matching docs/adr/0008-identity-discovery-service.md's
+# already-accepted-pattern choice (reused here rather than re-litigated —
+# see docs/adr/0009-account-system.md's "Hosting" section).
+axum = "0.8"
+# Real ED25519 verification of account-root-key-signed requests. Same
+# version already resolved transitively via `openmls_basic_credential`
+# (confirmed in docs/adr/0008-identity-discovery-service.md's research) and
+# already a direct dependency of both `ankai-core` (docs/adr/0009-account-system.md)
+# and `server/directory` (docs/adr/0008-identity-discovery-service.md) at
+# this same major version.
+ed25519-dalek = "2"
+# HTTP client for AccountsClient. Already a workspace dependency (see root
+# Cargo.toml's provenance note — transitively present via iroh/iroh-relay
+# before any of this was added).
+reqwest.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
