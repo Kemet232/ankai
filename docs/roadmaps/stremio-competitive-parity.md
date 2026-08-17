@@ -1,6 +1,6 @@
 # Stremio competitive-parity roadmap
 
-Status: S20 complete; S21 next
+Status: S20 complete; S21 complete; S22 next
 Owner: ANKAI desktop  
 Last reviewed: 2026-08-17
 
@@ -110,6 +110,19 @@ documented transport URL through its explicit policy. Unsupported transports
 produce a typed outcome, never a generic or silent error.
 
 ### S21 — Board, Discover, and search parity
+
+Status: **complete (2026-08-18), with honest gaps carried to later phases.**
+Every bullet below shipped in real, tested code (`core::board`,
+`core::catalog_cache`, `core::deeplink`, `client/ui/board.slint`). Known gaps,
+not silently dropped: keyboard focus is not preserved across a filter/"Load
+more" model rebuild (matches the pre-S21 shelf's own behavior, not a
+regression); a catalog whose only required extra is something other than
+`genre` surfaces the addon's own error with no input form yet; addon cache
+freshness hints (`cacheMaxAge` etc.) are parsed and stored but not yet used to
+skip a live fetch — the cache is a live-first, fallback-on-failure store with
+honest last-updated disclosure, not yet a freshness-driven read path; and deep
+links are parsed/routed in-app only, with no OS-level `ankai://` scheme
+registration (a packaging step, tracked under S28).
 
 - Replace the single merged result shelf with catalog-aware Board and Discover
   models: addon, content type, catalog, and selected extras are explicit state.
