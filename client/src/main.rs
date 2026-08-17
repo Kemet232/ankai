@@ -112,6 +112,11 @@ thread_local! {
     static ACTIVE_PLAYBACK_METADATA: RefCell<ankai_core::playback_progress::PlaybackMetadata> =
         RefCell::new(ankai_core::playback_progress::PlaybackMetadata::default());
     static PENDING_RESUME_SECONDS: RefCell<Option<f64>> = const { RefCell::new(None) };
+    // Set only by an `ankai://video?...` deep link (see `on_open_deep_link`):
+    // the specific episode/video id to auto-select once the title's meta
+    // fetch (open_meta_by_id) populates STREMIO_EPISODES. Consumed (taken)
+    // the moment that fetch completes, whether or not the id was found.
+    static PENDING_DEEP_LINK_VIDEO: RefCell<Option<String>> = const { RefCell::new(None) };
     static LAST_PROGRESS_SAVE: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
 
     // Network completions return to the Slint event loop out of order. Each
@@ -133,6 +138,52 @@ thread_local! {
     static STREMIO_ADDON_LOAD_SEQUENCE: RequestGeneration = const { RequestGeneration::new() };
     static STREMIO_ADDON_LOAD_GENERATIONS: RefCell<std::collections::HashMap<String, u64>> =
         RefCell::new(std::collections::HashMap::new());
+}
+
+// S21 (docs/roadmaps/stremio-competitive-parity.md): catalog-aware Board
+// state. `BOARD_CATALOGS` is every eligible catalog across every loaded
+// addon (ankai_core::board::board_catalogs, recomputed whenever STREMIO_ADDONS
+// changes); `BOARD_PAGE_STATE` is each catalog's own skip-pagination state
+// (ankai_core::board::CatalogPageState), keyed by `board_row_key`; `BOARD_FILTER`
+// is the user's current type/addon/catalog/genre selection. `stremio-media`/
+// `STREMIO_MEDIA_SOURCES` remain the flat item list `open-stremio-media`,
+// `open-stremio-episode` and playback already index into — the Board UI now
+// populates that flat list from per-catalog rows (or from merged search
+// results while a search is active) instead of one ad hoc merged shelf, but
+// every downstream selection/streams/playback callback is unchanged.
+// `BOARD_MEMORY_CACHE` is the in-memory tier of the stale-while-revalidate
+// cache (ankai_core::catalog_cache); the disk tier goes through DB_HANDLE, so
+// it is only ever touched on the UI thread, same as every other DB access in
+// this file — see MESSAGING_HANDLES's doc comment above for why.
+#[derive(Debug, Clone, Default)]
+struct BoardFilter {
+    selected_type: Option<String>,
+    selected_addon_url: Option<String>,
+    selected_catalog_key: Option<String>,
+    selected_genre: Option<String>,
+}
+
+thread_local! {
+    static BOARD_CATALOGS: RefCell<Vec<ankai_core::board::BoardCatalogRef>> =
+        const { RefCell::new(Vec::new()) };
+    static BOARD_PAGE_STATE: RefCell<std::collections::HashMap<String, ankai_core::board::CatalogPageState>> =
+        RefCell::new(std::collections::HashMap::new());
+    static BOARD_FILTER: RefCell<BoardFilter> = RefCell::new(BoardFilter::default());
+    static BOARD_MEMORY_CACHE: ankai_core::catalog_cache::MemoryCatalogCache =
+        ankai_core::catalog_cache::MemoryCatalogCache::default();
+    static BOARD_SEARCH_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The stable identity a Board row (and its pagination/loading state) is
+/// keyed by — same shape as [`ankai_core::catalog_cache::cache_key`] with no
+/// extras, since a row's identity does not change as its pages accumulate.
+fn board_row_key(catalog: &ankai_core::board::BoardCatalogRef) -> String {
+    ankai_core::catalog_cache::cache_key(
+        &catalog.key.addon_manifest_url,
+        &catalog.key.media_type,
+        &catalog.key.catalog_id,
+        &[],
+    )
 }
 
 /// A tiny event-loop-local last-request-wins token source.
@@ -501,11 +552,17 @@ fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
     STREMIO_MEDIA_SOURCES.with(|slot| slot.borrow_mut().clear());
     STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
     STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
+    BOARD_CATALOGS.with(|slot| slot.borrow_mut().clear());
+    BOARD_PAGE_STATE.with(|slot| slot.borrow_mut().clear());
+    BOARD_FILTER.with(|slot| *slot.borrow_mut() = BoardFilter::default());
+    BOARD_SEARCH_ACTIVE.with(|active| active.set(false));
     app.set_stremio_media(slint::ModelRc::default());
     app.set_stremio_stream_names(slint::ModelRc::default());
     app.set_stremio_episodes(slint::ModelRc::default());
     app.set_stremio_addon_names(slint::ModelRc::default());
     app.set_stremio_selected_title("".into());
+    app.set_board_rows(slint::ModelRc::default());
+    app.set_board_search_active(false);
 
     match ankai_core::addons::list(db) {
         Ok(addons) => {
@@ -515,6 +572,589 @@ fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
         }
         Err(error) => app.set_stremio_status(format!("Couldn't reload addons: {error}").into()),
     }
+}
+
+/// Recomputes [`BOARD_CATALOGS`] from every currently loaded addon's live
+/// manifest plus the persisted registry's enabled/priority state. Cheap and
+/// synchronous (no network): call after any change to `STREMIO_ADDONS` or the
+/// addon registry, before [`rebuild_board_ui`].
+fn rebuild_board_catalogs(db: &ankai_core::db::Db) {
+    let manifests: Vec<(String, ankai_core::stremio::Manifest)> = STREMIO_ADDONS.with(|slot| {
+        slot.borrow()
+            .iter()
+            .map(|addon| (addon.manifest_url.clone(), addon.manifest.clone()))
+            .collect()
+    });
+    let installed = ankai_core::addons::list(db).unwrap_or_default();
+    let catalogs = ankai_core::board::board_catalogs(&installed, &manifests);
+    BOARD_CATALOGS.with(|slot| *slot.borrow_mut() = catalogs);
+}
+
+/// Applies [`BOARD_FILTER`] to [`BOARD_CATALOGS`]: a specific selected
+/// catalog always wins (letting an otherwise extra-gated catalog, e.g. one
+/// that requires a genre, be browsed once explicitly chosen); otherwise only
+/// passive catalogs (no required extra — see
+/// [`ankai_core::board::BoardCatalogRef::is_passive`]) matching the selected
+/// type/addon are shown as Board rows.
+fn visible_board_rows<'a>(
+    catalogs: &'a [ankai_core::board::BoardCatalogRef],
+    filter: &BoardFilter,
+) -> Vec<&'a ankai_core::board::BoardCatalogRef> {
+    if let Some(selected_key) = &filter.selected_catalog_key {
+        return catalogs
+            .iter()
+            .filter(|catalog| &board_row_key(catalog) == selected_key)
+            .collect();
+    }
+    catalogs
+        .iter()
+        .filter(|catalog| catalog.is_passive)
+        .filter(|catalog| {
+            filter
+                .selected_type
+                .as_ref()
+                .is_none_or(|media_type| *media_type == catalog.media_type)
+        })
+        .filter(|catalog| {
+            filter
+                .selected_addon_url
+                .as_ref()
+                .is_none_or(|url| *url == catalog.key.addon_manifest_url)
+        })
+        .collect()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+/// Renders a [`ankai_core::board::CacheNotice`] as one honest, human-readable
+/// disclosure line — never silently hidden when a row is showing stale data.
+fn format_cache_notice(notice: &ankai_core::board::CacheNotice) -> String {
+    let elapsed = unix_now().saturating_sub(notice.fetched_at_unix);
+    let age = if elapsed < 60 {
+        "moments ago".to_string()
+    } else if elapsed < 3600 {
+        format!("{} min ago", elapsed / 60)
+    } else if elapsed < 86_400 {
+        format!("{} h ago", elapsed / 3600)
+    } else {
+        format!("{} d ago", elapsed / 86_400)
+    };
+    format!(
+        "Showing cached results from {age} — live refresh failed: {}",
+        notice.live_error
+    )
+}
+
+/// Rebuilds every Board-visible thing from current state: the flat
+/// `stremio-media`/sources list (via [`show_stremio_media`], so poster
+/// loading/generation-guarding stays exactly as before), the per-catalog
+/// `board-rows` model, and the type/addon/catalog/genre selector option
+/// lists — all generated from [`BOARD_CATALOGS`], never hand-maintained. Also
+/// kicks off a fetch for any visible row that has never been loaded. Does
+/// nothing to `stremio-media` while [`BOARD_SEARCH_ACTIVE`] is true — a live
+/// search result list owns that flat list until the search is cleared.
+fn rebuild_board_ui(
+    app: &AppWindow,
+    runtime: &tokio::runtime::Handle,
+    image_handle: &tokio::runtime::Handle,
+) {
+    let catalogs = BOARD_CATALOGS.with(|slot| slot.borrow().clone());
+    let filter = BOARD_FILTER.with(|slot| slot.borrow().clone());
+    let visible = visible_board_rows(&catalogs, &filter);
+
+    // Selector option lists are always generated from the *full* catalog
+    // set (not just what's currently visible), so narrowing one filter never
+    // hides the others' remaining choices.
+    let types = ankai_core::board::available_types(&catalogs);
+    let addons = ankai_core::board::available_addons(&catalogs);
+    let catalog_options: Vec<(String, String)> = catalogs
+        .iter()
+        .map(|catalog| {
+            (
+                format!("{}  ·  {}", catalog.catalog_name, catalog.addon_name),
+                board_row_key(catalog),
+            )
+        })
+        .collect();
+    let genre_options: Vec<String> = filter
+        .selected_catalog_key
+        .as_ref()
+        .and_then(|key| {
+            catalogs
+                .iter()
+                .find(|catalog| &board_row_key(catalog) == key)
+        })
+        .map(|catalog| catalog.genres.clone())
+        .unwrap_or_default();
+
+    app.set_board_types(slint::ModelRc::from(std::rc::Rc::new(
+        slint::VecModel::from(
+            std::iter::once(filter_option("All types", ""))
+                .chain(types.into_iter().map(|t| filter_option(&t, &t)))
+                .collect::<Vec<_>>(),
+        ),
+    )));
+    app.set_board_selected_type(filter.selected_type.clone().unwrap_or_default().into());
+    app.set_board_addons(slint::ModelRc::from(std::rc::Rc::new(
+        slint::VecModel::from(
+            std::iter::once(filter_option("All addons", ""))
+                .chain(
+                    addons
+                        .into_iter()
+                        .map(|(url, name)| filter_option(&name, &url)),
+                )
+                .collect::<Vec<_>>(),
+        ),
+    )));
+    app.set_board_selected_addon(filter.selected_addon_url.clone().unwrap_or_default().into());
+    app.set_board_catalogs(slint::ModelRc::from(std::rc::Rc::new(
+        slint::VecModel::from(
+            std::iter::once(filter_option("All catalogs", ""))
+                .chain(
+                    catalog_options
+                        .into_iter()
+                        .map(|(label, key)| filter_option(&label, &key)),
+                )
+                .collect::<Vec<_>>(),
+        ),
+    )));
+    app.set_board_selected_catalog(
+        filter
+            .selected_catalog_key
+            .clone()
+            .unwrap_or_default()
+            .into(),
+    );
+    app.set_board_genres(slint::ModelRc::from(std::rc::Rc::new(
+        slint::VecModel::from(
+            std::iter::once(filter_option("All genres", ""))
+                .chain(genre_options.into_iter().map(|g| filter_option(&g, &g)))
+                .collect::<Vec<_>>(),
+        ),
+    )));
+    app.set_board_selected_genre(filter.selected_genre.clone().unwrap_or_default().into());
+
+    if BOARD_SEARCH_ACTIVE.with(Cell::get) {
+        return;
+    }
+
+    // Mark any never-loaded visible row as loading up front, so the flat
+    // item list and the row headers both reflect it in one paint rather than
+    // flickering in a frame later.
+    let mut to_fetch = Vec::new();
+    BOARD_PAGE_STATE.with(|slot| {
+        let mut states = slot.borrow_mut();
+        for catalog in &visible {
+            let key = board_row_key(catalog);
+            let state = states
+                .entry(key.clone())
+                .or_insert_with(ankai_core::board::CatalogPageState::new);
+            if !state.initialized && !state.loading && state.error.is_none() {
+                state.loading = true;
+                to_fetch.push(key);
+            }
+        }
+    });
+
+    let addon_index_for = |url: &str| {
+        STREMIO_ADDONS.with(|slot| {
+            slot.borrow()
+                .iter()
+                .position(|addon| addon.manifest_url == url)
+        })
+    };
+
+    let mut flat_items = Vec::new();
+    let mut flat_sources = Vec::new();
+    let mut rows = Vec::new();
+    BOARD_PAGE_STATE.with(|slot| {
+        let states = slot.borrow();
+        for catalog in &visible {
+            let key = board_row_key(catalog);
+            let state = states.get(&key).cloned().unwrap_or_default();
+            let start = flat_items.len() as i32;
+            let addon_index =
+                addon_index_for(&catalog.key.addon_manifest_url).unwrap_or(usize::MAX);
+            for item in &state.items {
+                flat_items.push(item.clone());
+                flat_sources.push(addon_index);
+            }
+            rows.push(BoardRowRef {
+                row_key: key.into(),
+                addon_name: catalog.addon_name.clone().into(),
+                catalog_name: catalog.catalog_name.clone().into(),
+                media_type: catalog.media_type.clone().into(),
+                item_start: start,
+                item_count: state.items.len() as i32,
+                loading: state.loading,
+                initialized: state.initialized,
+                has_more: state.has_more,
+                error_message: state.error.clone().unwrap_or_default().into(),
+                cache_notice: state
+                    .cache_notice
+                    .as_ref()
+                    .map(format_cache_notice)
+                    .unwrap_or_default()
+                    .into(),
+            });
+        }
+    });
+
+    show_stremio_media(app, flat_items, flat_sources, image_handle);
+    app.set_board_rows(slint::ModelRc::from(std::rc::Rc::new(
+        slint::VecModel::from(rows),
+    )));
+
+    for key in to_fetch {
+        fetch_board_row(runtime, app.as_weak(), image_handle.clone(), key);
+    }
+}
+
+fn filter_option(label: &str, value: &str) -> FilterOption {
+    FilterOption {
+        label: label.into(),
+        value: value.into(),
+    }
+}
+
+/// Fetches the next page for one Board row (skip = its current
+/// `next_skip`) and, on completion, applies the stale-while-revalidate
+/// policy documented on [`ankai_core::board::fetch_catalog_page`] — this
+/// client-side version implements the same policy but split across the
+/// event-loop/background-runtime boundary every other network call in this
+/// file already uses (the live fetch runs on `runtime`; the memory/disk
+/// cache reads and writes run back on the UI thread, since [`ankai_core::db::Db`]
+/// is `Send` but not `Sync` and is only ever touched from there — see
+/// `MESSAGING_HANDLES`'s doc comment).
+fn fetch_board_row(
+    runtime: &tokio::runtime::Handle,
+    app_weak: slint::Weak<AppWindow>,
+    image_handle: tokio::runtime::Handle,
+    row_key: String,
+) {
+    let catalog = BOARD_CATALOGS.with(|slot| {
+        slot.borrow()
+            .iter()
+            .find(|catalog| board_row_key(catalog) == row_key)
+            .cloned()
+    });
+    let Some(catalog) = catalog else {
+        return;
+    };
+    let client = STREMIO_ADDONS.with(|slot| {
+        slot.borrow()
+            .iter()
+            .find(|addon| addon.manifest_url == catalog.key.addon_manifest_url)
+            .map(|addon| addon.client.clone())
+    });
+    let Some(client) = client else {
+        return;
+    };
+
+    let skip = BOARD_PAGE_STATE.with(|slot| {
+        slot.borrow()
+            .get(&row_key)
+            .map(|s| s.next_skip)
+            .unwrap_or(0)
+    });
+    let filter = BOARD_FILTER.with(|slot| slot.borrow().clone());
+    let mut extra: Vec<(String, String)> = Vec::new();
+    if skip > 0 {
+        extra.push(("skip".into(), skip.to_string()));
+    }
+    if filter.selected_catalog_key.as_deref() == Some(row_key.as_str()) {
+        if let Some(genre) = &filter.selected_genre {
+            if !genre.is_empty() {
+                extra.push(("genre".into(), genre.clone()));
+            }
+        }
+    }
+
+    let addon_url = catalog.key.addon_manifest_url.clone();
+    let media_type = catalog.key.media_type.clone();
+    let catalog_id = catalog.key.catalog_id.clone();
+    let row_key_for_task = row_key.clone();
+    let runtime_for_apply = runtime.clone();
+    runtime.spawn(async move {
+        let extra_refs: Vec<(&str, &str)> = extra
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let result = client
+            .catalog_page_with_extra(&media_type, &catalog_id, &extra_refs)
+            .await;
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            apply_board_fetch_result(
+                &app,
+                &runtime_for_apply,
+                &addon_url,
+                &media_type,
+                &catalog_id,
+                &row_key_for_task,
+                &extra,
+                result,
+                &image_handle,
+            );
+        });
+    });
+}
+
+/// Applies one board row's live-fetch result on the UI thread: on success,
+/// writes through to both cache tiers; on failure, falls back to whichever
+/// cache tier has this exact key (memory first, then disk) and tags the
+/// applied page with an honest [`ankai_core::board::CacheNotice`]; with
+/// neither a live result nor a cache hit, records the error on the row.
+/// Always ends by calling [`rebuild_board_ui`] so the change is visible.
+#[allow(clippy::too_many_arguments)]
+fn apply_board_fetch_result(
+    app: &AppWindow,
+    runtime: &tokio::runtime::Handle,
+    addon_url: &str,
+    media_type: &str,
+    catalog_id: &str,
+    row_key: &str,
+    extra: &[(String, String)],
+    result: Result<ankai_core::stremio::CatalogPage, ankai_core::Error>,
+    image_handle: &tokio::runtime::Handle,
+) {
+    let extra_refs: Vec<(&str, &str)> = extra
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let cache_key =
+        ankai_core::catalog_cache::cache_key(addon_url, media_type, catalog_id, &extra_refs);
+
+    let (items, cache_notice) = match result {
+        Ok(page) => {
+            let cached = ankai_core::catalog_cache::CachedCatalogPage {
+                items: page.metas.clone(),
+                fetched_at_unix: unix_now(),
+                cache_max_age_secs: page.cache_max_age,
+            };
+            BOARD_MEMORY_CACHE.with(|cache| cache.put(cache_key.clone(), cached.clone()));
+            DB_HANDLE.with(|db| {
+                if let Some(db) = db.borrow().as_ref() {
+                    if let Err(error) = ankai_core::catalog_cache::put(
+                        db, &cache_key, addon_url, media_type, catalog_id, &cached,
+                    ) {
+                        eprintln!("ankai-client: failed to write catalog cache: {error}");
+                    }
+                }
+            });
+            (page.metas, None)
+        }
+        Err(error) => {
+            let memory_hit = BOARD_MEMORY_CACHE.with(|cache| cache.get(&cache_key));
+            let cached = memory_hit.or_else(|| {
+                DB_HANDLE.with(|db| {
+                    db.borrow()
+                        .as_ref()
+                        .and_then(|db| {
+                            ankai_core::catalog_cache::get(db, &cache_key)
+                                .ok()
+                                .flatten()
+                        })
+                        .map(|lookup| lookup.page)
+                })
+            });
+            match cached {
+                Some(cached) => (
+                    cached.items,
+                    Some(ankai_core::board::CacheNotice {
+                        fetched_at_unix: cached.fetched_at_unix,
+                        live_error: error.to_string(),
+                    }),
+                ),
+                None => {
+                    BOARD_PAGE_STATE.with(|slot| {
+                        slot.borrow_mut()
+                            .entry(row_key.to_string())
+                            .or_insert_with(ankai_core::board::CatalogPageState::new)
+                            .apply_error(error.to_string());
+                    });
+                    rebuild_board_ui(app, runtime, image_handle);
+                    return;
+                }
+            }
+        }
+    };
+
+    BOARD_PAGE_STATE.with(|slot| {
+        slot.borrow_mut()
+            .entry(row_key.to_string())
+            .or_insert_with(ankai_core::board::CatalogPageState::new)
+            .apply_page(items, cache_notice);
+    });
+    rebuild_board_ui(app, runtime, image_handle);
+}
+
+/// Opens a title's Details view (metadata + streams) by explicit
+/// `(type, id)`, for the `ankai://detail`/`ankai://video` deep-link routes
+/// rather than an index into the flat `stremio-media` list a card click
+/// would supply (see `on_open_stremio_media` for that path — the two
+/// deliberately share `show_stremio_meta`/`STREMIO_STREAMS`/
+/// `STREMIO_EPISODES` so playback and resume work identically either way).
+/// `addon_hint` restricts the search to one addon when the link named one;
+/// otherwise every loaded addon that declares `meta`/`stream` support for
+/// this type/id is queried, same eligibility rule `open-stremio-media` uses.
+fn open_meta_by_id(
+    app: &AppWindow,
+    runtime: &tokio::runtime::Handle,
+    media_type: String,
+    id: String,
+    addon_hint: Option<String>,
+) {
+    let generation = STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
+    let addons: Vec<StremioAddon> = STREMIO_ADDONS.with(|slot| {
+        slot.borrow()
+            .iter()
+            .filter(|addon| {
+                addon_hint
+                    .as_ref()
+                    .is_none_or(|hint| *hint == addon.manifest_url)
+            })
+            .cloned()
+            .collect()
+    });
+    if addons.is_empty() {
+        app.set_shell_notice("No matching addon is installed for that link.".into());
+        return;
+    }
+    let provider = addon_hint.clone().unwrap_or_else(|| {
+        addons
+            .iter()
+            .find(|addon| addon.manifest.supports_resource("meta", &media_type, &id))
+            .map(|addon| addon.manifest_url.clone())
+            .unwrap_or_else(|| "stremio".into())
+    });
+    STREMIO_SELECTED_CONTEXT.with(|context| {
+        *context.borrow_mut() = Some((provider.clone(), id.clone()));
+    });
+    PENDING_PLAYBACK_KEY.with(|key| {
+        *key.borrow_mut() = Some(ankai_core::playback_progress::PlaybackKey::movie(
+            provider,
+            id.clone(),
+        ));
+    });
+    PENDING_PLAYBACK_METADATA.with(|metadata| {
+        *metadata.borrow_mut() = ankai_core::playback_progress::PlaybackMetadata::default()
+    });
+    app.set_stremio_selected_title("Loading…".into());
+    app.set_stremio_selected_description("".into());
+    app.set_stremio_selected_meta_line("".into());
+    app.set_stremio_selected_cast("".into());
+    app.set_stremio_selected_has_poster(false);
+    app.set_stremio_episodes(slint::ModelRc::default());
+    app.set_nyaa_query("".into());
+    app.set_stremio_status("Loading title…".into());
+    app.set_stremio_loading(true);
+
+    let app_weak = app.as_weak();
+    let image_handle = runtime.clone();
+    runtime.spawn(async move {
+        let mut streams = Vec::new();
+        let mut errors = Vec::new();
+        let mut selected_meta = None;
+        for addon in &addons {
+            if selected_meta.is_none() && addon.manifest.supports_resource("meta", &media_type, &id)
+            {
+                match addon.client.meta(&media_type, &id).await {
+                    Ok(meta) => selected_meta = Some(meta),
+                    Err(err) => errors.push(format!("{} metadata: {err}", addon.name)),
+                }
+            }
+            if !addon.manifest.supports_resource("stream", &media_type, &id) {
+                continue;
+            }
+            match addon.client.streams(&media_type, &id).await {
+                Ok(mut addon_streams) => {
+                    for stream in &mut addon_streams {
+                        if stream.name.is_none() {
+                            stream.name = Some(addon.name.clone());
+                        }
+                    }
+                    streams.extend(addon_streams);
+                }
+                Err(err) => errors.push(format!("{}: {err}", addon.name)),
+            }
+        }
+        let _ = slint::invoke_from_event_loop(move || {
+            if !STREMIO_DETAIL_GENERATION.with(|state| state.is_current(generation)) {
+                return;
+            }
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            app.set_stremio_loading(false);
+            if let Some(meta) = selected_meta.as_ref() {
+                show_stremio_meta(&app, meta, &image_handle);
+                app.invoke_search_nyaa(meta.name.clone().into());
+                PENDING_PLAYBACK_METADATA.with(|metadata| {
+                    let mut metadata = metadata.borrow_mut();
+                    metadata.title = Some(meta.name.clone());
+                    metadata.poster_url = meta.poster.clone();
+                });
+                if let Some(poster_url) = meta.poster.clone() {
+                    images::load_cover_image(
+                        poster_url,
+                        image_handle.clone(),
+                        app.as_weak(),
+                        |app, image| {
+                            app.set_stremio_selected_poster(image);
+                            app.set_stremio_selected_has_poster(true);
+                        },
+                    );
+                }
+            } else {
+                STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
+            }
+            if streams.is_empty() && !errors.is_empty() {
+                app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
+            } else {
+                let labels = streams
+                    .iter()
+                    .map(|stream| {
+                        format!(
+                            "{} — {}",
+                            stremio_stream_kind(stream),
+                            stream
+                                .title
+                                .as_deref()
+                                .or(stream.name.as_deref())
+                                .unwrap_or("Unnamed stream")
+                        )
+                        .into()
+                    })
+                    .collect::<Vec<slint::SharedString>>();
+                let count = streams.len();
+                STREMIO_STREAMS.with(|slot| *slot.borrow_mut() = streams);
+                app.set_stremio_stream_names(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+                    labels,
+                ))));
+                app.set_stremio_status(format!("Found {count} streams.").into());
+            }
+            // A `video` deep link names a specific episode; auto-select it
+            // now that STREMIO_EPISODES is populated, same as clicking it.
+            if let Some(video_id) = PENDING_DEEP_LINK_VIDEO.with(|slot| slot.borrow_mut().take()) {
+                let index = STREMIO_EPISODES
+                    .with(|slot| slot.borrow().iter().position(|video| video.id == video_id));
+                match index {
+                    Some(index) => app.invoke_open_stremio_episode(index as i32),
+                    None => app.set_shell_notice(
+                        "That episode wasn't found in this title's video list.".into(),
+                    ),
+                }
+            }
+        });
+    });
 }
 
 fn playback_time_label(seconds: f64) -> String {
@@ -2845,30 +3485,14 @@ fn main() -> Result<(), slint::PlatformError> {
                     let client = ankai_core::stremio::AddonClient::new(&url)?;
                     let manifest_url = client.manifest_url()?;
                     let manifest = client.manifest().await?;
-                    let default_catalog = manifest
-                        .catalogs
-                        .iter()
-                        .find(|catalog| {
-                            manifest
-                                .catalog_for_request(&catalog.media_type, &catalog.id, &[])
-                                .is_ok_and(|resolved| resolved.is_some())
-                        })
-                        .cloned();
-                    let default_catalog_name = default_catalog
-                        .as_ref()
-                        .and_then(|catalog| catalog.name.clone())
-                        .unwrap_or_else(|| "the default catalog".into());
-                    let media = match default_catalog {
-                        Some(catalog) => client.catalog(&catalog.media_type, &catalog.id).await?,
-                        None => Vec::new(),
-                    };
-                    Ok::<_, ankai_core::Error>((
-                        client,
-                        manifest_url,
-                        manifest,
-                        media,
-                        default_catalog_name,
-                    ))
+                    // Catalog previews are no longer fetched here: Board rows
+                    // (client/ui/board.slint, driven by rebuild_board_ui
+                    // below) fetch each eligible catalog lazily, only once
+                    // it's actually visible — see that function's doc
+                    // comment. Fetching one catalog eagerly at install time
+                    // would just be a redundant, immediately-discarded
+                    // request for addons with more than one catalog.
+                    Ok::<_, ankai_core::Error>((client, manifest_url, manifest))
                 }
                 .await;
                 let _ = slint::invoke_from_event_loop(move || {
@@ -2884,7 +3508,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         app.set_stremio_loading(false);
                     }
                     match result {
-                        Ok((client, manifest_url, manifest, media, default_catalog_name)) => {
+                        Ok((client, manifest_url, manifest)) => {
                             let addon_name = manifest.name.clone();
                             let persisted = DB_HANDLE.with(|db| {
                                 let db = db.borrow();
@@ -2922,7 +3546,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                         .into(),
                                 ),
                             }
-                            let addon_index = STREMIO_ADDONS.with(|slot| {
+                            STREMIO_ADDONS.with(|slot| {
                                 let mut addons = slot.borrow_mut();
                                 if let Some(index) = addons
                                     .iter()
@@ -2934,7 +3558,6 @@ fn main() -> Result<(), slint::PlatformError> {
                                         name: addon_name.clone(),
                                         manifest,
                                     };
-                                    index
                                 } else {
                                     addons.push(StremioAddon {
                                         manifest_url,
@@ -2942,24 +3565,10 @@ fn main() -> Result<(), slint::PlatformError> {
                                         name: addon_name.clone(),
                                         manifest,
                                     });
-                                    addons.len() - 1
                                 }
                             });
                             STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
-                            app.set_stremio_addon_name(addon_name.into());
-                            let old_media = STREMIO_MEDIA.with(|slot| slot.borrow().clone());
-                            let old_sources =
-                                STREMIO_MEDIA_SOURCES.with(|slot| slot.borrow().clone());
-                            let (mut merged, mut sources): (Vec<_>, Vec<_>) = old_media
-                                .into_iter()
-                                .zip(old_sources)
-                                .filter(|(_, source)| *source != addon_index)
-                                .unzip();
-                            if search_is_still_current {
-                                merged.extend(media);
-                                sources.resize(merged.len(), addon_index);
-                                show_stremio_media(&app, merged, sources, &image_handle);
-                            }
+                            app.set_stremio_addon_name(addon_name.clone().into());
                             let names = STREMIO_ADDONS.with(|slot| {
                                 slot.borrow()
                                     .iter()
@@ -2969,17 +3578,24 @@ fn main() -> Result<(), slint::PlatformError> {
                             app.set_stremio_addon_names(slint::ModelRc::from(Rc::new(
                                 slint::VecModel::from(names),
                             )));
-                            if search_is_still_current {
+                            // Board catalogs are always recomputed (cheap,
+                            // synchronous, no network) so switching out of
+                            // search mode later reflects this addon
+                            // immediately; the visible Board UI itself is
+                            // only touched while no search is in progress —
+                            // a search result list owns `stremio-media`
+                            // until the user clears it (see
+                            // BOARD_SEARCH_ACTIVE).
+                            DB_HANDLE.with(|db| {
+                                if let Some(db) = db.borrow().as_ref() {
+                                    rebuild_board_catalogs(db);
+                                }
+                            });
+                            if search_is_still_current && !BOARD_SEARCH_ACTIVE.with(Cell::get) {
                                 app.set_stremio_stream_names(slint::ModelRc::default());
                                 app.set_stremio_selected_title("".into());
-                                app.set_stremio_status(
-                                    format!(
-                                        "Loaded {} items from {}.",
-                                        STREMIO_MEDIA.with(|s| s.borrow().len()),
-                                        default_catalog_name
-                                    )
-                                    .into(),
-                                );
+                                rebuild_board_ui(&app, &image_handle, &image_handle);
+                                app.set_stremio_status(format!("{addon_name} is ready.").into());
                             }
                         }
                         Err(err) if search_is_still_current => {
@@ -2992,6 +3608,13 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // Global search (S21): queries only search-capable catalogs whose other
+    // required extras are satisfied (ankai_core::board::search_eligible_catalogs
+    // — see that function's doc comment), merges results across addons with
+    // (type, id) dedupe (ankai_core::board::dedupe_attributed), and swaps the
+    // Board surface into a flat search-result view via BOARD_SEARCH_ACTIVE.
+    // An empty query clears search mode and restores normal per-catalog
+    // Board browsing.
     {
         let runtime = p2p_runtime.handle().clone();
         let app_weak = app.as_weak();
@@ -2999,64 +3622,77 @@ fn main() -> Result<(), slint::PlatformError> {
             let query = query.trim().to_owned();
             let generation = STREMIO_SEARCH_GENERATION.with(RequestGeneration::issue);
             STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
-            let addons = STREMIO_ADDONS.with(|slot| slot.borrow().clone());
-            if addons.is_empty() {
+
+            if query.is_empty() {
+                BOARD_SEARCH_ACTIVE.with(|active| active.set(false));
                 if let Some(app) = app_weak.upgrade() {
                     app.set_stremio_loading(false);
-                    app.set_stremio_status(
-                        "No enabled add-ons are ready. Enable or install one below, then retry."
-                            .into(),
-                    );
+                    app.set_board_search_active(false);
+                    app.set_stremio_status("Browsing installed catalogs.".into());
+                    rebuild_board_ui(&app, &runtime, &runtime);
                 }
                 return;
             }
+
+            let eligible: Vec<(String, String, String, String)> = BOARD_CATALOGS.with(|slot| {
+                ankai_core::board::search_eligible_catalogs(&slot.borrow())
+                    .into_iter()
+                    .map(|catalog| {
+                        (
+                            catalog.key.addon_manifest_url.clone(),
+                            catalog.key.media_type.clone(),
+                            catalog.key.catalog_id.clone(),
+                            catalog.addon_name.clone(),
+                        )
+                    })
+                    .collect()
+            });
+            if eligible.is_empty() {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_stremio_loading(false);
+                    app.set_stremio_status("None of the installed catalogs support search.".into());
+                }
+                return;
+            }
+
+            BOARD_SEARCH_ACTIVE.with(|active| active.set(true));
             if let Some(app) = app_weak.upgrade() {
+                app.set_board_search_active(true);
                 app.set_stremio_status("Searching…".into());
                 app.set_stremio_loading(true);
             }
             let app_weak = app_weak.clone();
+            let addons = STREMIO_ADDONS.with(|slot| slot.borrow().clone());
             let image_handle = runtime.clone();
             runtime.spawn(async move {
-                let mut media = Vec::new();
-                let mut sources = Vec::new();
                 let mut errors = Vec::new();
-                for (index, addon) in addons.iter().enumerate() {
-                    let extras = if query.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![("search", query.as_str())]
-                    };
-                    let catalog = if query.is_empty() {
-                        addon.manifest.catalogs.iter().find(|catalog| {
-                            addon
-                                .manifest
-                                .catalog_for_request(&catalog.media_type, &catalog.id, &extras)
-                                .is_ok_and(|resolved| resolved.is_some())
-                        })
-                    } else {
-                        addon.manifest.catalogs.iter().find(|catalog| {
-                            catalog.extra.iter().any(|extra| extra.name == "search")
-                                && addon
-                                    .manifest
-                                    .catalog_for_request(&catalog.media_type, &catalog.id, &extras)
-                                    .is_ok_and(|resolved| resolved.is_some())
-                        })
-                    };
-                    let Some(catalog) = catalog else {
+                let mut attributed = Vec::new();
+                for (addon_url, media_type, catalog_id, addon_name) in &eligible {
+                    let Some(client) = addons
+                        .iter()
+                        .find(|addon| &addon.manifest_url == addon_url)
+                        .map(|addon| addon.client.clone())
+                    else {
                         continue;
                     };
-                    match addon
-                        .client
-                        .catalog_with_extra(&catalog.media_type, &catalog.id, &extras)
+                    match client
+                        .catalog_with_extra(media_type, catalog_id, &[("search", &query)])
                         .await
                     {
                         Ok(items) => {
-                            sources.extend(std::iter::repeat_n(index, items.len()));
-                            media.extend(items);
+                            attributed.extend(items.into_iter().map(|item| {
+                                ankai_core::board::AttributedItem {
+                                    item,
+                                    addon_manifest_url: addon_url.clone(),
+                                    addon_name: addon_name.clone(),
+                                    catalog_id: catalog_id.clone(),
+                                }
+                            }));
                         }
-                        Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                        Err(err) => errors.push(format!("{addon_name}: {err}")),
                     }
                 }
+                let deduped = ankai_core::board::dedupe_attributed(attributed);
                 let _ = slint::invoke_from_event_loop(move || {
                     if !STREMIO_SEARCH_GENERATION.with(|state| state.is_current(generation)) {
                         return;
@@ -3065,10 +3701,27 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     app.set_stremio_loading(false);
-                    if media.is_empty() && !errors.is_empty() {
+                    if deduped.is_empty() && !errors.is_empty() {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
-                        let count = media.len();
+                        let count = deduped.len();
+                        let addon_index_for = |url: &str| {
+                            STREMIO_ADDONS.with(|slot| {
+                                slot.borrow()
+                                    .iter()
+                                    .position(|addon| addon.manifest_url == url)
+                            })
+                        };
+                        let (media, sources): (Vec<_>, Vec<_>) = deduped
+                            .into_iter()
+                            .map(|entry| {
+                                (
+                                    entry.item,
+                                    addon_index_for(&entry.addon_manifest_url)
+                                        .unwrap_or(usize::MAX),
+                                )
+                            })
+                            .unzip();
                         show_stremio_media(&app, media, sources, &image_handle);
                         let suffix = if errors.is_empty() {
                             String::new()
@@ -3076,11 +3729,224 @@ fn main() -> Result<(), slint::PlatformError> {
                             format!(" Some addons failed: {}", errors.join(" | "))
                         };
                         app.set_stremio_status(
-                            format!("Found {count} titles across all addons.{suffix}").into(),
+                            format!("Found {count} titles across search-capable catalogs.{suffix}")
+                                .into(),
                         );
                     }
                 });
             });
+        });
+    }
+
+    // Board type/addon/catalog/genre filter selectors (S21). Each handler
+    // updates BOARD_FILTER then rebuilds — selecting a different catalog
+    // clears the genre filter (a genre choice is only meaningful for the
+    // catalog it was picked against), and selecting a different type/addon
+    // clears the catalog filter (the previously selected catalog may no
+    // longer match).
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_select_board_type(move |value| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            BOARD_FILTER.with(|slot| {
+                let mut filter = slot.borrow_mut();
+                filter.selected_type = (!value.is_empty()).then(|| value.to_string());
+                filter.selected_catalog_key = None;
+                filter.selected_genre = None;
+            });
+            rebuild_board_ui(&app, &runtime, &runtime);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_select_board_addon(move |value| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            BOARD_FILTER.with(|slot| {
+                let mut filter = slot.borrow_mut();
+                filter.selected_addon_url = (!value.is_empty()).then(|| value.to_string());
+                filter.selected_catalog_key = None;
+                filter.selected_genre = None;
+            });
+            rebuild_board_ui(&app, &runtime, &runtime);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_select_board_catalog(move |value| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            BOARD_FILTER.with(|slot| {
+                let mut filter = slot.borrow_mut();
+                filter.selected_catalog_key = (!value.is_empty()).then(|| value.to_string());
+                filter.selected_genre = None;
+            });
+            rebuild_board_ui(&app, &runtime, &runtime);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_select_board_genre(move |value| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            BOARD_FILTER.with(|slot| {
+                slot.borrow_mut().selected_genre = (!value.is_empty()).then(|| value.to_string());
+            });
+            // A genre change re-queries the selected catalog from scratch
+            // (fresh skip=0 page) rather than appending — the item set for
+            // a different genre is a different result set, not a
+            // continuation of the previous one.
+            if let Some(key) = BOARD_FILTER.with(|slot| slot.borrow().selected_catalog_key.clone())
+            {
+                BOARD_PAGE_STATE.with(|slot| {
+                    slot.borrow_mut().remove(&key);
+                });
+            }
+            rebuild_board_ui(&app, &runtime, &runtime);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_load_more_board_row(move |row_key| {
+            let row_key = row_key.to_string();
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            let can_load = BOARD_PAGE_STATE.with(|slot| {
+                slot.borrow()
+                    .get(&row_key)
+                    .is_some_and(|state| !state.loading && state.has_more)
+            });
+            if !can_load {
+                return;
+            }
+            BOARD_PAGE_STATE.with(|slot| {
+                if let Some(state) = slot.borrow_mut().get_mut(&row_key) {
+                    state.loading = true;
+                }
+            });
+            rebuild_board_ui(&app, &runtime, &runtime);
+            fetch_board_row(&runtime, app.as_weak(), runtime.clone(), row_key);
+        });
+    }
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_retry_board_row(move |row_key| {
+            let row_key = row_key.to_string();
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            BOARD_PAGE_STATE.with(|slot| {
+                let state = slot
+                    .borrow_mut()
+                    .entry(row_key.clone())
+                    .or_insert_with(ankai_core::board::CatalogPageState::new)
+                    .clone();
+                let mut state = state;
+                state.error = None;
+                state.loading = true;
+                slot.borrow_mut().insert(row_key.clone(), state);
+            });
+            rebuild_board_ui(&app, &runtime, &runtime);
+            fetch_board_row(&runtime, app.as_weak(), runtime.clone(), row_key);
+        });
+    }
+
+    // Deep-link parsing (S21): ankai://search|discover|detail|video|
+    // addon-install, plus stremio:// install links and bare manifest URLs
+    // (ankai_core::deeplink). This is a real, tested parser wired to a real
+    // "open a link" field in the Board header, not OS-level custom URL
+    // scheme registration — see that module's doc comment for the exact
+    // boundary.
+    {
+        let runtime = p2p_runtime.handle().clone();
+        let app_weak = app.as_weak();
+        app.on_open_deep_link(move |raw| {
+            let Some(app) = app_weak.upgrade() else {
+                return;
+            };
+            match ankai_core::deeplink::parse(raw.trim()) {
+                Ok(ankai_core::deeplink::DeepLink::Search { query }) => {
+                    app.set_stremio_search_query(query.clone().into());
+                    app.invoke_search_stremio(query.into());
+                }
+                Ok(ankai_core::deeplink::DeepLink::Discover {
+                    media_type,
+                    addon_manifest_url,
+                    catalog_id,
+                    genre,
+                }) => {
+                    BOARD_FILTER.with(|slot| {
+                        *slot.borrow_mut() = BoardFilter {
+                            selected_type: media_type,
+                            selected_addon_url: addon_manifest_url,
+                            selected_catalog_key: None,
+                            selected_genre: genre,
+                        };
+                    });
+                    // A discover link may name a catalog by id, which is
+                    // ambiguous across addons on its own — resolve it
+                    // against the addon filter (if given) or the first
+                    // catalog with a matching id otherwise.
+                    if let Some(catalog_id) = catalog_id {
+                        let key = BOARD_CATALOGS.with(|slot| {
+                            slot.borrow()
+                                .iter()
+                                .find(|catalog| {
+                                    catalog.key.catalog_id == catalog_id
+                                        && BOARD_FILTER.with(|f| {
+                                            f.borrow().selected_addon_url.as_ref().is_none_or(
+                                                |url| *url == catalog.key.addon_manifest_url,
+                                            )
+                                        })
+                                })
+                                .map(board_row_key)
+                        });
+                        BOARD_FILTER.with(|slot| slot.borrow_mut().selected_catalog_key = key);
+                    }
+                    BOARD_SEARCH_ACTIVE.with(|active| active.set(false));
+                    app.set_board_search_active(false);
+                    app.set_selected_index(app.get_watch_index());
+                    rebuild_board_ui(&app, &runtime, &runtime);
+                }
+                Ok(ankai_core::deeplink::DeepLink::Detail {
+                    media_type,
+                    id,
+                    addon_manifest_url,
+                }) => {
+                    app.set_selected_index(app.get_watch_index());
+                    open_meta_by_id(&app, &runtime, media_type, id, addon_manifest_url);
+                }
+                Ok(ankai_core::deeplink::DeepLink::Video {
+                    media_type,
+                    id,
+                    video_id,
+                    addon_manifest_url,
+                }) => {
+                    app.set_selected_index(app.get_watch_index());
+                    PENDING_DEEP_LINK_VIDEO.with(|slot| *slot.borrow_mut() = Some(video_id));
+                    open_meta_by_id(&app, &runtime, media_type, id, addon_manifest_url);
+                }
+                Ok(ankai_core::deeplink::DeepLink::AddonInstall { manifest_url }) => {
+                    app.set_selected_index(app.get_watch_index());
+                    app.set_stremio_addon_url(manifest_url.clone().into());
+                    app.invoke_load_stremio_addon(manifest_url.into());
+                }
+                Err(error) => {
+                    app.set_shell_notice(format!("Couldn't open that link: {error}").into());
+                }
+            }
         });
     }
 
@@ -3995,6 +4861,13 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             match ankai_core::addons::remove(&db, &manifest_url) {
                 Ok(_) => {
+                    // A removed addon's cached catalog pages must not
+                    // outlive it — otherwise a later re-install could
+                    // briefly show stale pages from before the removal.
+                    BOARD_MEMORY_CACHE.with(|cache| cache.clear_for_addon(&manifest_url));
+                    if let Err(error) = ankai_core::catalog_cache::clear_for_addon(&db, &manifest_url) {
+                        eprintln!("ankai-client: failed to clear catalog cache for removed addon: {error}");
+                    }
                     refresh_addon_manager(&app, &db, &image_handle);
                     reload_enabled_addons(&app, &db);
                 }

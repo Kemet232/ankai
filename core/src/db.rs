@@ -234,6 +234,28 @@ const MIGRATIONS: &[Migration] = &[
     ALTER TABLE playback_progress ADD COLUMN poster_url TEXT;
     ALTER TABLE playback_progress ADD COLUMN stream_url TEXT;",
     },
+    Migration {
+        version: 12,
+        description: "create catalog_cache table",
+        // See crate::catalog_cache's doc comment. One row per exact
+        // (addon, type, catalog, extras) request; `items_json` holds the
+        // addon's `MetaPreview` array as already-validated JSON, so a cache
+        // read never has to re-derive it. `accessed_at` (not `fetched_at`)
+        // drives eviction so a page a user keeps revisiting outlives one
+        // fetched once and never opened again.
+        sql: "CREATE TABLE IF NOT EXISTS catalog_cache (
+        cache_key           TEXT NOT NULL PRIMARY KEY,
+        addon_url           TEXT NOT NULL,
+        media_type          TEXT NOT NULL,
+        catalog_id          TEXT NOT NULL,
+        items_json          TEXT NOT NULL,
+        fetched_at          INTEGER NOT NULL,
+        cache_max_age_secs  INTEGER,
+        accessed_at         INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_catalog_cache_accessed ON catalog_cache (accessed_at);
+    CREATE INDEX IF NOT EXISTS idx_catalog_cache_addon ON catalog_cache (addon_url);",
+    },
 ];
 
 /// A handle to ANKAI's local encrypted SQLite database.
@@ -444,7 +466,7 @@ mod tests {
     fn in_memory_open_applies_all_migrations() {
         let db = Db::open_in_memory("correct horse battery staple")
             .expect("opening an in-memory encrypted db should succeed");
-        assert_eq!(db.schema_version().unwrap(), 11);
+        assert_eq!(db.schema_version().unwrap(), 12);
     }
 
     #[test]
@@ -453,21 +475,21 @@ mod tests {
 
         {
             let db = Db::open(&path, "hunter2").expect("first open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 11);
+            assert_eq!(db.schema_version().unwrap(), 12);
         } // connection dropped, file persists on disk
 
         {
             // Reopening an already-migrated database must not error and
             // must not re-apply (or double-record) any migration.
             let db = Db::open(&path, "hunter2").expect("second open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 11);
+            assert_eq!(db.schema_version().unwrap(), 12);
 
             let row_count: i64 = db
                 .connection()
                 .query_row("SELECT count(*) FROM schema_version", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(
-                row_count, 11,
+                row_count, 12,
                 "each migration must be recorded exactly once"
             );
         }
@@ -507,7 +529,7 @@ mod tests {
 
         {
             let db = Db::open(&path, "the-real-passphrase").expect("initial open should succeed");
-            assert_eq!(db.schema_version().unwrap(), 11);
+            assert_eq!(db.schema_version().unwrap(), 12);
         }
 
         let result = Db::open(&path, "not-the-real-passphrase");
@@ -555,7 +577,7 @@ mod tests {
 
         {
             let db = Db::open(&path, passphrase).expect("migration 11 should apply on reopen");
-            assert_eq!(db.schema_version().unwrap(), 11);
+            assert_eq!(db.schema_version().unwrap(), 12);
 
             let progress = load(&db, &PlaybackKey::movie("cinemeta", "tt0133093"))
                 .unwrap()

@@ -36,6 +36,7 @@ import { TitleDetail, StremioEpisodeRef } from "title-detail.slint";
 import { AddonManager, AddonCard } from "addon-manager.slint";
 import { PlayerOverlay, PlayerTrackRef } from "player-overlay.slint";
 import { AnimeDiscovery, JikanAnimeRef } from "anime-discovery.slint";
+import { Board, BoardRowRef, FilterOption, StremioMediaRef } from "board.slint";
 import { LetterboxdEntryRef } from "letterboxd-feed.slint";
 import { LoadingIdol } from "loading-idol.slint";
 import { HangoutPlayerSurface } from "hangout-player-surface.slint";
@@ -108,12 +109,10 @@ export struct FriendCard {
 // `has-cover` (fetch failed, still in flight, or AniList had no cover on
 // file for this entry) just means the card renders without a thumbnail —
 // not an error state.
-export struct StremioMediaRef {
-    title: string,
-    detail: string,
-    poster: image,
-    has-poster: bool,
-}
+// StremioMediaRef (the flat item-card shape stremio-media/board rows share)
+// moved to board.slint (imported below) — the catalog-aware Board component
+// needs it too, and app.slint importing from board.slint (rather than the
+// reverse) avoids a circular import.
 
 // One entry in the "Hot Discussions" cross-community feed
 // (ankai_core::forum_posts::list_recent_across_communities) — a post's
@@ -912,6 +911,34 @@ export component AppWindow inherits Window {
     callback move-installed-addon-down(string);
     callback remove-installed-addon(string);
     callback refresh-addon-registry();
+
+    // S21 catalog-aware Board/Discover state (ankai_core::board — see
+    // client/src/main.rs's rebuild_board_ui doc comment). `board-rows` is
+    // one row per eligible catalog, windowed into the same flat
+    // `stremio-media` list above; `board-search-active` swaps the Board
+    // surface to a flat merged search-result view (still backed by the same
+    // `stremio-media` list) while a global search is in progress. Every
+    // `board-*-*` selector pair (types/addons/catalogs/genres plus their
+    // `board-selected-*` value) is generated from installed manifests, never
+    // hand-maintained — see `ankai_core::board`'s `available_types`/
+    // `available_addons`/`genre_options`.
+    in-out property <[BoardRowRef]> board-rows: [];
+    in-out property <bool> board-search-active: false;
+    in-out property <[FilterOption]> board-types: [];
+    in-out property <string> board-selected-type: "";
+    in-out property <[FilterOption]> board-addons: [];
+    in-out property <string> board-selected-addon: "";
+    in-out property <[FilterOption]> board-catalogs: [];
+    in-out property <string> board-selected-catalog: "";
+    in-out property <[FilterOption]> board-genres: [];
+    in-out property <string> board-selected-genre: "";
+    callback select-board-type(string);
+    callback select-board-addon(string);
+    callback select-board-catalog(string);
+    callback select-board-genre(string);
+    callback load-more-board-row(string);
+    callback retry-board-row(string);
+    callback open-deep-link(string);
 
     // Zero-config anime metadata and ratings, fetched from Jikan's public
     // read-only catalog. No MAL account, credentials, forum data, or write
@@ -2578,52 +2605,26 @@ export component AppWindow inherits Window {
                         font-weight: 700;
                     }
 
-                    if root.stremio-selected-title == "": ScrollView {
-                        height: 252px;
-                        horizontal-stretch: 1;
-                        HorizontalLayout {
-                            spacing: 12px;
-                            alignment: start;
-                            for media[i] in root.stremio-media: Rectangle {
-                                width: 142px;
-                                height: 232px;
-                                border-radius: 12px;
-                                clip: true;
-                                background: catalog-touch.has-hover ? Theme.accent-violet.with-alpha(0.20) : Theme.bg-surface-raised.with-alpha(0.75);
-                                border-width: catalog-focus.has-focus ? 2px : 1px;
-                                border-color: catalog-focus.has-focus ? Theme.accent-cyan : catalog-touch.has-hover ? Theme.accent-pink.with-alpha(0.55) : Theme.silver.with-alpha(0.14);
-                                accessible-role: button;
-                                accessible-label: "Open " + media.title;
-                                accessible-action-default => { root.open-stremio-media(i); }
-                                catalog-focus := FocusScope {
-                                    focus-on-tab-navigation: true;
-                                    key-pressed(event) => {
-                                        if event.text == Key.Return || event.text == " " {
-                                            root.open-stremio-media(i);
-                                            return accept;
-                                        }
-                                        return reject;
-                                    }
-                                }
-
-                                VerticalLayout {
-                                    spacing: 0px;
-                                    Rectangle {
-                                        height: 174px;
-                                        background: @linear-gradient(145deg, Theme.accent-violet.with-alpha(0.38) 0%, Theme.bg-void 100%);
-                                        if media.has-poster: Image { source: media.poster; width: parent.width; height: parent.height; image-fit: cover; }
-                                        if !media.has-poster: Text { text: "ANKAI"; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                    }
-                                    VerticalLayout {
-                                        padding: 8px;
-                                        spacing: 2px;
-                                        Text { text: media.title; color: Theme.text-primary; font-size: 12px; font-weight: 600; overflow: elide; }
-                                        Text { text: media.detail; color: Theme.text-secondary; font-size: 10px; overflow: elide; }
-                                    }
-                                }
-                                catalog-touch := TouchArea { mouse-cursor: pointer; clicked => { catalog-focus.focus(); root.open-stremio-media(i); } }
-                            }
-                        }
+                    if root.stremio-selected-title == "": Board {
+                        rows: root.board-rows;
+                        items: root.stremio-media;
+                        search-active: root.board-search-active;
+                        types: root.board-types;
+                        selected-type: root.board-selected-type;
+                        addons: root.board-addons;
+                        selected-addon: root.board-selected-addon;
+                        catalogs: root.board-catalogs;
+                        selected-catalog: root.board-selected-catalog;
+                        genres: root.board-genres;
+                        selected-genre: root.board-selected-genre;
+                        select-type(v) => { root.select-board-type(v); }
+                        select-addon(v) => { root.select-board-addon(v); }
+                        select-catalog(v) => { root.select-board-catalog(v); }
+                        select-genre(v) => { root.select-board-genre(v); }
+                        open-item(row-key, index) => { root.open-stremio-media(index); }
+                        load-more(row-key) => { root.load-more-board-row(row-key); }
+                        retry(row-key) => { root.retry-board-row(row-key); }
+                        open-link(link) => { root.open-deep-link(link); }
                     }
 
                     if root.stremio-selected-title != "": TitleDetail {
