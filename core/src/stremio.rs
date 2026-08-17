@@ -238,6 +238,24 @@ impl AddonClient {
         catalog_id: &str,
         extra: &[(&str, &str)],
     ) -> Result<Vec<MetaPreview>, Error> {
+        Ok(self
+            .catalog_page_with_extra(media_type, catalog_id, extra)
+            .await?
+            .metas)
+    }
+
+    /// Fetches a catalog page along with the response-level cache hints
+    /// (`cacheMaxAge`, `staleRevalidate`, `staleError`) the addon protocol
+    /// documents alongside `metas`. [`crate::board`]'s stale-while-revalidate
+    /// cache reads these to decide how long a page stays fresh; callers that
+    /// only need the items themselves should keep using
+    /// [`Self::catalog_with_extra`].
+    pub async fn catalog_page_with_extra(
+        &self,
+        media_type: &str,
+        catalog_id: &str,
+        extra: &[(&str, &str)],
+    ) -> Result<CatalogPage, Error> {
         validate_path_value("catalog type", media_type)?;
         validate_path_value("catalog id", catalog_id)?;
         if extra.len() > 16 {
@@ -274,7 +292,12 @@ impl AddonClient {
         for meta in &response.metas {
             meta.validate()?;
         }
-        Ok(response.metas)
+        Ok(CatalogPage {
+            metas: response.metas,
+            cache_max_age: response.cache_max_age,
+            stale_revalidate: response.stale_revalidate,
+            stale_error: response.stale_error,
+        })
     }
 
     pub async fn meta(&self, media_type: &str, id: &str) -> Result<Meta, Error> {
@@ -453,6 +476,19 @@ fn is_official_cinemeta_redirect(initial: &reqwest::Url, next: &reqwest::Url) ->
         && next.scheme() == "https"
         && next.host_str() == Some("cinemeta-catalogs.strem.io")
         && next.port_or_known_default() == Some(443)
+}
+
+/// Parses `url` and validates it as a public, credential-free HTTPS target.
+///
+/// This is the same policy [`AddonClient`] applies to every manifest,
+/// resource, redirect, and direct-stream URL it touches, exposed for other
+/// modules (namely [`crate::deeplink`]) that need to judge whether an
+/// externally supplied URL is safe to open or fetch without duplicating the
+/// public/local-address and credential checks.
+pub fn validate_public_https_url_str(url: &str, label: &str) -> Result<(), Error> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| Error::Stremio(format!("{label}: invalid URL: {e}")))?;
+    validate_public_https_url(&parsed, label)
 }
 
 fn validate_public_https_url(url: &reqwest::Url, label: &str) -> Result<(), Error> {
@@ -1154,10 +1190,34 @@ impl Stream {
     }
 }
 
+/// One fetched catalog page plus the addon's own optional cache hints.
+///
+/// Stremio's addon protocol lets a catalog response carry `cacheMaxAge`,
+/// `staleRevalidate` and `staleError` fields (seconds) beside `metas`,
+/// mirroring HTTP's `Cache-Control: max-age`/`stale-while-revalidate`/
+/// `stale-if-error`. ANKAI reads these JSON-level hints rather than raw HTTP
+/// response headers: the addon SDK documents and tests against this form,
+/// and every resource already flows through this crate's single bounded
+/// `get<T>` helper, which would otherwise need to thread response headers
+/// through every caller for a case only the catalog cache uses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogPage {
+    pub metas: Vec<MetaPreview>,
+    pub cache_max_age: Option<u64>,
+    pub stale_revalidate: Option<u64>,
+    pub stale_error: Option<u64>,
+}
+
 #[derive(Deserialize)]
 struct CatalogResponse {
     #[serde(default)]
     metas: Vec<MetaPreview>,
+    #[serde(default, rename = "cacheMaxAge")]
+    cache_max_age: Option<u64>,
+    #[serde(default, rename = "staleRevalidate")]
+    stale_revalidate: Option<u64>,
+    #[serde(default, rename = "staleError")]
+    stale_error: Option<u64>,
 }
 #[derive(Deserialize)]
 struct MetaResponse {

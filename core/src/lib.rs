@@ -6,8 +6,11 @@
 
 pub mod addons;
 pub mod anime;
+pub mod board;
+pub mod catalog_cache;
 pub mod communities;
 pub mod db;
+pub mod deeplink;
 pub mod directory;
 pub mod error;
 pub mod forum_posts;
