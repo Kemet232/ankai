@@ -34,6 +34,7 @@ const REGISTRY_FORMAT_VERSION: u8 = 1;
 #[serde(default)]
 pub struct ResourceRoles {
     pub catalog: bool,
+    pub addon_catalog: bool,
     pub meta: bool,
     pub stream: bool,
     pub subtitles: bool,
@@ -47,6 +48,7 @@ impl ResourceRoles {
             // imperfect third-party manifest omits `"catalog"` from its
             // resource array.
             catalog: !manifest.catalogs.is_empty(),
+            addon_catalog: !manifest.addon_catalogs.is_empty(),
             ..Self::default()
         };
 
@@ -56,6 +58,7 @@ impl ResourceRoles {
             };
             match name {
                 "catalog" => roles.catalog = true,
+                "addon_catalog" => roles.addon_catalog = true,
                 "meta" => roles.meta = true,
                 "stream" => roles.stream = true,
                 "subtitles" => roles.subtitles = true,
@@ -409,6 +412,7 @@ mod tests {
             first.roles,
             ResourceRoles {
                 catalog: true,
+                addon_catalog: false,
                 meta: true,
                 stream: true,
                 subtitles: true,
@@ -421,6 +425,21 @@ mod tests {
         assert_eq!(first.health.state, AddonHealthState::Healthy);
         assert!(first.health.checked_at_unix.is_some());
         assert_eq!(list(&db).unwrap(), vec![first, second]);
+    }
+
+    #[test]
+    fn resource_roles_include_addon_catalog_declarations() {
+        let mut repository = manifest("test.repository", "Repository");
+        repository.addon_catalogs.push(crate::stremio::Catalog {
+            media_type: "addon".into(),
+            id: "community".into(),
+            name: Some("Community addons".into()),
+            genres: Vec::new(),
+            extra: Vec::new(),
+        });
+
+        let roles = ResourceRoles::from_manifest(&repository);
+        assert!(roles.addon_catalog);
     }
 
     #[test]

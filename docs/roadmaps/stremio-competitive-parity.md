@@ -1,8 +1,8 @@
 # Stremio competitive-parity roadmap
 
-Status: planned  
+Status: S20 complete; S21 next
 Owner: ANKAI desktop  
-Last reviewed: 2026-08-16
+Last reviewed: 2026-08-17
 
 ## Goal
 
@@ -24,15 +24,15 @@ source attribution, and report/block controls are product requirements.
 
 | Capability | Current ANKAI state | Gap to close |
 | --- | --- | --- |
-| Manifest, catalog, meta, stream HTTP resources | Working and network-hardened | Complete the remaining manifest/resource fields and behavior hints |
+| Manifest, catalog, meta, stream HTTP resources | Typed, bounded, capability-routed, and network-hardened | Expand the product UI over the complete core contract |
 | Configured manifest URLs | Working | Add first-class configuration UX and secret redaction |
 | Multiple installed addons | Persisted, ordered, enable/disable/remove, health shown | Add repository discovery, automatic updates, warnings, and account sync |
-| Catalog extras | Core accepts arbitrary bounded extras; UI uses search | Required extras, genre/type filters, `skip` pagination, and per-catalog state |
-| Capability routing | Resource names are understood | Respect per-resource types and ID prefixes before every request |
-| Metadata/details | Posters, backgrounds, description, cast, genres, videos | Poster shapes, links, directors, ratings, trailers, runtime, language, country, awards, website, behavior hints, inline streams |
-| Direct HTTP playback | Embedded libmpv player works | Stream headers/proxying, retry/fallback, ranking, reconnect, and more documented URL forms |
+| Catalog extras | Required fields, declared options, and `optionsLimit` are validated; search only reaches eligible catalogs | Add genre/type controls, `skip` pagination, and per-catalog state |
+| Capability routing | Catalog, meta, stream, subtitle, and addon-catalog declarations respect type and ID-prefix filters | Apply the same typed boundary to new S21/S23 surfaces |
+| Metadata/details | The core models documented poster, people, link, trailer, video, inline-stream, rating, release, and behavior fields | Render the remaining fields in the S22 Details surface |
+| Direct HTTP playback | Embedded libmpv player works; every documented source form is typed and labelled | Add safe resolvers, stream headers/proxying, retry/fallback, ranking, and reconnect |
 | BitTorrent stream descriptors | Parsed and magnet reconstruction works | Bundled resolver, file selection, buffering/peer state, cache policy, privacy warning |
-| Subtitle tracks embedded in media | libmpv track selection works | Addon subtitle resource, inline subtitles, external-file loading, style/language/delay defaults |
+| Subtitle tracks embedded in media | libmpv track selection plus bounded addon/inline subtitle models and endpoint | Wire addon subtitles into playback, then add local files and style/language/delay defaults |
 | Library and progress | Anime watchlist plus encrypted playback resume | Provider-neutral library, watched episodes, notifications, calendar, filters, and sync |
 | Player experience | Fullscreen/bounded rendering, seek, volume, speed, tracks, errors | Auto-next, binge continuity, subtitle styling, stats, HDR/hardware settings, downloads |
 | Casting/local media | Missing | Chromecast, external-player handoff, local-file scan/drop, local streaming gateway |
@@ -71,6 +71,13 @@ ANKAI reaches the desktop parity gate when all of the following are true:
 ## Delivery phases
 
 ### S20 — Protocol contract completeness
+
+Status: **complete (2026-08-17).** Public HTTPS is the implemented transport.
+Private HTTP, IPFS/IPNS, Stremio install links, and legacy v1/v2 are deliberately
+classified as explicit unsupported outcomes until their permission, gateway, or
+adapter policies are proven. Likewise, all documented stream targets are typed,
+but only safe direct HTTPS is currently playable; torrent, YouTube, NZB, archive,
+and external-handoff resolvers remain S23 work.
 
 Build the compatibility layer before adding more screens.
 

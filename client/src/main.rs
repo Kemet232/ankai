@@ -179,9 +179,25 @@ struct StremioAddon {
     manifest_url: String,
     client: ankai_core::stremio::AddonClient,
     name: String,
-    catalogs: Vec<ankai_core::stremio::Catalog>,
-    supports_streams: bool,
-    supports_meta: bool,
+    manifest: ankai_core::stremio::Manifest,
+}
+
+fn stremio_stream_kind(stream: &ankai_core::stremio::Stream) -> &'static str {
+    use ankai_core::stremio::StreamTarget;
+
+    match stream.target() {
+        Ok(StreamTarget::DirectUrl(_)) => "Direct",
+        Ok(StreamTarget::YouTube(_)) => "YouTube",
+        Ok(StreamTarget::BitTorrent { .. }) => "Torrent",
+        Ok(StreamTarget::Nzb { .. }) => "NZB",
+        Ok(StreamTarget::Rar(_)) => "RAR",
+        Ok(StreamTarget::Zip(_)) => "ZIP",
+        Ok(StreamTarget::SevenZip(_)) => "7-Zip",
+        Ok(StreamTarget::Tgz(_)) => "TGZ",
+        Ok(StreamTarget::Tar(_)) => "TAR",
+        Ok(StreamTarget::ExternalUrl(_)) => "External",
+        Err(_) => "Invalid",
+    }
 }
 
 fn show_stremio_media(
@@ -376,6 +392,9 @@ fn refresh_addon_manager(
                     let mut roles = Vec::new();
                     if addon.roles.catalog {
                         roles.push("Catalog");
+                    }
+                    if addon.roles.addon_catalog {
+                        roles.push("Addon directory");
                     }
                     if addon.roles.meta {
                         roles.push("Metadata");
@@ -2826,17 +2845,20 @@ fn main() -> Result<(), slint::PlatformError> {
                     let client = ankai_core::stremio::AddonClient::new(&url)?;
                     let manifest_url = client.manifest_url()?;
                     let manifest = client.manifest().await?;
-                    let supports_streams =
-                        manifest.resources.iter().any(|resource| match resource {
-                            ankai_core::stremio::Resource::Name(name) => name == "stream",
-                            ankai_core::stremio::Resource::Descriptor { name, .. } => {
-                                name == "stream"
-                            }
-                        });
-                    let supports_meta =
-                        ankai_core::addons::ResourceRoles::from_manifest(&manifest).meta;
-                    let catalogs = manifest.catalogs.clone();
-                    let media = match catalogs.first() {
+                    let default_catalog = manifest
+                        .catalogs
+                        .iter()
+                        .find(|catalog| {
+                            manifest
+                                .catalog_for_request(&catalog.media_type, &catalog.id, &[])
+                                .is_ok_and(|resolved| resolved.is_some())
+                        })
+                        .cloned();
+                    let default_catalog_name = default_catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.name.clone())
+                        .unwrap_or_else(|| "the default catalog".into());
+                    let media = match default_catalog {
                         Some(catalog) => client.catalog(&catalog.media_type, &catalog.id).await?,
                         None => Vec::new(),
                     };
@@ -2844,10 +2866,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         client,
                         manifest_url,
                         manifest,
-                        catalogs,
-                        supports_streams,
-                        supports_meta,
                         media,
+                        default_catalog_name,
                     ))
                 }
                 .await;
@@ -2864,15 +2884,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         app.set_stremio_loading(false);
                     }
                     match result {
-                        Ok((
-                            client,
-                            manifest_url,
-                            manifest,
-                            catalogs,
-                            supports_streams,
-                            supports_meta,
-                            media,
-                        )) => {
+                        Ok((client, manifest_url, manifest, media, default_catalog_name)) => {
                             let addon_name = manifest.name.clone();
                             let persisted = DB_HANDLE.with(|db| {
                                 let db = db.borrow();
@@ -2920,9 +2932,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                         manifest_url,
                                         client,
                                         name: addon_name.clone(),
-                                        catalogs,
-                                        supports_streams,
-                                        supports_meta,
+                                        manifest,
                                     };
                                     index
                                 } else {
@@ -2930,9 +2940,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                         manifest_url,
                                         client,
                                         name: addon_name.clone(),
-                                        catalogs,
-                                        supports_streams,
-                                        supports_meta,
+                                        manifest,
                                     });
                                     addons.len() - 1
                                 }
@@ -2968,12 +2976,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                     format!(
                                         "Loaded {} items from {}.",
                                         STREMIO_MEDIA.with(|s| s.borrow().len()),
-                                        STREMIO_ADDONS
-                                            .with(|addons| addons.borrow()[addon_index]
-                                                .catalogs
-                                                .first()
-                                                .and_then(|catalog| catalog.name.clone()))
-                                            .unwrap_or_else(|| "the default catalog".into())
+                                        default_catalog_name
                                     )
                                     .into(),
                                 );
@@ -3018,24 +3021,29 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut sources = Vec::new();
                 let mut errors = Vec::new();
                 for (index, addon) in addons.iter().enumerate() {
-                    let catalog = if query.is_empty() {
-                        addon.catalogs.first()
-                    } else {
-                        addon
-                            .catalogs
-                            .iter()
-                            .find(|catalog| {
-                                catalog.extra.iter().any(|extra| extra.name == "search")
-                            })
-                            .or_else(|| addon.catalogs.first())
-                    };
-                    let Some(catalog) = catalog else {
-                        continue;
-                    };
                     let extras = if query.is_empty() {
                         Vec::new()
                     } else {
                         vec![("search", query.as_str())]
+                    };
+                    let catalog = if query.is_empty() {
+                        addon.manifest.catalogs.iter().find(|catalog| {
+                            addon
+                                .manifest
+                                .catalog_for_request(&catalog.media_type, &catalog.id, &extras)
+                                .is_ok_and(|resolved| resolved.is_some())
+                        })
+                    } else {
+                        addon.manifest.catalogs.iter().find(|catalog| {
+                            catalog.extra.iter().any(|extra| extra.name == "search")
+                                && addon
+                                    .manifest
+                                    .catalog_for_request(&catalog.media_type, &catalog.id, &extras)
+                                    .is_ok_and(|resolved| resolved.is_some())
+                        })
+                    };
+                    let Some(catalog) = catalog else {
+                        continue;
                     };
                     match addon
                         .client
@@ -3147,13 +3155,23 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut errors = Vec::new();
                 let mut selected_meta = None;
                 for addon in &addons {
-                    if selected_meta.is_none() && addon.supports_meta {
+                    if selected_meta.is_none()
+                        && addon.manifest.supports_resource(
+                            "meta",
+                            &selected.media_type,
+                            &selected.id,
+                        )
+                    {
                         match addon.client.meta(&selected.media_type, &selected.id).await {
                             Ok(meta) => selected_meta = Some(meta),
                             Err(err) => errors.push(format!("{} metadata: {err}", addon.name)),
                         }
                     }
-                    if !addon.supports_streams {
+                    if !addon.manifest.supports_resource(
+                        "stream",
+                        &selected.media_type,
+                        &selected.id,
+                    ) {
                         continue;
                     }
                     match addon
@@ -3191,16 +3209,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         let labels = streams
                             .iter()
                             .map(|stream| {
-                                let kind = if stream.url.is_some() {
-                                    "Direct"
-                                } else if stream.info_hash.is_some() {
-                                    "Torrent"
-                                } else {
-                                    "Unsupported"
-                                };
                                 format!(
                                     "{} — {}",
-                                    kind,
+                                    stremio_stream_kind(stream),
                                     stream
                                         .title
                                         .as_deref()
@@ -3276,19 +3287,31 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             let app_weak = app_weak.clone();
             runtime.spawn(async move {
-                let mut streams = Vec::new();
+                let mut streams = episode.streams.clone();
                 let mut errors = Vec::new();
-                for addon in addons.iter().filter(|addon| addon.supports_streams) {
-                    match addon.client.streams("series", &episode.id).await {
-                        Ok(mut addon_streams) => {
-                            for stream in &mut addon_streams {
-                                if stream.name.is_none() {
-                                    stream.name = Some(addon.name.clone());
+                if streams.is_empty() {
+                    for addon in addons.iter().filter(|addon| {
+                        addon
+                            .manifest
+                            .supports_resource("stream", "series", &episode.id)
+                    }) {
+                        match addon.client.streams("series", &episode.id).await {
+                            Ok(mut addon_streams) => {
+                                for stream in &mut addon_streams {
+                                    if stream.name.is_none() {
+                                        stream.name = Some(addon.name.clone());
+                                    }
                                 }
+                                streams.extend(addon_streams);
                             }
-                            streams.extend(addon_streams);
+                            Err(error) => errors.push(format!("{}: {error}", addon.name)),
                         }
-                        Err(error) => errors.push(format!("{}: {error}", addon.name)),
+                    }
+                } else {
+                    for stream in &mut streams {
+                        if stream.name.is_none() {
+                            stream.name = Some("Inline metadata".into());
+                        }
                     }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
@@ -3302,15 +3325,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     let labels = streams
                         .iter()
                         .map(|stream| {
-                            let kind = if stream.url.is_some() {
-                                "Direct"
-                            } else if stream.info_hash.is_some() {
-                                "Torrent"
-                            } else {
-                                "Unsupported"
-                            };
                             format!(
-                                "{kind} — {}",
+                                "{} — {}",
+                                stremio_stream_kind(stream),
                                 stream
                                     .title
                                     .as_deref()
