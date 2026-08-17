@@ -1099,7 +1099,7 @@ export component PlayerOverlay inherits Rectangle {
                 }
 
                 PlayerControl {
-                    glyph: root.is-fullscreen ? "▣" : "⛶";
+                    glyph: root.is-fullscreen ? "][" : "[]";
                     label: root.is-fullscreen ? "Exit fullscreen" : "Enter fullscreen";
                     active: root.is-fullscreen;
                     enabled: root.controls-visible;

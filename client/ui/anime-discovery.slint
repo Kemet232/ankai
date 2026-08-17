@@ -55,7 +55,7 @@ component SearchButton inherits Rectangle {
         alignment: center;
 
         Text {
-            text: root.busy ? "✦" : "⌕";
+            text: root.busy ? "•" : "○";
             color: Theme.text-primary;
             font-size: 15px;
             font-weight: 800;
@@ -347,7 +347,7 @@ export component AnimeDiscovery inherits Rectangle {
                             padding-right: 9px;
                             spacing: 9px;
                             Text {
-                                text: "⌕";
+                                text: "○";
                                 color: search-edit.has-focus ? Theme.accent-cyan : Theme.text-secondary;
                                 font-size: 17px;
                                 vertical-alignment: center;
@@ -502,7 +502,7 @@ export component AnimeDiscovery inherits Rectangle {
                 spacing: 11px;
                 alignment: center;
                 Text {
-                    text: root.query == "" ? "✦" : "◇";
+                    text: root.query == "" ? "•" : "◇";
                     color: Theme.accent-violet;
                     font-size: 31px;
                     horizontal-alignment: center;

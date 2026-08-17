@@ -21,7 +21,22 @@ export component AppNavButton inherits Rectangle {
         padding-right: root.compact ? 8px : 12px;
         spacing: root.compact ? 0px : 12px;
         alignment: start;
-        Text { text: root.icon; width: root.compact ? parent.width : 22px; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 17px; vertical-alignment: center; horizontal-alignment: center; }
+        Rectangle {
+            width: 26px;
+            height: 26px;
+            border-radius: 9px;
+            background: root.active ? Theme.accent-violet.with-alpha(0.24) : Theme.silver.with-alpha(0.06);
+            border-width: 1px;
+            border-color: root.active ? Theme.accent-pink.with-alpha(0.52) : Theme.silver.with-alpha(0.10);
+            Text {
+                text: root.icon;
+                color: root.active ? Theme.text-primary : Theme.text-secondary;
+                font-size: 12px;
+                font-weight: 800;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
         if !root.compact: Text { text: root.label; color: root.active ? Theme.text-primary : Theme.text-secondary; font-size: 13px; font-weight: root.active ? 700 : 500; vertical-alignment: center; horizontal-stretch: 1; }
         if !root.compact: Text { text: "›"; color: Theme.text-secondary; font-size: 18px; vertical-alignment: center; opacity: root.active ? 1 : 0; }
     }
@@ -71,7 +86,7 @@ export component TopCommandBar inherits Rectangle {
             border-color: Theme.silver.with-alpha(0.14);
             HorizontalLayout {
                 padding-left: 12px; padding-right: 8px; spacing: 8px;
-                Text { text: "⌕"; color: Theme.text-secondary; font-size: 19px; vertical-alignment: center; }
+                Text { text: "○"; color: Theme.text-secondary; font-size: 17px; vertical-alignment: center; }
                 LineEdit {
                     horizontal-stretch: 1;
                     text <=> root.query;

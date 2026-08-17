@@ -1243,7 +1243,7 @@ export component AppWindow inherits Window {
                 alignment: start;
 
                 Text {
-                    text: root.compact-shell ? "✦" : "✦  ANKAI";
+                    text: root.compact-shell ? "A" : "A  ANKAI";
                     color: Theme.text-primary;
                     font-size: 20px;
                     font-weight: 700;
@@ -1261,7 +1261,7 @@ export component AppWindow inherits Window {
 
                 for item[i] in nav-items: AppNavButton {
                     label: item;
-                    icon: i == 0 ? "⌂" : i == 1 ? "◉" : i == 2 ? "♙" : i == 3 ? "✉" : i == 4 ? "◇" : i == 5 ? "▣" : "⚙";
+                    icon: i == 0 ? "H" : i == 1 ? "D" : i == 2 ? "P" : i == 3 ? "M" : i == 4 ? "C" : i == 5 ? "R" : "S";
                     active: root.selected-index == i;
                     compact: root.compact-shell;
                     activated => { root.selected-index = i; }

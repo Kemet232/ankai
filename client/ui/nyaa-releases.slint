@@ -550,7 +550,7 @@ export component NyaaReleases inherits Rectangle {
 
             ReleaseAction {
                 label: root.state == "ready" ? "Refresh" : "Search";
-                glyph: root.state == "ready" ? "↻" : "⌕";
+                glyph: root.state == "ready" ? "↻" : "○";
                 primary: true;
                 enabled: root.state != "loading" && root.query != "";
                 activated => { root.search(root.query); }
@@ -576,7 +576,7 @@ export component NyaaReleases inherits Rectangle {
                 width: parent.width;
                 compact: true;
                 label: root.state == "ready" ? "Refresh releases" : "Search releases";
-                glyph: root.state == "ready" ? "↻" : "⌕";
+                glyph: root.state == "ready" ? "↻" : "○";
                 primary: true;
                 enabled: root.state != "loading" && root.query != "";
                 activated => { root.search(root.query); }
@@ -630,7 +630,7 @@ export component NyaaReleases inherits Rectangle {
 
         if root.state == "idle": EmptyMessage {
             vertical-stretch: 1;
-            glyph: "⌕";
+            glyph: "○";
             title: "Find a specific anime release";
             message: "Search by anime title. Results are current upload records from Nyaa RSS, with availability stats and release-page comment counts.";
         }

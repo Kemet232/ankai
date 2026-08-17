@@ -264,7 +264,7 @@ component PanelState inherits Rectangle {
         alignment: center;
 
         Text {
-            text: root.state == "loading" ? "✦" : root.state == "error" ? "!" : "◇";
+            text: root.state == "loading" ? "•" : root.state == "error" ? "!" : "◇";
             color: root.state == "error" ? Theme.state-busy : Theme.accent-violet;
             font-size: 18px;
             font-weight: 800;
@@ -477,7 +477,7 @@ component PosterCard inherits Rectangle {
         if !root.anime.has-cover: Text {
             width: parent.width;
             height: parent.height;
-            text: "✦";
+            text: "•";
             color: Theme.accent-violet.with-alpha(0.8);
             font-size: 28px;
             horizontal-alignment: center;
@@ -1047,7 +1047,7 @@ export component HomeDashboard inherits Rectangle {
                     alignment: center;
 
                     Text {
-                        text: root.time-of-day-greeting + ", " + (root.display-name == "" ? "friend" : root.display-name) + "  ✦";
+                        text: root.time-of-day-greeting + ", " + (root.display-name == "" ? "friend" : root.display-name) + "  ·";
                         color: Theme.text-primary;
                         font-size: root.compact-layout ? 20px : 24px;
                         font-weight: 800;
