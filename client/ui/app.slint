@@ -513,13 +513,15 @@ component PresenceBadge inherits HorizontalLayout {
 // on device-scoped-not-account-scoped identity) plus a real presence badge.
 component FriendCardItem inherits Rectangle {
     in property <string> device-id;
+    in property <string> account-id;
     in property <string> status;
     in property <color> accent;
+    in property <bool> selected: false;
 
     border-radius: 16px;
-    background: Theme.bg-surface-raised.with-alpha(0.7);
-    border-width: 1px;
-    border-color: Theme.silver.with-alpha(0.18);
+    background: root.selected ? Theme.accent-violet.with-alpha(0.22) : Theme.bg-surface-raised.with-alpha(0.7);
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? Theme.accent-cyan : Theme.silver.with-alpha(0.18);
     drop-shadow-color: Theme.bg-void.with-alpha(0.45);
     drop-shadow-blur: 10px;
     drop-shadow-offset-y: 3px;
@@ -777,6 +779,8 @@ component NowPlayingWidget inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "ANKAI";
+    min-width: 480px;
+    min-height: 360px;
     preferred-width: 960px;
     preferred-height: 640px;
     background: root.player-active && !root.player-bounded-mode ? transparent : Theme.bg-void;
@@ -803,7 +807,12 @@ export component AppWindow inherits Window {
     in-out property <string> player-error: "";
     in-out property <[PlayerTrackRef]> player-audio-tracks: [];
     in-out property <[PlayerTrackRef]> player-subtitle-tracks: [];
-    out property <bool> player-bounded-mode: root.selected-index == root.hangouts-index && root.selected-hangout-name != "";
+    // A Hangout normally constrains video to its room surface. Fullscreen
+    // promotes that same player to the window-wide cinema overlay so the
+    // sidebar and room chrome do not remain visible around the picture.
+    out property <bool> player-bounded-mode: root.selected-index == root.hangouts-index
+        && root.selected-hangout-name != ""
+        && !root.player-fullscreen;
     in-out property <length> player-video-surface-width: 0px;
     in-out property <length> player-video-surface-height: 0px;
     callback toggle-player-pause();
@@ -853,6 +862,7 @@ export component AppWindow inherits Window {
     in-out property <string> global-search-query: "";
     in-out property <string> shell-notice: "";
     property <bool> compact-shell: root.width < 900px;
+    property <bool> narrow-content: root.width < 650px;
     in-out property <bool> reduced-motion: false;
     // One change handler propagates the persisted preference to every
     // component importing Theme, including player and catalog surfaces
@@ -1011,6 +1021,7 @@ export component AppWindow inherits Window {
     // timed network round trip.
     in-out property <[FriendCard]> friends-list: [];
     in-out property <[FriendCard]> pending-friend-requests: [];
+    in-out property <string> selected-friend-account-id: "";
     callback accept-friend-request(string);
     callback decline-friend-request(string);
     callback refresh-friends-presence();
@@ -1125,7 +1136,16 @@ export component AppWindow inherits Window {
     // data, same model, no reason to duplicate it.
     in-out property <[AnimeRef]> trending-anime: [];
     in-out property <[AnimeRef]> popular-anime: [];
+    in-out property <string> home-anime-state: "loading";
     in-out property <string> anime-status: "";
+    in-out property <string> popular-anime-state: "loading";
+    in-out property <string> popular-anime-status: "";
+    in-out property <string> friends-home-state: "ready";
+    in-out property <string> friends-home-status: "";
+    in-out property <string> discussions-home-state: "ready";
+    in-out property <string> discussions-home-status: "";
+    in-out property <string> hangouts-home-state: "ready";
+    in-out property <string> hangouts-home-status: "";
     in-out property <bool> hero-watchlisted: false;
     in-out property <[RecentPostRef]> recent-posts: [];
     in-out property <[FriendRef]> friends: [];
@@ -1197,7 +1217,8 @@ export component AppWindow inherits Window {
         // backdrop-blur primitive, see that file's header comment), applied
         // here to the real app shell for the first time.
         Rectangle {
-            width: root.compact-shell ? 72px : 196px;
+            visible: !(root.player-active && root.player-fullscreen);
+            width: root.player-active && root.player-fullscreen ? 0px : root.compact-shell ? 72px : 196px;
             background: Theme.bg-surface-raised.with-alpha(0.82);
             border-width: 1px;
             border-color: Theme.silver.with-alpha(0.16);
@@ -1292,15 +1313,20 @@ export component AppWindow inherits Window {
                 time-of-day-greeting: root.time-of-day-greeting;
                 trending-anime: root.trending-anime;
                 popular-anime: root.popular-anime;
-                anime-state: root.anime-status != "" ? "error" : root.trending-anime.length == 0 ? "loading" : "ready";
+                anime-state: root.home-anime-state;
                 anime-status: root.anime-status;
+                popular-state: root.popular-anime-state;
+                popular-status: root.popular-anime-status;
                 hero-watchlisted: root.hero-watchlisted;
                 friends: root.friends;
-                friends-state: "ready";
+                friends-state: root.friends-home-state;
+                friends-status: root.friends-home-status;
                 recent-posts: root.recent-posts;
-                discussions-state: "ready";
+                discussions-state: root.discussions-home-state;
+                discussions-status: root.discussions-home-status;
                 hangout-names: root.hangout-names;
-                hangouts-state: "ready";
+                hangouts-state: root.hangouts-home-state;
+                hangouts-status: root.hangouts-home-status;
                 continue-watching: root.continue-watching;
                 letterboxd-username <=> root.letterboxd-username;
                 letterboxd-entries: root.letterboxd-entries;
@@ -1315,11 +1341,13 @@ export component AppWindow inherits Window {
                 }
                 open-friend(account-id) => {
                     root.selected-index = root.profile-index;
-                    root.shell-notice = "Opened your friends area for " + account-id + ".";
+                    root.selected-friend-account-id = account-id;
+                    root.shell-notice = "Selected friend " + account-id + ".";
                 }
-                open-discussion(community) => {
+                open-discussion(community-id, community-name) => {
                     root.selected-index = root.communities-index;
-                    root.shell-notice = "Browse " + community + " in Communities.";
+                    root.open-community(community-id, community-name);
+                    root.shell-notice = "Opened discussion: " + community-name;
                 }
                 open-hangout(name) => {
                     root.selected-index = root.hangouts-index;
@@ -1360,7 +1388,7 @@ export component AppWindow inherits Window {
 
                 VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
+                    padding: root.narrow-content ? 16px : 32px;
                     spacing: 24px;
                     alignment: start;
 
@@ -1721,6 +1749,31 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
 
+                        if root.selected-friend-account-id != "": Rectangle {
+                            height: 48px;
+                            border-radius: 12px;
+                            background: Theme.accent-violet.with-alpha(0.13);
+                            border-width: 1px;
+                            border-color: Theme.accent-cyan.with-alpha(0.42);
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 8px;
+                                spacing: 8px;
+                                Text {
+                                    text: "Selected account: " + root.selected-friend-account-id;
+                                    color: Theme.text-primary;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                Button {
+                                    text: "Clear";
+                                    clicked => { root.selected-friend-account-id = ""; }
+                                }
+                            }
+                        }
+
                         if root.social-networking-enabled && root.pending-friend-requests.length > 0: VerticalLayout {
                             spacing: 10px;
 
@@ -1777,8 +1830,10 @@ export component AppWindow inherits Window {
 
                             for entry[i] in root.friends-list: FriendCardItem {
                                 device-id: entry.device-id;
+                                account-id: entry.account-id;
                                 status: entry.status;
                                 accent: root.top8-accent-cycle[Math.mod(i, 4)];
+                                selected: root.selected-friend-account-id == entry.account-id;
                             }
                         }
                     }
@@ -1949,6 +2004,7 @@ export component AppWindow inherits Window {
 
                                     Button {
                                         text: "Look up";
+                                        enabled: root.peer-device-id-input != "";
                                         clicked => {
                                             root.lookup-peer-by-device-id(root.peer-device-id-input);
                                         }
@@ -1977,6 +2033,7 @@ export component AppWindow inherits Window {
 
                                     Button {
                                         text: "Look up";
+                                        enabled: root.peer-username-input != "";
                                         clicked => {
                                             root.lookup-peer-by-username(root.peer-username-input);
                                         }
@@ -2019,7 +2076,9 @@ export component AppWindow inherits Window {
 
                                 Button {
                                     text: "Send";
-                                    enabled: root.social-networking-enabled;
+                                    enabled: root.social-networking-enabled
+                                        && root.peer-address-input != ""
+                                        && root.message-input != "";
                                     clicked => {
                                         root.send-message(root.peer-address-input, root.message-input);
                                     }
@@ -2053,7 +2112,7 @@ export component AppWindow inherits Window {
                 y: 72px;
                 width: parent.width;
                 height: parent.height - 72px;
-                padding: 32px;
+                padding: root.narrow-content ? 16px : 32px;
                 spacing: 16px;
                 alignment: start;
 
@@ -2069,7 +2128,7 @@ export component AppWindow inherits Window {
                     alignment: start;
 
                     LineEdit {
-                        width: 240px;
+                        width: root.narrow-content ? 150px : 240px;
                         placeholder-text: "New community name";
                         text <=> root.new-community-name;
                         accepted => {
@@ -2079,6 +2138,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         text: "Create";
+                        enabled: root.new-community-name != "";
                         clicked => {
                             root.create-community(root.new-community-name);
                         }
@@ -2091,42 +2151,69 @@ export component AppWindow inherits Window {
                     font-size: 12px;
                 }
 
-                for name[i] in root.community-names: Rectangle {
-                    height: 32px;
-                    border-radius: 6px;
-                    background: community-touch.has-hover ? Theme.silver.with-alpha(0.08) : transparent;
-                    border-width: community-focus.has-focus ? 2px : 0px;
-                    border-color: Theme.accent-cyan;
-                    accessible-role: button;
-                    accessible-label: "Open community " + name;
-                    accessible-action-default => { root.open-community(root.community-ids[i], name); }
-
-                    community-focus := FocusScope {
-                        focus-on-tab-navigation: true;
-                        key-pressed(event) => {
-                            if event.text == Key.Return || event.text == " " {
-                                root.open-community(root.community-ids[i], name);
-                                return accept;
-                            }
-                            return reject;
-                        }
-                    }
-
+                if root.community-names.length == 0: Rectangle {
+                    height: 110px;
+                    border-radius: 14px;
+                    background: Theme.bg-surface-raised.with-alpha(0.5);
+                    border-width: 1px;
+                    border-color: Theme.silver.with-alpha(0.12);
                     Text {
-                        x: 4px;
-                        width: parent.width - 8px;
+                        width: parent.width - 28px;
                         height: parent.height;
-                        vertical-alignment: center;
-                        text: "• " + name;
+                        x: 14px;
+                        text: "No communities yet. Create one above to start a local discussion.";
                         color: Theme.text-secondary;
-                        font-size: 14px;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
                     }
+                }
 
-                    community-touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            community-focus.focus();
-                            root.open-community(root.community-ids[i], name);
+                if root.community-names.length > 0: ScrollView {
+                    vertical-stretch: 1;
+                    horizontal-scrollbar-policy: always-off;
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        for name[i] in root.community-names: Rectangle {
+                            height: 40px;
+                            border-radius: 9px;
+                            background: community-touch.has-hover ? Theme.silver.with-alpha(0.08) : transparent;
+                            border-width: community-focus.has-focus ? 2px : 0px;
+                            border-color: Theme.accent-cyan;
+                            accessible-role: button;
+                            accessible-label: "Open community " + name;
+                            accessible-action-default => { root.open-community(root.community-ids[i], name); }
+
+                            community-focus := FocusScope {
+                                focus-on-tab-navigation: true;
+                                key-pressed(event) => {
+                                    if event.text == Key.Return || event.text == " " {
+                                        root.open-community(root.community-ids[i], name);
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                            }
+
+                            Text {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                height: parent.height;
+                                vertical-alignment: center;
+                                text: "• " + name;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                            }
+
+                            community-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    community-focus.focus();
+                                    root.open-community(root.community-ids[i], name);
+                                }
+                            }
                         }
                     }
                 }
@@ -2136,7 +2223,7 @@ export component AppWindow inherits Window {
                 y: 72px;
                 width: parent.width;
                 height: parent.height - 72px;
-                padding: 32px;
+                padding: root.narrow-content ? 16px : 32px;
                 spacing: 16px;
                 alignment: start;
 
@@ -2172,7 +2259,7 @@ export component AppWindow inherits Window {
                     alignment: start;
 
                     LineEdit {
-                        width: 400px;
+                        width: root.narrow-content ? 150px : min(400px, parent.width);
                         placeholder-text: "Write a post";
                         text <=> root.new-post-content;
                         accepted => {
@@ -2182,6 +2269,7 @@ export component AppWindow inherits Window {
 
                     Button {
                         text: "Post";
+                        enabled: root.new-post-content != "";
                         clicked => {
                             root.create-post(root.selected-community-id, root.new-post-content);
                         }
@@ -2194,11 +2282,33 @@ export component AppWindow inherits Window {
                     font-size: 12px;
                 }
 
-                for post in root.community-posts: Text {
-                    text: "• " + post;
+                if root.community-posts.length == 0: Text {
+                    text: "No posts yet. Be the first to start this local discussion.";
                     color: Theme.text-secondary;
-                    font-size: 14px;
+                    font-size: 13px;
                     wrap: word-wrap;
+                }
+
+                if root.community-posts.length > 0: ScrollView {
+                    vertical-stretch: 1;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        spacing: 10px;
+                        for post in root.community-posts: Rectangle {
+                            min-height: 44px;
+                            border-radius: 10px;
+                            background: Theme.bg-surface-raised.with-alpha(0.42);
+                            Text {
+                                x: 12px;
+                                y: 9px;
+                                width: parent.width - 24px;
+                                text: post;
+                                color: Theme.text-secondary;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2209,7 +2319,7 @@ export component AppWindow inherits Window {
 
                 VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
+                    padding: root.narrow-content ? 16px : 32px;
                     spacing: 16px;
                     alignment: start;
 
@@ -2239,7 +2349,7 @@ export component AppWindow inherits Window {
                             alignment: start;
 
                             LineEdit {
-                                width: 240px;
+                                width: root.narrow-content ? 150px : 240px;
                                 placeholder-text: "New hangout name";
                                 text <=> root.new-hangout-name;
                                 accepted => {
@@ -2249,6 +2359,7 @@ export component AppWindow inherits Window {
 
                             Button {
                                 text: "Create";
+                                enabled: root.new-hangout-name != "";
                                 clicked => {
                                     root.create-hangout(root.new-hangout-name);
                                 }
@@ -2595,7 +2706,7 @@ export component AppWindow inherits Window {
                     }
 
                     LineEdit {
-                        width: 240px;
+                        width: root.narrow-content ? 150px : 240px;
                         text <=> root.display-name;
                         accepted => {
                             root.save-display-name(root.display-name);
@@ -2643,7 +2754,7 @@ export component AppWindow inherits Window {
                         alignment: start;
 
                         LineEdit {
-                            width: 240px;
+                            width: root.narrow-content ? 150px : 240px;
                             placeholder-text: "e.g. ash_ketchum";
                             text <=> root.username-input;
                             accepted => {
@@ -2653,6 +2764,7 @@ export component AppWindow inherits Window {
 
                         Button {
                             text: "Claim";
+                            enabled: root.username-input != "";
                             clicked => {
                                 root.claim-username(root.username-input);
                             }
@@ -2688,7 +2800,7 @@ export component AppWindow inherits Window {
                         alignment: start;
 
                         LineEdit {
-                            width: 240px;
+                            width: root.narrow-content ? 150px : 240px;
                             placeholder-text: "e.g. rj";
                             text <=> root.lastfm-username;
                             accepted => {
@@ -2720,10 +2832,10 @@ export component AppWindow inherits Window {
             }
 
             if root.shell-notice != "": Rectangle {
-                x: parent.width - 342px;
+                x: max(16px, parent.width - 342px);
                 y: 78px;
-                width: 320px;
-                height: 46px;
+                width: min(320px, parent.width - 32px);
+                min-height: 46px;
                 border-radius: 14px;
                 background: Theme.bg-surface-raised.with-alpha(0.96);
                 border-width: 1px;

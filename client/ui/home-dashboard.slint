@@ -18,6 +18,7 @@ export struct AnimeRef {
 }
 
 export struct RecentPostRef {
+    community-id: string,
     community-name: string,
     content: string,
 }
@@ -796,7 +797,7 @@ component DiscussionPanel inherits Rectangle {
     in property <[RecentPostRef]> posts;
     in property <string> state: "ready";
     in property <string> error-message: "";
-    callback selected(string);
+    callback selected(string, string);
     callback view-all();
     callback retry();
 
@@ -841,12 +842,12 @@ component DiscussionPanel inherits Rectangle {
                     border-color: Theme.accent-cyan;
                     accessible-role: button;
                     accessible-label: "Open discussion in " + post.community-name;
-                    accessible-action-default => { root.selected(post.community-name); }
+                    accessible-action-default => { root.selected(post.community-id, post.community-name); }
                     post-focus := FocusScope {
                         focus-on-tab-navigation: true;
                         key-pressed(event) => {
                             if event.text == Key.Return || event.text == " " {
-                                root.selected(post.community-name);
+                                root.selected(post.community-id, post.community-name);
                                 return accept;
                             }
                             return reject;
@@ -871,7 +872,7 @@ component DiscussionPanel inherits Rectangle {
                         }
                         Text { text: "›"; color: Theme.text-secondary; font-size: 16px; vertical-alignment: center; }
                     }
-                    post-touch := TouchArea { mouse-cursor: pointer; clicked => { post-focus.focus(); root.selected(post.community-name); } }
+                    post-touch := TouchArea { mouse-cursor: pointer; clicked => { post-focus.focus(); root.selected(post.community-id, post.community-name); } }
                 }
             }
         }
@@ -975,6 +976,8 @@ export component HomeDashboard inherits Rectangle {
     in property <[AnimeRef]> popular-anime: [];
     in property <string> anime-state: "loading"; // loading | ready | error
     in property <string> anime-status: "";
+    in property <string> popular-state: "loading"; // loading | ready | error
+    in property <string> popular-status: "";
     in property <bool> hero-watchlisted: false;
     in property <bool> hero-action-busy: false;
 
@@ -1001,7 +1004,7 @@ export component HomeDashboard inherits Rectangle {
     callback toggle-watchlist(int);
     callback open-anime-details(int);
     callback open-friend(string);
-    callback open-discussion(string);
+    callback open-discussion(string, string);
     callback open-hangout(string);
     callback create-hangout();
     callback resume-playback(int);
@@ -1165,11 +1168,11 @@ export component HomeDashboard inherits Rectangle {
                         action => { root.view-popular(); }
                     }
 
-                    if root.anime-state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading the chart…"; }
-                    if root.anime-state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.anime-status; retry => { root.retry-anime(); } }
-                    if root.anime-state == "ready" && root.popular-anime.length == 0: PanelState { vertical-stretch: 1; state: "empty"; message: "Nothing is charting right now."; }
+                    if root.popular-state == "loading": PanelState { vertical-stretch: 1; state: "loading"; message: "Loading the chart…"; }
+                    if root.popular-state == "error": PanelState { vertical-stretch: 1; state: "error"; message: root.popular-status; retry => { root.retry-anime(); } }
+                    if root.popular-state == "ready" && root.popular-anime.length == 0: PanelState { vertical-stretch: 1; state: "empty"; message: "Nothing is charting right now."; }
 
-                    if root.anime-state == "ready" && root.popular-anime.length > 0: ScrollView {
+                    if root.popular-state == "ready" && root.popular-anime.length > 0: ScrollView {
                         vertical-stretch: 1;
                         vertical-scrollbar-policy: always-off;
                         horizontal-scrollbar-policy: as-needed;
@@ -1199,7 +1202,7 @@ export component HomeDashboard inherits Rectangle {
                     posts: root.recent-posts;
                     state: root.discussions-state;
                     error-message: root.discussions-status;
-                    selected(community) => { root.open-discussion(community); }
+                    selected(community-id, community-name) => { root.open-discussion(community-id, community-name); }
                     view-all => { root.view-discussions(); }
                     retry => { root.retry-discussions(); }
                 }
@@ -1233,7 +1236,7 @@ export component HomeDashboard inherits Rectangle {
                     posts: root.recent-posts;
                     state: root.discussions-state;
                     error-message: root.discussions-status;
-                    selected(community) => { root.open-discussion(community); }
+                    selected(community-id, community-name) => { root.open-discussion(community-id, community-name); }
                     view-all => { root.view-discussions(); }
                     retry => { root.retry-discussions(); }
                 }

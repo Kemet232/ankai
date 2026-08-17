@@ -1071,6 +1071,12 @@ fn set_anime_cover(model: slint::ModelRc<AnimeRef>, id: i32, image: slint::Image
 /// startup or freeze the UI thread on a refresh click.
 fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<AppWindow>) {
     let generation = HOME_ANIME_GENERATION.with(RequestGeneration::issue);
+    if let Some(app) = app_weak.upgrade() {
+        app.set_home_anime_state("loading".into());
+        app.set_anime_status("".into());
+        app.set_popular_anime_state("loading".into());
+        app.set_popular_anime_status("".into());
+    }
     let app_weak_trending = app_weak.clone();
     let handle_trending = handle.clone();
     handle.spawn(async move {
@@ -1085,6 +1091,7 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
             match result {
                 Ok(list) => {
                     app.set_anime_status("".into());
+                    app.set_home_anime_state("ready".into());
                     // Cover art (see `AnimeRef`'s doc comment) loads
                     // asynchronously after the text-only cards are already
                     // on screen: collect (id, url) pairs before `list` is
@@ -1134,6 +1141,7 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                 }
                 Err(err) => {
                     eprintln!("ankai-client: failed to load trending anime: {err}");
+                    app.set_home_anime_state("error".into());
                     app.set_anime_status(format!("Couldn't load trending anime: {err}").into());
                 }
             }
@@ -1153,6 +1161,8 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
             };
             match result {
                 Ok(list) => {
+                    app.set_popular_anime_state("ready".into());
+                    app.set_popular_anime_status("".into());
                     let covers: Vec<(i32, String)> = list
                         .iter()
                         .filter_map(|a| a.cover_image_url.clone().map(|url| (a.id as i32, url)))
@@ -1180,7 +1190,10 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                 }
                 Err(err) => {
                     eprintln!("ankai-client: failed to load popular anime: {err}");
-                    app.set_anime_status(format!("Couldn't load popular anime: {err}").into());
+                    app.set_popular_anime_state("error".into());
+                    app.set_popular_anime_status(
+                        format!("Couldn't load popular anime: {err}").into(),
+                    );
                 }
             }
         });
@@ -1506,14 +1519,25 @@ fn refresh_resume_entries(
 /// same shape as `refresh_top8`. Capped at 12 entries: a dashboard widget,
 /// not infinite scroll.
 fn refresh_recent_posts(app: &AppWindow, db: &ankai_core::db::Db) {
-    let recent =
-        ankai_core::forum_posts::list_recent_across_communities(db, 12).unwrap_or_else(|err| {
+    let recent = match ankai_core::forum_posts::list_recent_across_communities(db, 12) {
+        Ok(recent) => {
+            app.set_discussions_home_state("ready".into());
+            app.set_discussions_home_status("".into());
+            recent
+        }
+        Err(err) => {
             eprintln!("ankai-client: failed to load recent posts for Home: {err}");
+            app.set_discussions_home_state("error".into());
+            app.set_discussions_home_status(
+                format!("Couldn't load local discussions: {err}").into(),
+            );
             Vec::new()
-        });
+        }
+    };
     let refs: Vec<RecentPostRef> = recent
         .into_iter()
         .map(|p| RecentPostRef {
+            community_id: p.community_id.into(),
             community_name: p.community_name.into(),
             content: p.content.into(),
         })
@@ -1532,10 +1556,19 @@ fn refresh_home_friends(
     app: &AppWindow,
     db: &ankai_core::db::Db,
 ) -> Vec<ankai_core::friends::Friend> {
-    let friends = ankai_core::friends::list_friends(db).unwrap_or_else(|err| {
-        eprintln!("ankai-client: failed to load friends for Home: {err}");
-        Vec::new()
-    });
+    let friends = match ankai_core::friends::list_friends(db) {
+        Ok(friends) => {
+            app.set_friends_home_state("ready".into());
+            app.set_friends_home_status("".into());
+            friends
+        }
+        Err(err) => {
+            eprintln!("ankai-client: failed to load friends for Home: {err}");
+            app.set_friends_home_state("error".into());
+            app.set_friends_home_status(format!("Couldn't load local friends: {err}").into());
+            Vec::new()
+        }
+    };
     let refs: Vec<FriendRef> = friends
         .iter()
         .map(|f| FriendRef {
@@ -1820,11 +1853,18 @@ fn main() -> Result<(), slint::PlatformError> {
     let db_for_save = db.clone();
     let app_weak_for_name = app.as_weak();
     app.on_save_display_name(move |name| {
-        if let Err(err) = db_for_save.set_setting("display_name", &name) {
-            eprintln!("ankai-client: failed to save display name: {err}");
-        }
+        let result = db_for_save.set_setting("display_name", &name);
         if let Some(app) = app_weak_for_name.upgrade() {
-            app.set_display_name_initial(initial_letter(&name).into());
+            match result {
+                Ok(_) => {
+                    app.set_display_name_initial(initial_letter(&name).into());
+                    app.set_shell_notice("Display name saved.".into());
+                }
+                Err(error) => {
+                    eprintln!("ankai-client: failed to save display name: {error}");
+                    app.set_shell_notice(format!("Couldn't save display name: {error}").into());
+                }
+            }
         }
     });
 
@@ -1839,6 +1879,15 @@ fn main() -> Result<(), slint::PlatformError> {
                 if let Some(app) = app_weak.upgrade() {
                     app.set_shell_notice("Couldn't save the motion preference.".into());
                 }
+            } else if let Some(app) = app_weak.upgrade() {
+                app.set_shell_notice(
+                    if enabled {
+                        "Reduced motion enabled."
+                    } else {
+                        "Reduced motion disabled."
+                    }
+                    .into(),
+                );
             }
         });
     }
@@ -1862,6 +1911,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_create_community(move |name| {
         let name = name.trim();
         if name.is_empty() {
+            if let Some(app) = app_weak.upgrade() {
+                app.set_shell_notice("Enter a community name first.".into());
+            }
             return;
         }
         match ankai_core::communities::create(&db_for_communities, name) {
@@ -1874,9 +1926,15 @@ fn main() -> Result<(), slint::PlatformError> {
                     // should immediately show up as an "add to Top 8"
                     // candidate on the Profile pane.
                     refresh_top8(&app, &db_for_communities);
+                    app.set_shell_notice(format!("Created community: {name}").into());
                 }
             }
-            Err(err) => eprintln!("ankai-client: failed to create community: {err}"),
+            Err(error) => {
+                eprintln!("ankai-client: failed to create community: {error}");
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(format!("Couldn't create community: {error}").into());
+                }
+            }
         }
     });
 
@@ -1898,6 +1956,9 @@ fn main() -> Result<(), slint::PlatformError> {
             Ok(posts) => posts,
             Err(err) => {
                 eprintln!("ankai-client: failed to list posts for community {id}: {err}");
+                if let Some(app) = app_weak_for_open_community.upgrade() {
+                    app.set_shell_notice(format!("Couldn't open that community: {err}").into());
+                }
                 return;
             }
         };
@@ -1919,6 +1980,9 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_create_post(move |community_id, content| {
         let content = content.trim();
         if content.is_empty() {
+            if let Some(app) = app_weak_for_create_post.upgrade() {
+                app.set_shell_notice("Write something before posting.".into());
+            }
             return;
         }
         match ankai_core::forum_posts::create_post(&db_for_create_post, &community_id, content) {
@@ -1926,10 +1990,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 community_posts_model.push(post.content.into());
                 if let Some(app) = app_weak_for_create_post.upgrade() {
                     app.set_new_post_content("".into());
+                    app.set_shell_notice("Post published on this device.".into());
                 }
             }
             Err(err) => {
-                eprintln!("ankai-client: failed to create post in community {community_id}: {err}")
+                eprintln!("ankai-client: failed to create post in community {community_id}: {err}");
+                if let Some(app) = app_weak_for_create_post.upgrade() {
+                    app.set_shell_notice(format!("Couldn't publish post: {err}").into());
+                }
             }
         }
     });
@@ -1947,44 +2015,62 @@ fn main() -> Result<(), slint::PlatformError> {
     let db_for_feature = db.clone();
     let app_weak_for_feature = app.as_weak();
     app.on_feature_community(move |community_id| {
-        if let Err(err) = ankai_core::top8::add_to_top8(&db_for_feature, &community_id) {
-            eprintln!("ankai-client: failed to feature community: {err}");
-        }
         if let Some(app) = app_weak_for_feature.upgrade() {
-            refresh_top8(&app, &db_for_feature);
+            match ankai_core::top8::add_to_top8(&db_for_feature, &community_id) {
+                Ok(_) => {
+                    refresh_top8(&app, &db_for_feature);
+                    app.set_shell_notice("Added community to Top 8.".into());
+                }
+                Err(error) => {
+                    eprintln!("ankai-client: failed to feature community: {error}");
+                    app.set_shell_notice(format!("Couldn't update Top 8: {error}").into());
+                }
+            }
         }
     });
 
     let db_for_unfeature = db.clone();
     let app_weak_for_unfeature = app.as_weak();
     app.on_unfeature_community(move |community_id| {
-        if let Err(err) = ankai_core::top8::remove_from_top8(&db_for_unfeature, &community_id) {
-            eprintln!("ankai-client: failed to unfeature community: {err}");
-        }
         if let Some(app) = app_weak_for_unfeature.upgrade() {
-            refresh_top8(&app, &db_for_unfeature);
+            match ankai_core::top8::remove_from_top8(&db_for_unfeature, &community_id) {
+                Ok(_) => {
+                    refresh_top8(&app, &db_for_unfeature);
+                    app.set_shell_notice("Removed community from Top 8.".into());
+                }
+                Err(error) => {
+                    eprintln!("ankai-client: failed to unfeature community: {error}");
+                    app.set_shell_notice(format!("Couldn't update Top 8: {error}").into());
+                }
+            }
         }
     });
 
     let db_for_move_up = db.clone();
     let app_weak_for_move_up = app.as_weak();
     app.on_move_featured_community_up(move |community_id| {
-        if let Err(err) = ankai_core::top8::move_up(&db_for_move_up, &community_id) {
-            eprintln!("ankai-client: failed to move featured community up: {err}");
-        }
         if let Some(app) = app_weak_for_move_up.upgrade() {
-            refresh_top8(&app, &db_for_move_up);
+            match ankai_core::top8::move_up(&db_for_move_up, &community_id) {
+                Ok(_) => refresh_top8(&app, &db_for_move_up),
+                Err(error) => {
+                    eprintln!("ankai-client: failed to move featured community up: {error}");
+                    app.set_shell_notice(format!("Couldn't reorder Top 8: {error}").into());
+                }
+            }
         }
     });
 
     let db_for_move_down = db.clone();
     let app_weak_for_move_down = app.as_weak();
     app.on_move_featured_community_down(move |community_id| {
-        if let Err(err) = ankai_core::top8::move_down(&db_for_move_down, &community_id) {
-            eprintln!("ankai-client: failed to move featured community down: {err}");
-        }
         if let Some(app) = app_weak_for_move_down.upgrade() {
-            refresh_top8(&app, &db_for_move_down);
+            match ankai_core::top8::move_down(&db_for_move_down, &community_id) {
+                Ok(_) => refresh_top8(&app, &db_for_move_down),
+                Err(error) => {
+                    eprintln!("ankai-client: failed to move featured community down: {error}");
+                    app.set_shell_notice(format!("Couldn't reorder Top 8: {error}").into());
+                }
+            }
         }
     });
 
@@ -1999,10 +2085,19 @@ fn main() -> Result<(), slint::PlatformError> {
     // refresh_watchlist needs a `tokio::runtime::Handle` to kick off real
     // async cover-art fetches (see client::images), same runtime everything
     // else in this file already shares.
-    let hangouts = ankai_core::hangouts::list(&db).unwrap_or_else(|error| {
-        eprintln!("ankai-client: failed to list hangouts: {error}");
-        Vec::new()
-    });
+    let hangouts = match ankai_core::hangouts::list(&db) {
+        Ok(hangouts) => {
+            app.set_hangouts_home_state("ready".into());
+            app.set_hangouts_home_status("".into());
+            hangouts
+        }
+        Err(error) => {
+            eprintln!("ankai-client: failed to list hangouts: {error}");
+            app.set_hangouts_home_state("error".into());
+            app.set_hangouts_home_status(format!("Couldn't load local Hangouts: {error}").into());
+            Vec::new()
+        }
+    };
     let hangout_names: Vec<slint::SharedString> =
         hangouts.into_iter().map(|h| h.name.into()).collect();
     let hangout_model = std::rc::Rc::new(slint::VecModel::from(hangout_names));
@@ -2013,16 +2108,31 @@ fn main() -> Result<(), slint::PlatformError> {
     app.on_create_hangout(move |name| {
         let name = name.trim();
         if name.is_empty() {
+            if let Some(app) = app_weak_for_hangouts.upgrade() {
+                app.set_shell_notice("Enter a Hangout name first.".into());
+            }
             return;
         }
         match ankai_core::hangouts::create(&db_for_hangouts, name) {
             Ok(hangout) => {
-                hangout_model.push(hangout.name.into());
+                let hangout_name = hangout.name;
+                hangout_model.push(hangout_name.clone().into());
                 if let Some(app) = app_weak_for_hangouts.upgrade() {
                     app.set_new_hangout_name("".into());
+                    app.set_selected_hangout_name(hangout_name.clone().into());
+                    app.set_hangouts_home_state("ready".into());
+                    app.set_hangouts_home_status("".into());
+                    app.set_shell_notice(format!("Created Hangout: {hangout_name}").into());
                 }
             }
-            Err(err) => eprintln!("ankai-client: failed to create hangout: {err}"),
+            Err(error) => {
+                eprintln!("ankai-client: failed to create hangout: {error}");
+                if let Some(app) = app_weak_for_hangouts.upgrade() {
+                    app.set_hangouts_home_state("error".into());
+                    app.set_hangouts_home_status(error.to_string().into());
+                    app.set_shell_notice(format!("Couldn't create Hangout: {error}").into());
+                }
+            }
         }
     });
 
@@ -2162,9 +2272,17 @@ fn main() -> Result<(), slint::PlatformError> {
                 Ok(_outcome) => {
                     if let Some(app) = app_weak_for_accept_friend.upgrade() {
                         refresh_friends(&app, &db_for_accept_friend);
+                        app.set_shell_notice("Friend request accepted.".into());
                     }
                 }
-                Err(err) => eprintln!("ankai-client: failed to accept friend request: {err}"),
+                Err(error) => {
+                    eprintln!("ankai-client: failed to accept friend request: {error}");
+                    if let Some(app) = app_weak_for_accept_friend.upgrade() {
+                        app.set_shell_notice(
+                            format!("Couldn't accept friend request: {error}").into(),
+                        );
+                    }
+                }
             }
         });
 
@@ -2172,13 +2290,22 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak_for_decline_friend = app.as_weak();
         app.on_decline_friend_request(move |device_id_text| {
             let device_id = ankai_core::identity::DeviceId(device_id_text.to_string());
-            if let Err(err) =
-                ankai_core::friends::decline_friend_request(&db_for_decline_friend, &device_id)
-            {
-                eprintln!("ankai-client: failed to decline friend request: {err}");
-            }
             if let Some(app) = app_weak_for_decline_friend.upgrade() {
-                refresh_friends(&app, &db_for_decline_friend);
+                match ankai_core::friends::decline_friend_request(
+                    &db_for_decline_friend,
+                    &device_id,
+                ) {
+                    Ok(()) => {
+                        refresh_friends(&app, &db_for_decline_friend);
+                        app.set_shell_notice("Friend request declined.".into());
+                    }
+                    Err(error) => {
+                        eprintln!("ankai-client: failed to decline friend request: {error}");
+                        app.set_shell_notice(
+                            format!("Couldn't decline friend request: {error}").into(),
+                        );
+                    }
+                }
             }
         });
 
@@ -2197,6 +2324,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 Ok(friends) => friends,
                 Err(err) => {
                     eprintln!("ankai-client: failed to list friends for presence check: {err}");
+                    if let Some(app) = app_weak_for_presence.upgrade() {
+                        app.set_shell_notice(
+                            format!("Couldn't refresh friend presence: {err}").into(),
+                        );
+                    }
                     return;
                 }
             };
@@ -2866,6 +2998,13 @@ fn main() -> Result<(), slint::PlatformError> {
             STREMIO_DETAIL_GENERATION.with(RequestGeneration::issue);
             let addons = STREMIO_ADDONS.with(|slot| slot.borrow().clone());
             if addons.is_empty() {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_stremio_loading(false);
+                    app.set_stremio_status(
+                        "No enabled add-ons are ready. Enable or install one below, then retry."
+                            .into(),
+                    );
+                }
                 return;
             }
             if let Some(app) = app_weak.upgrade() {
@@ -2945,6 +3084,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let selected = STREMIO_MEDIA.with(|items| items.borrow().get(index as usize).cloned());
             let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
             let Some(selected) = selected else {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(
+                        "That catalog item is no longer available. Search again.".into(),
+                    );
+                }
                 return;
             };
             let provider = STREMIO_MEDIA_SOURCES
@@ -3087,6 +3231,11 @@ fn main() -> Result<(), slint::PlatformError> {
                 STREMIO_EPISODES.with(|episodes| episodes.borrow().get(index as usize).cloned());
             let addons = STREMIO_ADDONS.with(|addons| addons.borrow().clone());
             let Some(episode) = episode else {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(
+                        "That episode is no longer available. Reopen the title.".into(),
+                    );
+                }
                 return;
             };
             STREMIO_SELECTED_CONTEXT.with(|context| {
@@ -3933,6 +4082,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     "ankai-client: watch-now clicked for anime id {id}, not found in the last \
                      trending load"
                 );
+                if let Some(app) = app_weak_for_watch_now.upgrade() {
+                    app.set_shell_notice(
+                        "That title is no longer in the current Home results. Refresh and retry."
+                            .into(),
+                    );
+                }
                 return;
             };
             if let Err(err) = ankai_core::anime::add_to_watchlist(
@@ -3944,6 +4099,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     "ankai-client: failed to add anime {id} to watchlist from Home's Watch Now \
                      button: {err}"
                 );
+                if let Some(app) = app_weak_for_watch_now.upgrade() {
+                    app.set_shell_notice(format!("Couldn't update watchlist: {err}").into());
+                }
                 return;
             }
             if let Some(app) = app_weak_for_watch_now.upgrade() {
@@ -3971,6 +4129,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     .cloned()
             });
             let Some(anime) = anime else {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_shell_notice(
+                        "That title is no longer in the current Home results. Refresh and retry."
+                            .into(),
+                    );
+                }
                 return;
             };
             let already_saved = ankai_core::anime::get_watchlist_entry(&db, anime.id)
@@ -4057,12 +4221,17 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_load_letterboxd(move |username| {
             let username = username.trim().to_owned();
-            if let Err(error) = db.set_setting(LETTERBOXD_USERNAME_SETTING_KEY, &username) {
-                eprintln!("ankai-client: failed to save Letterboxd username: {error}");
-            }
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
+            if let Err(error) = db.set_setting(LETTERBOXD_USERNAME_SETTING_KEY, &username) {
+                eprintln!("ankai-client: failed to save Letterboxd username: {error}");
+                app.set_letterboxd_state("error".into());
+                app.set_letterboxd_status(
+                    format!("Couldn't save the Letterboxd username: {error}").into(),
+                );
+                return;
+            }
             app.set_letterboxd_username(username.clone().into());
             if username.is_empty() {
                 // Prevent a feed for the previous username from repopulating
@@ -4071,7 +4240,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 app.set_letterboxd_entries(slint::ModelRc::default());
                 app.set_letterboxd_state("not-configured".into());
                 app.set_letterboxd_status("".into());
+                app.set_shell_notice("Letterboxd diary disconnected.".into());
             } else {
+                app.set_shell_notice("Letterboxd username saved; refreshing diary…".into());
                 spawn_letterboxd_refresh(runtime.clone(), app.as_weak(), username);
             }
         });
@@ -4119,13 +4290,18 @@ fn main() -> Result<(), slint::PlatformError> {
         let handle_for_lastfm_save = p2p_runtime.handle().clone();
         app.on_save_lastfm_username(move |username| {
             let username = username.trim().to_string();
-            if let Err(err) = db_for_lastfm_save.set_setting(LASTFM_USERNAME_SETTING_KEY, &username)
-            {
-                eprintln!("ankai-client: failed to save Last.fm username: {err}");
-            }
             let Some(app) = app_weak_for_lastfm_save.upgrade() else {
                 return;
             };
+            if let Err(error) =
+                db_for_lastfm_save.set_setting(LASTFM_USERNAME_SETTING_KEY, &username)
+            {
+                eprintln!("ankai-client: failed to save Last.fm username: {error}");
+                app.set_now_playing_state("error".into());
+                app.set_now_playing_error(format!("Couldn't save username: {error}").into());
+                app.set_shell_notice("Couldn't save the Last.fm username.".into());
+                return;
+            }
             app.set_lastfm_username(username.clone().into());
             if username.is_empty() {
                 app.set_now_playing_state("not-configured".into());
@@ -4133,7 +4309,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 app.set_now_playing_track("".into());
                 app.set_now_playing_album("".into());
                 app.set_now_playing_error("".into());
+                app.set_shell_notice("Last.fm disconnected.".into());
             } else {
+                app.set_shell_notice("Last.fm username saved; checking now playing…".into());
                 spawn_lastfm_refresh(handle_for_lastfm_save.clone(), app.as_weak(), username);
             }
         });

@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-16 (session 20)
+Last updated: 2026-08-17 (session 21)
 
 ## What ANKAI is
 
@@ -91,6 +91,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Hangout cinema surface | **Phase 6 bounded rendering integrated; networking sync still incomplete** (session 19) — saved Hangouts render the active libmpv frame inside the clipped room player rather than behind the whole window, with the full transport/track/error UI. Rooms remain truthfully local-only with no fake participants/messages and unavailable chat disabled; real membership/invites/synchronization/voice remain future work | `client/ui/hangout-player-surface.slint`, `client/ui/app.slint`, `client/src/playback.rs`, `client/src/main.rs` |
 | Animated loading experience | **upgraded and motion-safe** (session 19) — original full-proportion violet/pink virtual-idol asset performs an eight-step dance phrase with honest indeterminate status and screen-reader text. A persisted Reduce Motion setting now propagates through the shared Theme: every animated Slint surface uses zero-duration transitions and stops choreography while retaining visible state | `client/ui/assets/ankai-loading-idol.png`, `client/ui/loading-idol.slint`, `client/ui/theme.slint`, `client/ui/app.slint` |
 | Startup resilience | **Phase 7 automated gate complete** (session 19) — `client` has no fatal startup `expect` paths. DB/keychain/runtime failures return actionable platform errors; MLS identity/P2P bind/key-package/invite failures disable only social networking with an honest in-app status. Addons, catalogs, ratings, images, watch state, resume and libmpv remain usable; local friend/message history still loads | `client/src/main.rs`, `client/ui/app.slint`, `scripts/check-release-readiness.sh`, `docs/qa/release-readiness.md` |
+| Reachable interaction and compact-layout audit | **complete in session 21** — a new strict CI-style gate verifies all 58 exported callbacks, seven named routes, actionable TouchArea keyboard/focus/a11y semantics, async loading/error/empty/retry coverage, player/global-search shortcuts, placeholder destinations and compact minimums. The audit found and fixed five real gaps: Home modules now have truthful independent states, successful empty anime no longer appears stuck loading, global search is labelled, the app owns a 480×360 minimum with shrinking/scrolling content, and Home friend/discussion rows preserve the exact destination. Visible mutations now report success/failure instead of silently returning; fullscreen Hangout playback correctly promotes to window-wide cinema | `scripts/check-interactions.sh`, `docs/qa/interaction-audit.md`, `client/ui/app.slint`, `client/ui/home-dashboard.slint`, `client/ui/shell-components.slint`, `client/src/main.rs` |
 
 The old glass/blur + drag-reorder spike still exists (now themed via
 `Theme.*`) at `client/ui/spike-glass-blur.slint`, reachable only via
