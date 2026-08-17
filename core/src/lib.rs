@@ -4,6 +4,7 @@
 //! docs/adr/0002 (native UI stack). Networking and crypto module internals
 //! are placeholders pending docs/adr/0003 and docs/adr/0004.
 
+pub mod account;
 pub mod addons;
 pub mod anime;
 pub mod communities;

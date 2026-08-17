@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "client",
     "core",
+    "server/accounts",
     "server/directory",
     "tools/nat-probe",
     "tools/webrtc-audio-probe",
@@ -101,3 +102,21 @@ async-trait = "0.1"
 # `query` for `RequestBuilder::query`, currently used by the Last.fm client
 # to build request parameters without hand-rolled percent-encoding.
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+# BIP39 mnemonic encode/decode, per docs/adr/0009-account-system.md: the
+# account-root-key model's human-writable 24-word recovery phrase encodes
+# the same raw entropy used as the Ed25519 signing-key seed. CC0-1.0
+# licensed (already on `deny.toml`'s allow-list, no changes needed there).
+# Used only for `Mnemonic::from_entropy`/`.to_entropy()`/`FromStr` — this
+# crate's own seed-stretching (`Mnemonic::to_seed`, PBKDF2) and BIP32/
+# SLIP-0010 hierarchical derivation are deliberately *not* used; see
+# `core::account`'s module doc comment for why.
+bip39 = "2"
+# Safety-number-style content hashing, per docs/adr/0004-e2ee-stack.md
+# ("BLAKE3 — MIT/Apache-2.0/CC0 triple-licensed") — already present in
+# Cargo.lock transitively (pulled in by other dependencies), so this
+# promotes an already-resolved crate to a direct workspace reference
+# rather than adding new dependency-resolution surface. Used by
+# `core::account::derive_account_id` to derive a self-certifying
+# `AccountId` from an account root public key, per
+# docs/adr/0009-account-system.md.
+blake3 = "1"
