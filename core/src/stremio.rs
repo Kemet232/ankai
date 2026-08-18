@@ -184,9 +184,7 @@ impl AddonClient {
                 if attempt.previous().len() > MAX_REDIRECTS {
                     return attempt.error("too many addon redirects");
                 }
-                if !same_origin(initial, attempt.url())
-                    && !is_official_cinemeta_redirect(initial, attempt.url())
-                {
+                if !same_origin(initial, attempt.url()) {
                     return attempt.error("addon redirect changed origin");
                 }
                 if validate_public_https_url(attempt.url(), "addon redirect URL").is_err() {
@@ -464,18 +462,6 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
         && left.port_or_known_default() == right.port_or_known_default()
-}
-
-/// Cinemeta's official public endpoint delegates catalogs to this exact
-/// sibling host. This narrow exception preserves the bundled catalog without
-/// granting arbitrary third-party addons a general cross-origin redirect.
-fn is_official_cinemeta_redirect(initial: &reqwest::Url, next: &reqwest::Url) -> bool {
-    initial.scheme() == "https"
-        && initial.host_str() == Some("v3-cinemeta.strem.io")
-        && initial.port_or_known_default() == Some(443)
-        && next.scheme() == "https"
-        && next.host_str() == Some("cinemeta-catalogs.strem.io")
-        && next.port_or_known_default() == Some(443)
 }
 
 /// Parses `url` and validates it as a public, credential-free HTTPS target.
@@ -2004,28 +1990,6 @@ mod tests {
         assert!(!same_origin(
             &original,
             &reqwest::Url::parse("http://addons.example.com/b").unwrap()
-        ));
-    }
-
-    #[test]
-    fn only_the_exact_official_cinemeta_cross_origin_redirect_is_allowed() {
-        let official =
-            reqwest::Url::parse("https://v3-cinemeta.strem.io/catalog/movie/top.json").unwrap();
-        let catalog =
-            reqwest::Url::parse("https://cinemeta-catalogs.strem.io/top/catalog/movie/top.json")
-                .unwrap();
-        assert!(is_official_cinemeta_redirect(&official, &catalog));
-        assert!(!is_official_cinemeta_redirect(
-            &reqwest::Url::parse("https://untrusted.example/catalog/movie/top.json").unwrap(),
-            &catalog
-        ));
-        assert!(!is_official_cinemeta_redirect(
-            &official,
-            &reqwest::Url::parse("https://cinemeta-catalogs.strem.io.evil.example/top").unwrap()
-        ));
-        assert!(!is_official_cinemeta_redirect(
-            &official,
-            &reqwest::Url::parse("http://cinemeta-catalogs.strem.io/top").unwrap()
         ));
     }
 
