@@ -31,10 +31,15 @@
 //!   no search, no contact list, no presence, and no notion of "who do I
 //!   know" — the directory only answers "does this exact id have anything
 //!   published," same as `crate::directory`'s trait always described.
-//! - **Multi-conversation UI.** [`list_messages`] returns this device's
-//!   entire flat message history across every peer it's ever talked to,
-//!   not scoped per-conversation — there's still no contact list/thread
-//!   switcher, matching the original stub's "one peer at a time" scope.
+//! - **Multi-conversation UI is now real.** [`list_conversations`] returns
+//!   every conversation this device has an established MLS group for, most-
+//!   recently-active first, each with a preview of its latest message —
+//!   the query a real conversation list/switcher needs. [`list_messages`]
+//!   still returns this device's entire flat message history across every
+//!   peer, unscoped — kept as-is since existing callers already rely on
+//!   that shape; a caller wanting one conversation's messages filters the
+//!   already-`peer_id`-tagged [`StoredMessage`]s [`list_messages`] returns
+//!   rather than this module adding a second near-identical query for it.
 //! - **Delivery guarantees / offline queueing / read receipts** — unchanged
 //!   from the original stub.
 //! - **Multi-device, safety numbers, key rotation, group (>2 member)
@@ -447,6 +452,99 @@ pub fn list_messages(db: &Db) -> Result<Vec<StoredMessage>, Error> {
     .collect()
 }
 
+/// One entry in this device's conversation list — the query behind a real
+/// conversation switcher, following the exact "list every X this device
+/// knows about, most-recent-relevant first" shape `crate::communities::list`
+/// and `crate::hangouts::list` already establish, adapted here to order by
+/// *activity* (most recently active conversation first, like every
+/// mainstream messaging client) rather than creation order, since that's
+/// what a conversation list needs to be useful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSummary {
+    /// The same stable identifier `conversations`/`messages` are keyed by —
+    /// see [`peer_id_for`]. There is no friendlier display name available
+    /// at this layer (no directory-backed identity binding exists yet — see
+    /// module doc comment), so a UI showing "at minimum the peer's known
+    /// name/id" has only the id to work with.
+    pub peer_id: String,
+    /// The most recent message's text, if this conversation has exchanged
+    /// at least one application message. `None` for a conversation whose
+    /// MLS group is established (a `Welcome` was sent or received) but has
+    /// had no application message either direction yet.
+    pub last_message: Option<String>,
+    /// Who sent [`Self::last_message`]; `None` exactly when that field is.
+    pub last_direction: Option<Direction>,
+    /// SQLite `datetime('now')`-format timestamp of this conversation's
+    /// most recent activity: the latest message's `created_at` if any
+    /// messages exist, otherwise the `conversations` row's own
+    /// `created_at` (when the MLS group itself was established). Always
+    /// present — every conversation has at least a creation time.
+    pub last_activity_at: String,
+}
+
+/// Every conversation this device has an established MLS group for (the
+/// `conversations` table), most-recently-active first. Backs a real
+/// conversation list/switcher instead of the flat, unscoped history
+/// [`list_messages`] returns — see module doc comment's "Multi-conversation
+/// UI is now real" note.
+pub fn list_conversations(db: &Db) -> Result<Vec<ConversationSummary>, Error> {
+    let conn = db.connection();
+    // The subquery picks each peer's single most-recent message (highest
+    // rowid, i.e. insertion order) and left-joins it onto every
+    // conversation, so a conversation with an established group but no
+    // application messages yet still gets a row (with NULL preview
+    // fields) instead of being silently dropped by an inner join. Ordering
+    // falls back to the conversation's own `created_at` when there's no
+    // message yet, matching `forum_posts::list_recent_across_communities`'s
+    // existing "order by created_at DESC" convention elsewhere in this
+    // crate rather than inventing a cross-table tie-break (`messages` and
+    // `conversations` have independent rowid sequences, so comparing their
+    // rowids directly would not be a meaningful secondary sort key).
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.peer_id, lm.content, lm.direction, lm.created_at, c.created_at
+             FROM conversations c
+             LEFT JOIN (
+                 SELECT peer_id, content, direction, created_at, rowid
+                 FROM messages
+                 WHERE rowid IN (SELECT MAX(rowid) FROM messages GROUP BY peer_id)
+             ) lm ON lm.peer_id = c.peer_id
+             ORDER BY COALESCE(lm.created_at, c.created_at) DESC",
+        )
+        .map_err(|e| Error::Db(format!("failed to prepare conversation list query: {e}")))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let peer_id: String = row.get(0)?;
+            let content: Option<String> = row.get(1)?;
+            let direction: Option<String> = row.get(2)?;
+            let last_message_at: Option<String> = row.get(3)?;
+            let conversation_created_at: String = row.get(4)?;
+            Ok((
+                peer_id,
+                content,
+                direction,
+                last_message_at,
+                conversation_created_at,
+            ))
+        })
+        .map_err(|e| Error::Db(format!("failed to query conversations: {e}")))?;
+
+    rows.map(|row| {
+        let (peer_id, content, direction, last_message_at, conversation_created_at) =
+            row.map_err(|e| Error::Db(format!("failed to read conversation row: {e}")))?;
+        let last_direction = direction.as_deref().map(Direction::parse).transpose()?;
+        let last_activity_at = last_message_at.unwrap_or(conversation_created_at);
+        Ok(ConversationSummary {
+            peer_id,
+            last_message: content,
+            last_direction,
+            last_activity_at,
+        })
+    })
+    .collect()
+}
+
 /// Sends `payload` to `addr` over `core::p2p`, returning once the peer's
 /// `accept_loop` has received it and sent back its bare ack. See module doc
 /// comment: `encrypt_and_log_outgoing` may return more than one payload for
@@ -577,6 +675,103 @@ mod tests {
     fn parse_peer_invite_rejects_garbage() {
         assert!(parse_peer_invite("not json").is_err());
         assert!(parse_peer_invite("").is_err());
+    }
+
+    /// Test-only: forces a specific `created_at` on one message row (matched
+    /// by peer + content, unique enough for this test), so ordering
+    /// assertions don't depend on real wall-clock timing — `datetime('now')`
+    /// only has 1-second resolution, and this test's actual inserts all
+    /// happen within the same real second, so leaving them at their real
+    /// timestamps would make the "most recently active first" assertion
+    /// depend on undocumented tie-breaking behavior instead of the ordering
+    /// logic actually under test.
+    fn backdate_message(db: &Db, peer_id: &str, content: &str, created_at: &str) {
+        db.connection()
+            .execute(
+                "UPDATE messages SET created_at = ?1 WHERE peer_id = ?2 AND content = ?3",
+                rusqlite::params![created_at, peer_id, content],
+            )
+            .unwrap();
+    }
+
+    /// Test-only: same idea as `backdate_message`, for a `conversations` row.
+    fn backdate_conversation(db: &Db, peer_id: &str, created_at: &str) {
+        db.connection()
+            .execute(
+                "UPDATE conversations SET created_at = ?1 WHERE peer_id = ?2",
+                rusqlite::params![created_at, peer_id],
+            )
+            .unwrap();
+    }
+
+    /// Real core-level proof for the conversation-list query: create
+    /// several conversations for one device (using `set_conversation_group_id`
+    /// directly rather than a full MLS handshake per conversation, since
+    /// what's under test here is the SQL shape/ordering, already proven
+    /// against real MLS state by this file's end-to-end test above), give
+    /// them distinct message histories with explicit, controlled timestamps
+    /// (including one conversation with no application messages at all — an
+    /// established-but-silent group, a real reachable state per this
+    /// module's doc comment), and confirm `list_conversations` returns
+    /// exactly the right peers, previews, and most-recently-active-first
+    /// ordering.
+    #[test]
+    fn list_conversations_returns_every_conversation_most_recently_active_first() {
+        let db = Db::open_in_memory("correct horse battery staple").unwrap();
+        assert_eq!(list_conversations(&db).unwrap(), Vec::new());
+
+        // peer-a: one sent message, in the middle of the activity range.
+        set_conversation_group_id(&db, "peer-a", &GroupId::from_slice(&[1])).unwrap();
+        save_message(&db, "peer-a", Direction::Sent, "hi peer a").unwrap();
+        backdate_conversation(&db, "peer-a", "2026-01-01 00:00:00");
+        backdate_message(&db, "peer-a", "hi peer a", "2026-01-01 00:05:00");
+
+        // peer-b: sent then received — the received message (the later
+        // one) must be the preview, and its timestamp makes peer-b the most
+        // recently active conversation overall.
+        set_conversation_group_id(&db, "peer-b", &GroupId::from_slice(&[2])).unwrap();
+        save_message(&db, "peer-b", Direction::Sent, "hello b").unwrap();
+        save_message(&db, "peer-b", Direction::Received, "hi back").unwrap();
+        backdate_conversation(&db, "peer-b", "2026-01-01 00:00:00");
+        backdate_message(&db, "peer-b", "hello b", "2026-01-01 00:10:00");
+        backdate_message(&db, "peer-b", "hi back", "2026-01-01 00:15:00");
+
+        // peer-c: MLS group established (e.g. a Welcome was processed) but
+        // no application message either direction yet — must still appear,
+        // with no preview, ordered by the conversation's own (oldest)
+        // creation time, not dropped by the LEFT JOIN.
+        set_conversation_group_id(&db, "peer-c", &GroupId::from_slice(&[3])).unwrap();
+        backdate_conversation(&db, "peer-c", "2025-12-31 00:00:00");
+
+        let conversations = list_conversations(&db).unwrap();
+        assert_eq!(conversations.len(), 3);
+
+        let by_peer = |peer_id: &str| {
+            conversations
+                .iter()
+                .find(|c| c.peer_id == peer_id)
+                .unwrap_or_else(|| panic!("expected a conversation for {peer_id}"))
+        };
+
+        let a = by_peer("peer-a");
+        assert_eq!(a.last_message.as_deref(), Some("hi peer a"));
+        assert_eq!(a.last_direction, Some(Direction::Sent));
+        assert_eq!(a.last_activity_at, "2026-01-01 00:05:00");
+
+        let b = by_peer("peer-b");
+        assert_eq!(b.last_message.as_deref(), Some("hi back"));
+        assert_eq!(b.last_direction, Some(Direction::Received));
+        assert_eq!(b.last_activity_at, "2026-01-01 00:15:00");
+
+        let c = by_peer("peer-c");
+        assert_eq!(c.last_message, None);
+        assert_eq!(c.last_direction, None);
+        assert_eq!(c.last_activity_at, "2025-12-31 00:00:00");
+
+        // peer-b was touched most recently, peer-a next, peer-c (just group
+        // creation, no messages, and the oldest timestamp) last.
+        let order: Vec<&str> = conversations.iter().map(|c| c.peer_id.as_str()).collect();
+        assert_eq!(order, vec!["peer-b", "peer-a", "peer-c"]);
     }
 
     #[test]

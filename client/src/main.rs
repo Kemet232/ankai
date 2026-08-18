@@ -1702,6 +1702,84 @@ fn short_peer_id(peer_id: &str) -> &str {
     &peer_id[..peer_id.len().min(10)]
 }
 
+/// Recomputes the Messages pane's conversation list/switcher
+/// (`ankai_core::messaging::list_conversations`) into the `ConversationRef`
+/// rows `app.slint`'s switcher renders. Called at startup and after every
+/// send/receive that could have created a conversation or changed its most
+/// recent message. There is no friendlier "known name" for a conversation's
+/// peer yet (no directory-backed identity binding exists at this layer —
+/// see `messaging.rs`'s doc comment), so `display_label` is the same
+/// truncated peer id `short_peer_id` already produces for the flat history
+/// view.
+fn refresh_conversations(app: &AppWindow, db: &ankai_core::db::Db) {
+    let conversations = ankai_core::messaging::list_conversations(db).unwrap_or_else(|error| {
+        eprintln!("ankai-client: failed to list conversations: {error}");
+        Vec::new()
+    });
+
+    let rows: Vec<ConversationRef> = conversations
+        .into_iter()
+        .map(|c| {
+            let label = short_peer_id(&c.peer_id).to_string();
+            let preview = match (c.last_direction, c.last_message) {
+                (Some(ankai_core::messaging::Direction::Sent), Some(text)) => {
+                    format!("you: {text}")
+                }
+                (Some(ankai_core::messaging::Direction::Received), Some(text)) => {
+                    format!("{label}: {text}")
+                }
+                _ => "No messages yet".to_string(),
+            };
+            ConversationRef {
+                peer_id: c.peer_id.into(),
+                display_label: label.into(),
+                preview: preview.into(),
+                timestamp: c.last_activity_at.into(),
+            }
+        })
+        .collect();
+
+    app.set_conversations(slint::ModelRc::from(Rc::new(slint::VecModel::from(rows))));
+}
+
+/// Builds the "most recent first, sender: text" display lines for exactly
+/// one conversation, filtered client-side from this device's full flat
+/// history (`ankai_core::messaging::list_messages`) by peer id — see that
+/// module's doc comment on why `list_messages` itself stays unscoped rather
+/// than this file reaching around it with a second near-identical query.
+fn conversation_message_lines(db: &ankai_core::db::Db, peer_id: &str) -> Vec<slint::SharedString> {
+    let history = ankai_core::messaging::list_messages(db).unwrap_or_else(|error| {
+        eprintln!("ankai-client: failed to load message history: {error}");
+        Vec::new()
+    });
+
+    let mut lines: Vec<slint::SharedString> = Vec::new();
+    for stored in history.into_iter().filter(|m| m.peer_id == peer_id) {
+        let sender = match stored.direction {
+            ankai_core::messaging::Direction::Sent => "you".to_string(),
+            ankai_core::messaging::Direction::Received => {
+                short_peer_id(&stored.peer_id).to_string()
+            }
+        };
+        lines.insert(0, format!("{sender}: {}", stored.content).into());
+    }
+    lines
+}
+
+/// Selects `peer_id` as the Messages pane's active conversation: sets the
+/// switcher's selection state and reloads `message-log` scoped to that
+/// peer alone. Called on a real `select-conversation` click, and also
+/// after a successful send (see `on_send_message` below) so starting a
+/// brand-new conversation focuses it immediately instead of leaving the
+/// switcher on whatever was selected before — matching the human
+/// directive's "create-or-select-and-focus a conversation" requirement.
+fn select_conversation(app: &AppWindow, db: &ankai_core::db::Db, peer_id: &str) {
+    app.set_selected_conversation_peer_id(peer_id.into());
+    app.set_selected_conversation_label(short_peer_id(peer_id).into());
+    let lines = conversation_message_lines(db, peer_id);
+    app.set_message_log(slint::ModelRc::from(Rc::new(slint::VecModel::from(lines))));
+}
+
 // ---------------------------------------------------------------------
 // Home dashboard wiring (see `ui/app.slint`'s AnimeRef/RecentPostRef/
 // FriendRef doc comments for what each field is and isn't). Every
@@ -2578,6 +2656,20 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // Conversation switcher (see refresh_conversations/select_conversation
+    // above): reading a conversation's messages is a plain local DB read,
+    // so this works even when social networking is disabled for the
+    // session (same "local data stays readable" precedent as
+    // refresh_friends above) — only actually *sending* a reply needs a live
+    // P2P node.
+    let db_for_select_conversation = db.clone();
+    let app_weak_for_select_conversation = app.as_weak();
+    app.on_select_conversation(move |peer_id| {
+        if let Some(app) = app_weak_for_select_conversation.upgrade() {
+            select_conversation(&app, &db_for_select_conversation, &peer_id);
+        }
+    });
+
     // Forum posts within a community (ankai_core::forum_posts — see that
     // module's doc comment for scope: flat, append-only, local-only text,
     // no replies/editing/authorship/moderation). Selecting a community from
@@ -2829,22 +2921,14 @@ fn main() -> Result<(), slint::PlatformError> {
     // Local friend/message data remains readable while peer networking is
     // offline, so the disabled social view still represents persisted state.
     refresh_friends(&app, &db);
-    let history = ankai_core::messaging::list_messages(&db).unwrap_or_else(|error| {
-        eprintln!("ankai-client: failed to load message history: {error}");
-        Vec::new()
-    });
-    let message_log_model =
-        std::rc::Rc::new(slint::VecModel::from(Vec::<slint::SharedString>::new()));
-    for stored in history {
-        let sender = match stored.direction {
-            ankai_core::messaging::Direction::Sent => "you".to_string(),
-            ankai_core::messaging::Direction::Received => {
-                short_peer_id(&stored.peer_id).to_string()
-            }
-        };
-        message_log_model.insert(0, format!("{sender}: {}", stored.content).into());
+    // Real conversation list/switcher: load every conversation this device
+    // has, most-recently-active first, and auto-select the most recent one
+    // (if any exist) so the pane isn't blank on first render — matching
+    // "assume the most relevant conversation, not that there's only one."
+    refresh_conversations(&app, &db);
+    if let Some(most_recent) = app.get_conversations().row_data(0) {
+        select_conversation(&app, &db, &most_recent.peer_id);
     }
-    app.set_message_log(slint::ModelRc::from(message_log_model));
 
     if let Some(SocialServices {
         mls_provider,
@@ -3159,18 +3243,31 @@ fn main() -> Result<(), slint::PlatformError> {
                         match result {
                             Ok(Some(msg)) => {
                                 let peer_id = ankai_core::messaging::peer_id_for(msg.from);
-                                let line = format!("{}: {}", short_peer_id(&peer_id), msg.text);
-                                if let Some(model) = app
-                                    .get_message_log()
-                                    .as_any()
-                                    .downcast_ref::<slint::VecModel<slint::SharedString>>()
+                                // The conversation list always reflects the
+                                // new message's preview/timestamp. The
+                                // visible message-log only reloads if this
+                                // peer is (or becomes, when nothing was
+                                // selected yet) the active conversation —
+                                // an incoming message from someone else
+                                // shouldn't yank the human's view away from
+                                // whatever conversation they're reading.
+                                refresh_conversations(&app, &handles.db);
+                                let currently_selected = app.get_selected_conversation_peer_id();
+                                if currently_selected.is_empty()
+                                    || currently_selected.as_str() == peer_id
                                 {
-                                    model.insert(0, line.into());
+                                    select_conversation(&app, &handles.db, &peer_id);
                                 }
                             }
                             // A Welcome establishing a new group — nothing
-                            // user-visible yet, this device just joined.
-                            Ok(None) => {}
+                            // user-visible yet, this device just joined. The
+                            // conversation list still gains a row for it
+                            // (with an honest "No messages yet" preview),
+                            // so refresh it even though there's no message
+                            // to show.
+                            Ok(None) => {
+                                refresh_conversations(&app, &handles.db);
+                            }
                             Err(err) => {
                                 eprintln!(
                                     "ankai-client: failed to process incoming message: {err}"
@@ -3206,6 +3303,11 @@ fn main() -> Result<(), slint::PlatformError> {
                     return;
                 }
             };
+            // Computed up front so the success path below can create-or-
+            // select-and-focus this peer's conversation in the switcher,
+            // matching every other peer id this module already derives via
+            // messaging::peer_id_for.
+            let peer_id = ankai_core::messaging::peer_id_for(invite.addr.id);
 
             // Encryption (real MLS: group setup on first contact, then
             // `create_message`) and persistence both happen synchronously here
@@ -3251,13 +3353,18 @@ fn main() -> Result<(), slint::PlatformError> {
                         Ok(()) => {
                             app.set_send_status("".into());
                             app.set_message_input("".into());
-                            if let Some(model) = app
-                                .get_message_log()
-                                .as_any()
-                                .downcast_ref::<slint::VecModel<slint::SharedString>>()
-                            {
-                                model.insert(0, format!("you: {message_text}").into());
-                            }
+                            // db can't cross the tokio-thread spawn above as
+                            // an Rc (not Send — see this file's
+                            // MessagingHandles doc comment for the same
+                            // constraint on the receive side), so it's
+                            // fetched back from the UI-thread-only
+                            // DB_HANDLE instead of being captured directly.
+                            DB_HANDLE.with(|db| {
+                                if let Some(db) = db.borrow().as_ref() {
+                                    refresh_conversations(&app, db);
+                                    select_conversation(&app, db, &peer_id);
+                                }
+                            });
                         }
                         Err(err) => {
                             app.set_send_status(format!("Failed to send: {err}").into());
