@@ -184,6 +184,25 @@ loops that make users return are still discontinuous.
 
 ## Immediate next steps (in order)
 
+**Next up (explicitly deferred by the human at the end of session 24's
+follow-up round, "hold it for tomorrow"): implement and thoroughly test
+lazy libmpv initialization.** See the "Idle CPU / 'app is slow'
+investigation" row in the Current phase table above for the full
+diagnosis with real measurements — short version: `client/src/main.rs`'s
+`set_rendering_notifier` `RenderingSetup` handler (~line 2483-2508)
+unconditionally constructs the full libmpv player context (7 Lua
+interpreter threads + codec thread pool) at app startup regardless of
+whether Watch is ever opened, costing real idle CPU for the whole
+session. The fix is conceptually simple — keep `BoundedVideoSurface`
+creation where it is (needs the `graphics_api` handle, only available in
+this one-shot callback) but defer `playback::Player::new()` itself to
+the first real playback request — but it touches the same hand-tuned
+GL/FBO video-texture bridge from session 19 that deserves real testing
+(build, launch, actually play a video, confirm resume/fullscreen/close
+still all work, re-measure idle CPU with it deferred), not a rushed
+patch. Do this first, as a focused single-track session, before picking
+up anything else new.
+
 All 5 research ADRs (0002-0006) are Accepted, plus ADR-0007 (open-source
 model: Apache-2.0, LICENSE added). `ankai-core`'s `identity` module has
 MLS/OpenMLS-shaped types (real `openmls` types where safe, honest
