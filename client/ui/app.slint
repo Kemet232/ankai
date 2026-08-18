@@ -86,6 +86,25 @@ export struct FriendCard {
     status: string,
 }
 
+// One conversation in the Messages pane's conversation list/switcher —
+// derived from ankai_core::messaging::ConversationSummary (see that
+// module's doc comment for what a "conversation" is: this device's own
+// local record of an established 2-member MLS group with a peer, keyed by
+// messaging::peer_id_for's stable hex peer id). display-label is a
+// truncated peer id (main.rs's existing short_peer_id helper) — there is
+// no friendlier "known name" bound to a conversation's peer yet (no
+// directory-backed identity binding exists for this id space), so id is
+// the honest minimum this pane can show. preview/timestamp reflect the
+// most recent message; preview reads "No messages yet" for a conversation
+// whose MLS group is established but has had no application message
+// either direction yet (a real, reachable state per messaging.rs).
+export struct ConversationRef {
+    peer-id: string,
+    display-label: string,
+    preview: string,
+    timestamp: string,
+}
+
 // ---------------------------------------------------------------------
 // Home dashboard data shapes (ankai_core::anime / forum_posts / friends —
 // see each module's own doc comment for full scope/limitations). Kept as
@@ -1071,8 +1090,26 @@ export component AppWindow inherits Window {
     in-out property <string> peer-address-input: "";
     in-out property <string> message-input: "";
     in-out property <string> send-status: "";
+    // message-log is scoped to whichever conversation is currently
+    // selected below (most-recent-first) — no longer this device's entire
+    // flat cross-peer history, now that a real conversation switcher
+    // exists. See ankai_core::messaging::list_conversations's doc comment.
     in-out property <[string]> message-log: [];
     callback send-message(string, string);
+
+    // Real conversation list/switcher (ankai_core::messaging::
+    // list_conversations), most-recently-active first. main.rs loads it at
+    // startup, refreshes it after every send/receive, and auto-selects the
+    // most recent conversation on startup if any exist.
+    // selected-conversation-peer-id/-label track which conversation is
+    // currently open in the "Conversation" panel below; both are "" when
+    // no conversation exists yet or none is selected. select-conversation
+    // is fired by clicking a row in the switcher; main.rs responds by
+    // reloading message-log filtered to that peer.
+    in-out property <[ConversationRef]> conversations: [];
+    in-out property <string> selected-conversation-peer-id: "";
+    in-out property <string> selected-conversation-label: "";
+    callback select-conversation(string);
 
     // Experimental, opt-in ADR-0008 directory lookup (Status: Proposed —
     // see docs/adr/0008-identity-discovery-service.md). main.rs sets
@@ -2083,15 +2120,115 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // ---- Conversations: the conversation list/switcher —
+                    // every conversation this device has an established
+                    // MLS group for (ankai_core::messaging::
+                    // list_conversations), most-recently-active first, each
+                    // row showing a truncated peer id, a preview of its
+                    // most recent message, and when that activity happened.
+                    // Selecting a row scopes the "Conversation" panel below
+                    // to that peer. ----
+                    FixedPanel {
+                        panel-title: "Conversations";
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 8px;
+
+                            if root.conversations.length == 0: Text {
+                                text: "No conversations yet. Connect a peer above to start one.";
+                                color: Theme.text-secondary;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            for convo[i] in root.conversations: Rectangle {
+                                height: 58px;
+                                border-radius: 13px;
+                                background: convo-touch.has-hover ? root.top8-accent-cycle[Math.mod(i, 4)].with-alpha(0.18) : Theme.bg-void.with-alpha(0.22);
+                                border-width: root.selected-conversation-peer-id == convo.peer-id ? 2px : (convo-focus.has-focus ? 2px : 1px);
+                                border-color: root.selected-conversation-peer-id == convo.peer-id ? Theme.accent-pink : (convo-focus.has-focus ? Theme.accent-cyan : convo-touch.has-hover ? root.top8-accent-cycle[Math.mod(i, 4)].with-alpha(0.46) : Theme.silver.with-alpha(0.12));
+                                accessible-role: button;
+                                accessible-label: "Open conversation with " + convo.display-label;
+                                accessible-action-default => { root.select-conversation(convo.peer-id); }
+
+                                convo-focus := FocusScope {
+                                    focus-on-tab-navigation: true;
+                                    key-pressed(event) => {
+                                        if event.text == Key.Return || event.text == " " {
+                                            root.select-conversation(convo.peer-id);
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    padding-top: 6px;
+                                    padding-bottom: 6px;
+                                    spacing: 2px;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: convo.display-label;
+                                            color: Theme.text-primary;
+                                            font-size: 13px;
+                                            font-weight: 700;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+
+                                        Text {
+                                            text: convo.timestamp;
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: convo.preview;
+                                        color: Theme.text-secondary;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                    }
+                                }
+
+                                convo-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        convo-focus.focus();
+                                        root.select-conversation(convo.peer-id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ---- Conversation: the "DM chat window" from the
                     // reference image — compose row + message log, in its
-                    // own fixed glass panel. ----
+                    // own fixed glass panel, now scoped to whichever
+                    // conversation is selected above instead of assuming
+                    // there is only ever one active peer. ----
                     FixedPanel {
-                        panel-title: "Conversation";
+                        panel-title: root.selected-conversation-label == ""
+                            ? "Conversation"
+                            : "Conversation — " + root.selected-conversation-label;
 
                         VerticalLayout {
                             padding: 16px;
                             spacing: 10px;
+
+                            if root.selected-conversation-peer-id == "": Text {
+                                text: "Select a conversation above, or send a message below to start a new one.";
+                                color: Theme.text-secondary;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
 
                             HorizontalLayout {
                                 spacing: 8px;
@@ -2125,7 +2262,9 @@ export component AppWindow inherits Window {
                             }
 
                             Text {
-                                text: "Messages (most recent first, persisted to the encrypted local DB)";
+                                text: root.selected-conversation-peer-id == ""
+                                    ? "Messages (most recent first, persisted to the encrypted local DB)"
+                                    : "Messages with " + root.selected-conversation-label + " (most recent first, persisted to the encrypted local DB)";
                                 color: Theme.text-secondary;
                                 font-size: 12px;
                             }
