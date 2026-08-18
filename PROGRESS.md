@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-18 (session 23)
+Last updated: 2026-08-18 (session 24)
 
 ## What ANKAI is
 
@@ -80,7 +80,7 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | MAL Forum Discussions real post previews | **retired and deleted** (session 18) — superseded by the supported public Letterboxd-member RSS diary and Nyaa's per-upload comment links | `core/src/letterboxd.rs`, `core/src/nyaa.rs` |
 | Jikan anime API | **removed entirely (session 23, live-testing round)** — human request: MAL ratings duplicated what Kitsu already covers, and Jikan's own live outages (real HTTP 504s from MyAnimeList's backend) were user-visible noise for no unique value once Kitsu was installed. `core::jikan`, its `Error::Jikan` variant, `client/ui/anime-discovery.slint`, and all client wiring (search/retry/open handlers, the Discover panel, global-search integration) are deleted, not just hidden | — |
 | Letterboxd feed replacement | **Home replacement complete** (session 18) — uses only one configured member's officially exposed public RSS diary, with persisted username, live poster/rating/review entries and exact external links. No global-feed claim, arbitrary HTML scraping, private activity, or write access | `core/src/letterboxd.rs`, `client/ui/letterboxd-feed.slint`, `client/ui/home-dashboard.slint`, `client/src/main.rs` |
-| Nyaa anime upload comments | **complete within the honest RSS boundary** (session 18) — secure bounded anime RSS search exposes per-upload size/swarm/trust/remake/comment counts. Title selection searches releases automatically; the responsive panel opens the exact validated `https://nyaa.si/view/{id}` page for comments. ANKAI does not fetch comment bodies or claim a title-wide Nyaa thread | `core/src/nyaa.rs`, `client/ui/nyaa-releases.slint`, `client/src/main.rs`, `client/ui/app.slint` |
+| Nyaa anime upload comments | **removed entirely in session 24** — see the dedicated removal row further down in this table; this row is kept only for narrative history of what existed session 18-23 | — |
 | `client/build.rs` rerun-if-changed bug | **fixed** — the build script only ever listed two floating-panel-demo files in `cargo:rerun-if-changed`, and printing any such line replaces cargo's default "rerun on any file change" fallback with "only rerun for what's listed." Edits to `app.slint`/`theme.slint` could silently stop triggering Slint regeneration on an incremental build once a target directory already had cached output — caught for real when a color-palette-only edit compiled clean but rendered the old colors. Fixed by globbing every real `ui/*.slint` file into its own rerun-if-changed line | `client/build.rs` |
 | Color palette rework (pink/violet, matching the reference) | done — the reference mockup uses a hot pink/magenta accent plus blue-violet, barely any cyan; ANKAI's palette leaned cyan/violet/gold. Real colors sampled directly from the reference image via pixel-level histogram analysis (not guessed): `#E82888` (a "like" count badge) → `theme.slint`'s new `accent-pink` (`#F0459A`, lightened for AA contrast), and `#6C4CD0` (primary buttons) → deepened `accent-violet` (`#8B6CF0` → `#8363E3`). `accent-cyan` usages replaced app-wide (nav pill, section labels, hero glow, avatar gradients, tab pills, accent-cycle arrays, Now Playing widget) except where cyan was already paired with violet in a gradient | `client/ui/theme.slint`, `client/ui/app.slint` |
 | Last.fm "Now Playing" backend (`core::lastfm`) | done — real, read-only client for Last.fm's public `user.getrecenttracks` endpoint (API-key-only, no OAuth needed for this call — confirmed live). Returns `Ok(Some(NowPlaying))` only when Last.fm's own `nowplaying` flag is genuinely set, `Ok(None)` for an honest "nothing playing" (including zero scrobble history), `Err` for a real failure — never fabricated. No elapsed/duration data exists on this endpoint, so the My Page widget's progress bar is an explicitly-decorative indeterminate pulse, not a real scrubber. Wired via a `slint::Timer` periodic refresh (not one-shot); Last.fm username is a local-only Settings field, separate from the API key. Real live test (`cargo test -p ankai-core --test lastfm_live -- --ignored`) confirmed against a real public account and a real nonexistent-username 404 | `core/src/lastfm.rs`, `core/tests/lastfm_live.rs`, `client/ui/app.slint`, `client/src/main.rs` |
@@ -90,7 +90,12 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Stremio addon management | **Phase 3 complete (session 17)** — `core::addons` persists a versioned ordered registry in SQLCipher-backed settings: canonical configured URL, metadata/logo, content types/resource roles, enable state, priority and health. The polished manager now installs, refreshes, enables/disables, reorders and removes custom providers; built-in Cinemeta/Anime Kitsu can be disabled but not removed; all registry operations immediately refresh the live query set. Configured path variants remain distinct while equivalent base/manifest URLs deduplicate | `core/src/addons.rs`, `client/ui/addon-manager.slint`, `client/src/main.rs` |
 | Stremio competitive parity — S20 protocol contract | **complete in session 22** — manifest configuration/behavior/global ID prefixes/addon catalogs, resource type+ID-prefix routing, required catalog extras/options/limits, full known metadata/video fields, subtitle and addon-catalog resources, inline episode streams, and every documented stream target are typed and bounded. The client now queries only eligible catalogs/providers and labels each target honestly. Public HTTPS is implemented; private HTTP, IPFS/IPNS, Stremio links and legacy v1/v2 return explicit unsupported outcomes. Direct HTTPS remains the only immediately playable form; torrent/YouTube/NZB/archive/external resolvers and addon-subtitle player wiring remain S23, not falsely claimed complete | `core/src/stremio.rs`, `core/src/addons.rs`, `client/src/main.rs`, `docs/roadmaps/stremio-competitive-parity.md` |
 | Stremio competitive parity — S21 Board/Discover/search | **complete in session 23; S22 next** — `core::board` enumerates every catalog on every enabled addon in persisted priority order, classifying each as a passive Home/Board row or an extra-gated row (search/genre), with manifest-derived type/genre/addon selectors (nothing hand-maintained). `CatalogPageState` implements real `skip` pagination with `(type, id)` dedupe and an honest `has_more` (Stremio's protocol has no total-count field). Global search only reaches catalogs whose required extras are satisfiable. `core::catalog_cache` adds a bounded two-tier stale-while-revalidate cache — in-memory (process lifetime) plus an on-disk tier inside the same SQLCipher DB (migration 12) so a genuinely offline restart still shows something instead of an empty Board, both LRU-evicted, both metadata-only (no stream URLs/credentials cached). `core::deeplink` parses `ankai://search\|discover\|detail\|video\|addon-install` links plus real-world `stremio://` and bare manifest-URL pastes into a typed `DeepLink` — parsing/validation only, no OS URL-scheme registration yet (a packaging step for later). New `client/ui/board.slint` replaces the old single merged-shelf UI with the catalog-aware model | `core/src/board.rs`, `core/src/catalog_cache.rs`, `core/src/deeplink.rs`, `core/src/db.rs`, `client/ui/board.slint`, `client/src/main.rs`, `docs/roadmaps/stremio-competitive-parity.md` |
-| ADR-0009: account system | done (Proposed, session 23) — recommends an ANKAI account **be** an Ed25519 keypair (self-certifying `AccountId` derived from the account public key) with a 24-word BIP39 recovery phrase, explicitly rejecting password+email/magic-link/OAuth as being in real tension with ADR-0004's "server never sees plaintext or keys" guarantee. Multi-device auth reuses ADR-0004's already-named "Registration" co-signing model; hosting is a new `server/accounts` crate (axum+SQLite, reusing ADR-0008's pattern); recovery is phrase-only with no server-assisted fallback — permanent loss on losing every device *and* the phrase is named as an accepted cost, not hidden. Flags that ADR-0008's `DeviceId` TOFU pinning should later be revisited to require account-root-key co-signing instead. Real reference code: `core::account` (keypair gen/from-mnemonic, self-certifying id derivation, device-registration signing/verification, secret-redacted `Debug`) and `server/accounts` (real axum+SQLite server + client, with rejection-path tests: unauthenticated calls, forged signatures, device-id impersonation, cross-account revoke forgery). Deliberately not wired into `identity::load_or_create_device`/`client` — stays a reference implementation backing a Proposed ADR, same as ADR-0008. MLS group-membership fan-out on device add/remove, the recovery-blob's actual encrypted contents, and the QR/pairing ceremony UI are named as real future work, not faked | `docs/adr/0009-account-system.md`, `core/src/account.rs`, `server/accounts/` |
+| ADR-0009: account system | **Accepted (session 24)**, written session 23 — recommends an ANKAI account **be** an Ed25519 keypair (self-certifying `AccountId` derived from the account public key) with a 24-word BIP39 recovery phrase, explicitly rejecting password+email/magic-link/OAuth as being in real tension with ADR-0004's "server never sees plaintext or keys" guarantee. Multi-device auth reuses ADR-0004's already-named "Registration" co-signing model; hosting is a new `server/accounts` crate (axum+SQLite, reusing ADR-0008's pattern); recovery is phrase-only with no server-assisted fallback — permanent loss on losing every device *and* the phrase is named as an accepted cost, not hidden. Flags that ADR-0008's `DeviceId` TOFU pinning should later be revisited to require account-root-key co-signing instead. Real reference code: `core::account` (keypair gen/from-mnemonic, self-certifying id derivation, device-registration signing/verification, secret-redacted `Debug`) and `server/accounts` (real axum+SQLite server + client, with rejection-path tests: unauthenticated calls, forged signatures, device-id impersonation, cross-account revoke forgery). Accepted but still **not wired into `identity::load_or_create_device`/`client`** — that's real follow-up work, not done yet. MLS group-membership fan-out on device add/remove, the recovery-blob's actual encrypted contents, and the QR/pairing ceremony UI remain future work | `docs/adr/0009-account-system.md`, `core/src/account.rs`, `server/accounts/` |
+| ADR-0010: comment system | done (Proposed, session 24) — scopes the real per-title/release comment section (visible to everyone, upvote/downvote, per-comment attribution) the human asked for after Nyaa's removal took away its old release-scoped anchor. Anchors comments on a new canonical `ContentKey { namespace, external_id }` (normalizing `core::stremio`'s existing id-prefix convention plus AniList ids), hosts them in a new `server/comments` crate reusing ADR-0008's axum+SQLite pattern (flags this as the first ANKAI service whose read volume scales with browsing, not account/device events — recommends WAL mode, likely first candidate for Postgres), and authenticates/attributes via ADR-0009's now-Accepted account system (device signature key + `DeviceRegistration` chain, offline-verifiable). Names per-account rate limits, soft-delete, a signed report path, and client-side-only blocking as the abuse-control mechanism, with moderation *policy* explicitly left to the human. No code written — scoping only, matching the ADR-0008/0009 bar. Real blocker named: ADR-0009 has nothing to sign with until it's actually wired into `client` | `docs/adr/0010-comment-system.md` |
+| Nyaa anime upload comments | **removed entirely (session 24)** — human's explicit call ("get rid of nyaa section and search box completely") rather than merging its duplicate search field. `core::nyaa`, `client/ui/nyaa-releases.slint`, and all `app.slint`/`main.rs` wiring deleted outright, matching the `mal_forums`/Jikan removal precedent. `roxmltree` (its RSS parser dep) stays — `core::letterboxd` still uses it | — |
+| Player overlay/Home-bleed-through bug | **fixed (session 24)** — a human-reported, screenshotted bug: resuming playback from Home's Continue Watching card (`on_resume_playback`, the one real playback trigger that starts a video without first switching `selected-index` to Watch) left `HomeDashboard` rendering as a sibling underneath the now-intentionally-transparent `PlayerOverlay`, reading as a translucent "minimized" mess with Home's cards bleeding through the video/controls. Fixed by gating `HomeDashboard`'s render condition on `!player-active` (matching how Discover/Board already excludes itself) and making `on_resume_playback` switch to the Watch tab on its successful path too | `client/ui/app.slint`, `client/src/main.rs` |
+| Auto-play best-quality stream | **done (session 24)** — human's explicit ask: don't make the user pick a stream from an addon like Torrentio, auto-play the best/most compatible one. `rank_streams_for_playability` is now quality-aware (parses 2160p/4K/1080p/720p/480p/360p tokens out of stream titles, ranks `Direct` streams by resolution tier — torrent/YouTube/NZB/etc. streams still always sort last since nothing resolves them yet). Opening a title/episode/deep-linked video now auto-plays the top-ranked `Direct` stream immediately instead of waiting for a manual "PLAY FROM" click; the full ranked button row stays intact as a manual override (reappears whenever the player closes), and titles with no `Direct` stream keep the existing honest "not playable yet" messaging instead of auto-selecting something unplayable | `client/src/main.rs` |
+| Multi-conversation messaging UI | **done (session 24)** — queued since session 11. `core::messaging::list_conversations` returns every conversation this device has an established MLS group for, most-recently-active first, each with a last-message preview (follows the same "list every X this device knows about" shape as `communities::list`/`hangouts::list`). Messages nav pane now shows a real conversation list/switcher backed by it instead of assuming one active peer; existing compose/send flow now lives inside whichever conversation is selected. Delivery/read receipts, attachments, editing, group (>2-member) conversations, and directory-backed "start by username" beyond the existing paste/lookup flow are explicitly out of scope, left for later | `core/src/messaging.rs`, `client/ui/app.slint`, `client/src/main.rs` |
 | libmpv playback | **Phase 4 renderer and controls complete** (session 19) — typed events/state and complete cinema controls plus a real Retina-aware OpenGL texture/FBO bridge imported into Slint's bounded player well. GL state is restored around mpv, resized textures retire safely after frame presentation, first successful rendered media gates video-ready, renderer errors stay in the overlay, buffered duration is not fabricated, and close exits fullscreen. The no-install packaging pipeline now fails closed on LGPL attestation/dependency closure and probes the packaged loader; real signed/notarized per-OS artifacts remain a release gate | `client/src/playback.rs`, `client/ui/player-overlay.slint`, `client/src/main.rs`, `scripts/bundle-libmpv.sh`, `scripts/verify-libmpv-bundle.sh`, `docs/releasing-libmpv.md` |
 | Hangout cinema surface | **Phase 6 bounded rendering integrated; networking sync still incomplete** (session 19) — saved Hangouts render the active libmpv frame inside the clipped room player rather than behind the whole window, with the full transport/track/error UI. Rooms remain truthfully local-only with no fake participants/messages and unavailable chat disabled; real membership/invites/synchronization/voice remain future work | `client/ui/hangout-player-surface.slint`, `client/ui/app.slint`, `client/src/playback.rs`, `client/src/main.rs` |
 | Animated loading experience | **upgraded and motion-safe** (session 19) — original full-proportion violet/pink virtual-idol asset performs an eight-step dance phrase with honest indeterminate status and screen-reader text. A persisted Reduce Motion setting now propagates through the shared Theme: every animated Slint surface uses zero-duration transitions and stops choreography while retaining visible state | `client/ui/assets/ankai-loading-idol.png`, `client/ui/loading-idol.slint`, `client/ui/theme.slint`, `client/ui/app.slint` |
@@ -849,23 +854,27 @@ narrative trail, not as the live candidate list.** Sessions 16-22 closed the
 Stremio addon-protocol-client item (now well past it: S20's full protocol
 contract and S21's Board/Discover/search parity are both done — see
 `docs/roadmaps/stremio-competitive-parity.md`, S22 next). Session 23 closed
-items 2 and 4 below (accounts: ADR-0009 is now Proposed with a real reference
-impl, awaiting the human's Accept/reject; Communities/Settings: real glass
-styling landed). Item 3 (iOS) and item 5 (multi-conversation messaging UI)
-are still genuinely untouched. See the "Current phase" table at the top of
-this file for the authoritative up-to-date status of everything — don't treat
-the numbered list below as current.
+Communities/Settings glass styling and wrote ADR-0009. **Session 24 closed
+ADR-0009's Accept/reject decision (Accepted), multi-conversation messaging,
+and both live-testing bugs the human reported with a screenshot — see the
+"Current phase" table at the top of this file for the authoritative
+up-to-date status of everything; don't treat the numbered list below as
+current.**
 
 1. ~~Launch the Stremio addon-protocol-client track~~ — superseded; see S20/S21
    above, S22 (Details/unified library/calendar/notifications) is next.
-2. ~~Scope and launch the accounts system~~ — ADR-0009 written and Proposed
-   (session 23); needs a human Accept/reject decision before any wiring work.
+2. ~~Scope and launch the accounts system~~ — ADR-0009 Accepted (session 24).
+   Real wiring (`core::account` into `identity::load_or_create_device`,
+   device-linking/QR ceremony, MLS group-membership fan-out) is still
+   unstarted — that's the actual next step here, not the ADR itself.
 3. Scope and launch the iOS port, once the human answers the
-   alpha-target-vs-real-distribution question above. Still untouched.
+   alpha-target-vs-real-distribution question above. Explicitly declined
+   for session 24 ("not starting iOS this session") — still untouched.
 4. ~~Communities/Settings panes still have the old plain content styling~~ —
    done, session 23.
-5. Multi-conversation messaging UI — still hasn't started (queued since
-   session 11).
+5. ~~Multi-conversation messaging UI~~ — done, session 24 (queued since
+   session 11). See the "Current phase" table row for what's still out of
+   scope (unread counts, receipts, attachments, group conversations).
 6. Human-side validation work: ADR-0003 spike 1 (NAT-traversal cohort
    measurement) and spike 2 (subjective audio quality) both have working
    tools now but still need a human to actually run them.
@@ -873,39 +882,55 @@ the numbered list below as current.
    held back — real payments/money, needs a human product/legal decision
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
+8. ~~Merge the duplicate Nyaa search box~~ — superseded; the human's actual
+   answer when asked was full removal, not a merge. Nyaa removed entirely,
+   session 24.
+9. ~~Real comment section~~ — scoped as ADR-0010 (Proposed), session 24. No
+   reference implementation yet — that's real future work once the human
+   reviews the ADR's open questions (see its own row above).
 
-**New candidates from the human, explicitly flagged "for next time" (not done
-this session — deferred, not forgotten):**
+**Session 24 (2026-08-18) ran four tracks in parallel** (human: "spin up
+agents pls"), each in an isolated worktree, merged one at a time onto `main`
+as they finished (three needed manual verification after the agent stalled
+"waiting for a background build to finish" and never resumed — the same
+failure mode from sessions 9/10; each time, running `build`/`test`/`clippy`/
+`fmt` directly in the stalled agent's worktree and committing there was
+faster than trying to resume it again):
 
-8. **Merge the duplicate Nyaa search box.** `NyaaReleases` (the "Upload
-   comments for `<title>`" panel under a title's stream row) already gets its
-   query auto-populated from the open title (`nyaa-query` is set from
-   `meta.name` when a title opens — see the title-open flow in
-   `client/src/main.rs`), but it also exposes its own independently editable
-   `LineEdit` + Search/Refresh button (`client/ui/nyaa-releases.slint`,
-   `query <=> root.query`) that lets it drift from what's actually open —
-   "there's 2 [searches] for some reason." The human wants one: whatever
-   title is already selected/opened should be the only source of truth, no
-   second manually-editable search field.
-9. **Real comment section: per-title/release, visible to everyone, with
-   upvote/downvote and per-comment user attribution.** This is *not* scoped
-   yet and is a genuinely architecture-level decision, not a quick UI
-   fix — same bar as ADR-0008/0009. "Visible by every[one]" means this can't
-   be device-local state like Communities' forum posts; it needs real shared
-   storage (a server, matching the `server/directory`/`server/accounts`
-   pattern) and a moderation story (spam/abuse, rate limits, deletion/report
-   path — this project's standing trust-and-safety gaps list, item 9 in the
-   critical-audit section above, already flags exactly this class of feature
-   as needing attribution/abuse-policy work before shipping). It also likely
-   wants stable per-user identity to attribute votes/comments to, which
-   points at ADR-0009 (still Proposed, not Accepted) rather than the current
-   device-scoped-only identity model. Scope this properly (which surface —
-   per-Nyaa-release? per-title generally? — storage/hosting, auth, abuse
-   controls) before building, the same way ADR-0008/0009 were designed before
-   their reference implementations were written.
+- **ADR-0009 decision**: human accepted it as proposed — flipped the ADR's
+  status field, no code changes (real wiring is future work, item 2 above).
+- **Comment-section scoping** (ADR-0010): docs-only, no reference impl —
+  see its "Current phase" row.
+- **Nyaa removal**: the human's session-start answer to "merge the duplicate
+  search box" evolved mid-session into "get rid of nyaa section and search
+  box completely" — went with the explicit final answer, full deletion.
+- **Multi-conversation messaging UI**: real `list_conversations` query plus
+  a conversation list/switcher in the Messages pane.
+- **Two live-testing bugs, reported together with one screenshot mid-session**
+  (folded into the already-running player-overlay track via a live
+  `SendMessage` to that agent rather than launching a fifth parallel track,
+  since both were in the same code territory it was already investigating):
+  the translucent "minimized" player bleeding through Home dashboard content
+  (root cause: `HomeDashboard` never excluded itself while playing, and
+  Home's own "resume" button was the one playback trigger that didn't switch
+  to the Watch tab first), and stream selection auto-playing the top-ranked
+  stream by quality instead of requiring a manual pick from addons like
+  Torrentio.
 
-Not a locked decision — say which direction (or several, in parallel again
-if that's still the preferred mode), or propose something else.
+All four tracks' final merges were re-verified on the fully-merged `main`
+(not just per-branch) with a full workspace `build`/`test`/`clippy -D
+warnings`/`fmt --check` pass before pushing — clean throughout, only one
+merge conflict-adjacent issue (a `cargo fmt` nit in the messaging-UI branch,
+fixed directly rather than sent back to the stalled agent). Worktrees and
+branches for all four tracks were removed after merging. Pushed to
+`origin/main`.
+
+Not a locked decision for next time — say which direction (or several, in
+parallel again if that's still the preferred mode), or propose something
+else. Open candidates going into session 25: ADR-0009's real wiring work,
+iOS scoping (still needs the human's alpha-target answer), a reference
+implementation for ADR-0010 once its open questions are reviewed, and
+whatever the human wants to add.
 
 Remember: the E2EE integration itself (not the underlying libraries) requires
 an independent professional security audit before shipping to real users —
