@@ -559,7 +559,6 @@ fn reload_enabled_addons(app: &AppWindow, db: &ankai_core::db::Db) {
     app.set_stremio_media(slint::ModelRc::default());
     app.set_stremio_stream_names(slint::ModelRc::default());
     app.set_stremio_episodes(slint::ModelRc::default());
-    app.set_stremio_addon_names(slint::ModelRc::default());
     app.set_stremio_selected_title("".into());
     app.set_board_rows(slint::ModelRc::default());
     app.set_board_search_active(false);
@@ -3568,16 +3567,6 @@ fn main() -> Result<(), slint::PlatformError> {
                                 }
                             });
                             STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
-                            app.set_stremio_addon_name(addon_name.clone().into());
-                            let names = STREMIO_ADDONS.with(|slot| {
-                                slot.borrow()
-                                    .iter()
-                                    .map(|addon| addon.name.clone().into())
-                                    .collect::<Vec<slint::SharedString>>()
-                            });
-                            app.set_stremio_addon_names(slint::ModelRc::from(Rc::new(
-                                slint::VecModel::from(names),
-                            )));
                             // Board catalogs are always recomputed (cheap,
                             // synchronous, no network) so switching out of
                             // search mode later reflects this addon

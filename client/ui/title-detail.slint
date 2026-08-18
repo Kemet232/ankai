@@ -16,6 +16,15 @@ component DetailButton inherits Rectangle {
     callback activated();
     height: 38px;
     min-width: 92px;
+    // Real addon output (torrent-release filenames, sizes, audio-track tags)
+    // routinely runs far longer than the short "Direct — Title" labels this
+    // was first built against. Without a cap + elide, a long label's Text
+    // rendered past this Rectangle's bounds into whatever button sat next to
+    // it in the row — a wall of illegible overlapping text, not a scrollable
+    // button list. clip + max-width + elide guarantee every button stays
+    // legible and self-contained regardless of label length.
+    max-width: 220px;
+    clip: true;
     border-radius: 12px;
     background: root.primary
         ? (touch.pressed ? Theme.accent-pink.with-alpha(0.68) : @linear-gradient(110deg, Theme.accent-violet 0%, Theme.accent-pink 100%))
@@ -36,12 +45,16 @@ component DetailButton inherits Rectangle {
         }
     }
     Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
         text: root.label;
         color: Theme.text-primary;
         font-size: 11px;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
+        overflow: elide;
     }
     touch := TouchArea {
         mouse-cursor: pointer;

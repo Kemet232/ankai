@@ -858,6 +858,20 @@ export component AppWindow inherits Window {
     // hangouts, friend activity) to surface at a glance. main.rs also sets
     // this explicitly at startup for robustness against future reordering.
     in-out property <int> selected-index: 0;
+    // The full-screen PlayerOverlay (declared below) and its 16ms frame-pump
+    // Timer are only gated on player-active/player-bounded-mode, not on which
+    // nav tab is selected — clicking any other sidebar item while a video is
+    // playing left mpv decoding and compositing a hidden fullscreen frame
+    // behind that page indefinitely (visible as a ghost frame bleeding
+    // through page backgrounds, and a real, continuous CPU/GPU cost). Watch
+    // (where the overlay belongs) and Hangouts (which has its own bounded
+    // surface, gated separately by player-bounded-mode) are the only tabs a
+    // playing video should survive switching to.
+    changed selected-index => {
+        if root.player-active && root.selected-index != root.watch-index && root.selected-index != root.hangouts-index {
+            root.close-player();
+        }
+    }
     in-out property <string> global-search-query: "";
     in-out property <string> shell-notice: "";
     property <bool> compact-shell: root.width < 900px;
@@ -883,8 +897,6 @@ export component AppWindow inherits Window {
     // ankai_core::stremio; the URL remains editable because configured addons
     // commonly encode their configuration in the manifest path.
     in-out property <string> stremio-addon-url: "https://v3-cinemeta.strem.io/manifest.json";
-    in-out property <string> stremio-addon-name: "";
-    in-out property <[string]> stremio-addon-names: [];
     in-out property <string> stremio-search-query: "";
     in-out property <string> stremio-status: "Enter an addon URL and load it.";
     in-out property <bool> stremio-loading: false;
@@ -2552,7 +2564,7 @@ export component AppWindow inherits Window {
                     }
 
                     AnimeDiscovery {
-                        height: 510px;
+                        height: 460px;
                         query <=> root.jikan-query;
                         results: root.jikan-results;
                         state: root.jikan-state;
@@ -2586,13 +2598,6 @@ export component AppWindow inherits Window {
                         color: Theme.text-secondary;
                         font-size: 12px;
                         wrap: word-wrap;
-                    }
-
-                    if root.stremio-addon-name != "": Text {
-                        text: root.stremio-addon-name;
-                        color: Theme.accent-pink;
-                        font-size: 17px;
-                        font-weight: 700;
                     }
 
                     if root.stremio-selected-title == "": Board {

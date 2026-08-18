@@ -137,27 +137,6 @@ component RetryButton inherits Rectangle {
     }
 }
 
-component SourcePill inherits Rectangle {
-    width: source-label.preferred-width + 30px;
-    height: 28px;
-    border-radius: 14px;
-    background: Theme.accent-violet.with-alpha(0.13);
-    border-width: 1px;
-    border-color: Theme.accent-violet.with-alpha(0.34);
-    accessible-role: text;
-    accessible-label: "Jikan public anime ratings. No API key. Read only.";
-
-    source-label := Text {
-        text: "JIKAN  ·  NO KEY  ·  READ-ONLY";
-        color: Theme.accent-cyan;
-        font-size: 9px;
-        font-weight: 800;
-        letter-spacing: 0.8px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
 component AnimeResultCard inherits Rectangle {
     in property <JikanAnimeRef> anime;
     callback opened(int);
@@ -285,7 +264,7 @@ export component AnimeDiscovery inherits Rectangle {
         spacing: 18px;
 
         Rectangle {
-            height: 154px;
+            height: 96px;
             border-radius: 22px;
             background: @linear-gradient(112deg, Theme.bg-surface-raised.with-alpha(0.94) 0%, Theme.accent-violet.with-alpha(0.20) 62%, Theme.accent-pink.with-alpha(0.10) 100%);
             border-width: 1px;
@@ -304,31 +283,13 @@ export component AnimeDiscovery inherits Rectangle {
 
             VerticalLayout {
                 padding: 18px;
-                spacing: 13px;
+                spacing: 10px;
 
-                HorizontalLayout {
-                    height: 42px;
-                    spacing: 12px;
-
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 2px;
-                        Text {
-                            text: "Anime ratings";
-                            color: Theme.text-primary;
-                            font-size: 20px;
-                            font-weight: 800;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Look up read-only community scores; artwork and details come from your addons.";
-                            color: Theme.text-secondary;
-                            font-size: 10px;
-                            overflow: elide;
-                        }
-                    }
-
-                    SourcePill { }
+                Text {
+                    text: "Anime ratings";
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 800;
                 }
 
                 HorizontalLayout {
@@ -443,47 +404,27 @@ export component AnimeDiscovery inherits Rectangle {
         }
 
         if root.state == "error": Rectangle {
-            vertical-stretch: 1;
-            min-height: 300px;
-            border-radius: 20px;
-            background: @linear-gradient(135deg, Theme.state-busy.with-alpha(0.09) 0%, Theme.bg-surface-raised.with-alpha(0.68) 100%);
+            height: 52px;
+            border-radius: 14px;
+            background: Theme.state-busy.with-alpha(0.09);
             border-width: 1px;
-            border-color: Theme.state-busy.with-alpha(0.32);
+            border-color: Theme.state-busy.with-alpha(0.28);
+            accessible-role: text;
+            accessible-label: root.error-message == ""
+                ? "Jikan didn't answer. The public anime catalog is temporarily unavailable."
+                : "Jikan didn't answer: " + root.error-message;
 
-            VerticalLayout {
-                padding: 34px;
-                spacing: 12px;
-                alignment: center;
-                Rectangle {
-                    width: 52px;
-                    height: 52px;
-                    border-radius: 26px;
-                    background: Theme.state-busy.with-alpha(0.12);
-                    border-width: 1px;
-                    border-color: Theme.state-busy.with-alpha(0.36);
-                    Text {
-                        text: "!";
-                        color: Theme.state-busy;
-                        font-size: 24px;
-                        font-weight: 800;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 12px;
+                spacing: 10px;
                 Text {
-                    text: "Jikan didn’t answer";
-                    color: Theme.text-primary;
-                    font-size: 16px;
-                    font-weight: 800;
-                    horizontal-alignment: center;
-                }
-                Text {
-                    text: root.error-message == "" ? "The public anime catalog is temporarily unavailable." : root.error-message;
+                    text: "Jikan didn’t answer — the public anime catalog is temporarily unavailable.";
                     color: Theme.text-secondary;
                     font-size: 11px;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
-                    max-width: 520px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
                 }
                 RetryButton { activated => { root.retry(); } }
             }
