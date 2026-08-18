@@ -18,7 +18,6 @@ pub mod forum_posts;
 pub mod friends;
 pub mod hangouts;
 pub mod identity;
-pub mod jikan;
 pub mod keychain;
 pub mod lastfm;
 pub mod letterboxd;

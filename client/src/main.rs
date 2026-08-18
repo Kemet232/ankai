@@ -99,7 +99,6 @@ thread_local! {
     static STREMIO_ADDONS: RefCell<Vec<StremioAddon>> = const { RefCell::new(Vec::new()) };
     static STREMIO_MEDIA_SOURCES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static STREMIO_EPISODES: RefCell<Vec<ankai_core::stremio::Video>> = const { RefCell::new(Vec::new()) };
-    static JIKAN_ANIME: RefCell<Vec<ankai_core::jikan::Anime>> = const { RefCell::new(Vec::new()) };
     static RESUME_PROGRESS: RefCell<Vec<ankai_core::playback_progress::PlaybackProgress>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
     static VIDEO_SURFACE: RefCell<Option<playback::BoundedVideoSurface>> = const { RefCell::new(None) };
@@ -131,7 +130,6 @@ thread_local! {
     static ADDON_MANAGER_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static HOME_ANIME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static WATCHLIST_GENERATION: RequestGeneration = const { RequestGeneration::new() };
-    static JIKAN_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static NYAA_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static LETTERBOXD_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static RESUME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
@@ -249,6 +247,46 @@ fn stremio_stream_kind(stream: &ankai_core::stremio::Stream) -> &'static str {
         Ok(StreamTarget::ExternalUrl(_)) => "External",
         Err(_) => "Invalid",
     }
+}
+
+/// Stable-sorts so a stream this build can actually start playing on click
+/// (`StreamSource::Direct` — see `Stream::source`'s doc comment) always comes
+/// before torrent/YouTube/NZB/archive/external streams, which are honestly
+/// labelled but not resolvable yet. The first/primary "PLAY FROM" button
+/// should be something that works, not just whichever addon answered first.
+fn rank_streams_for_playability(streams: &mut [ankai_core::stremio::Stream]) {
+    streams.sort_by_key(|stream| {
+        !matches!(
+            stream.source(),
+            Ok(ankai_core::stremio::StreamSource::Direct(_))
+        )
+    });
+}
+
+/// Ranks merged search results by textual closeness to the query so the
+/// title a user actually meant is what appears first (and lands in the
+/// primary card position), rather than whichever addon/catalog happened to
+/// answer first. Tiers, most to least relevant: exact match, starts-with,
+/// contains — each tier stable-sorted internally to preserve addon-priority
+/// order. A plain heuristic (case-insensitive string comparison), not a full
+/// fuzzy scorer — deliberately simple and predictable over clever-but-opaque.
+fn rank_search_results_by_relevance(query: &str, items: &mut [ankai_core::board::AttributedItem]) {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return;
+    }
+    items.sort_by_key(|entry| {
+        let name = entry.item.name.to_lowercase();
+        if name == query {
+            0
+        } else if name.starts_with(&query) {
+            1
+        } else if name.contains(&query) {
+            2
+        } else {
+            3
+        }
+    });
 }
 
 fn show_stremio_media(
@@ -1118,6 +1156,7 @@ fn open_meta_by_id(
             if streams.is_empty() && !errors.is_empty() {
                 app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
             } else {
+                rank_streams_for_playability(&mut streams);
                 let labels = streams
                     .iter()
                     .map(|stream| {
@@ -1852,63 +1891,6 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                     app.set_popular_anime_status(
                         format!("Couldn't load popular anime: {err}").into(),
                     );
-                }
-            }
-        });
-    });
-}
-
-fn jikan_to_ref(anime: &ankai_core::jikan::Anime) -> JikanAnimeRef {
-    let title = anime
-        .title_english
-        .as_deref()
-        .unwrap_or(anime.title.as_str());
-    JikanAnimeRef {
-        mal_id: i32::try_from(anime.mal_id).unwrap_or(i32::MAX),
-        title: title.into(),
-        score_label: anime
-            .score
-            .map(|score| format!("{score:.1} / 10"))
-            .unwrap_or_else(|| "Not yet rated".to_string())
-            .into(),
-    }
-}
-
-fn spawn_jikan_refresh(
-    handle: tokio::runtime::Handle,
-    app_weak: slint::Weak<AppWindow>,
-    query: Option<String>,
-) {
-    let generation = JIKAN_GENERATION.with(RequestGeneration::issue);
-    if let Some(app) = app_weak.upgrade() {
-        app.set_jikan_state("loading".into());
-        app.set_jikan_error("".into());
-    }
-    handle.spawn(async move {
-        let client = ankai_core::jikan::JikanClient::new();
-        let result = match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-            Some(query) => client.search_anime(query, 15).await,
-            None => client.top_anime(15).await,
-        };
-        let _ = slint::invoke_from_event_loop(move || {
-            if !JIKAN_GENERATION.with(|state| state.is_current(generation)) {
-                return;
-            }
-            let Some(app) = app_weak.upgrade() else {
-                return;
-            };
-            match result {
-                Ok(page) => {
-                    let rows = page.data.iter().map(jikan_to_ref).collect::<Vec<_>>();
-                    JIKAN_ANIME.with(|store| *store.borrow_mut() = page.data);
-                    app.set_jikan_results(slint::ModelRc::from(Rc::new(slint::VecModel::from(
-                        rows,
-                    ))));
-                    app.set_jikan_state("ready".into());
-                }
-                Err(error) => {
-                    app.set_jikan_state("error".into());
-                    app.set_jikan_error(error.to_string().into());
                 }
             }
         });
@@ -2794,8 +2776,8 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    // A shared runtime drives every asynchronous feature, including Stremio,
-    // Jikan and cover art. Runtime construction is required; return a normal,
+    // A shared runtime drives every asynchronous feature, including Stremio
+    // and cover art. Runtime construction is required; return a normal,
     // actionable startup error if the host cannot create it.
     let p2p_runtime = tokio::runtime::Runtime::new().map_err(|error| {
         slint::PlatformError::Other(format!(
@@ -3681,7 +3663,8 @@ fn main() -> Result<(), slint::PlatformError> {
                         Err(err) => errors.push(format!("{addon_name}: {err}")),
                     }
                 }
-                let deduped = ankai_core::board::dedupe_attributed(attributed);
+                let mut deduped = ankai_core::board::dedupe_attributed(attributed);
+                rank_search_results_by_relevance(&query, &mut deduped);
                 let _ = slint::invoke_from_event_loop(move || {
                     if !STREMIO_SEARCH_GENERATION.with(|state| state.is_current(generation)) {
                         return;
@@ -4061,6 +4044,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     if streams.is_empty() && !errors.is_empty() {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
+                        rank_streams_for_playability(&mut streams);
                         let labels = streams
                             .iter()
                             .map(|stream| {
@@ -4177,6 +4161,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     app.set_stremio_loading(false);
+                    rank_streams_for_playability(&mut streams);
                     let labels = streams
                         .iter()
                         .map(|stream| {
@@ -4591,10 +4576,8 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             app.set_selected_index(app.get_watch_index());
             app.set_stremio_search_query(query.into());
-            app.set_jikan_query(query.into());
             app.set_nyaa_query(query.into());
             app.invoke_search_stremio(query.into());
-            app.invoke_search_jikan(query.into());
             app.invoke_search_nyaa(query.into());
         });
     }
@@ -4604,50 +4587,6 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_selected_index(app.get_profile_index());
             }
-        });
-    }
-    {
-        let runtime = p2p_runtime.handle().clone();
-        let app_weak = app.as_weak();
-        app.on_search_jikan(move |query| {
-            spawn_jikan_refresh(runtime.clone(), app_weak.clone(), Some(query.to_string()));
-        });
-    }
-    {
-        let runtime = p2p_runtime.handle().clone();
-        let app_weak = app.as_weak();
-        app.on_retry_jikan(move || {
-            let query = app_weak
-                .upgrade()
-                .map(|app| app.get_jikan_query().to_string())
-                .filter(|query| !query.trim().is_empty());
-            spawn_jikan_refresh(runtime.clone(), app_weak.clone(), query);
-        });
-    }
-    {
-        let app_weak = app.as_weak();
-        app.on_open_jikan_anime(move |id| {
-            let title = JIKAN_ANIME.with(|anime| {
-                anime
-                    .borrow()
-                    .iter()
-                    .find(|anime| i32::try_from(anime.mal_id).unwrap_or(i32::MAX) == id)
-                    .map(|anime| {
-                        anime
-                            .title_english
-                            .clone()
-                            .unwrap_or_else(|| anime.title.clone())
-                    })
-            });
-            let (Some(app), Some(title)) = (app_weak.upgrade(), title) else {
-                return;
-            };
-            app.set_selected_index(app.get_watch_index());
-            app.set_stremio_search_query(title.clone().into());
-            app.set_nyaa_query(title.clone().into());
-            app.invoke_search_stremio(title.into());
-            app.invoke_search_nyaa(app.get_nyaa_query());
-            app.set_shell_notice("Finding playable sources for this anime…".into());
         });
     }
     {
@@ -4915,7 +4854,6 @@ fn main() -> Result<(), slint::PlatformError> {
     refresh_recent_posts(&app, &db);
     let initial_friends = refresh_home_friends(&app, &db);
     spawn_anime_refresh(p2p_runtime.handle().clone(), app.as_weak());
-    spawn_jikan_refresh(p2p_runtime.handle().clone(), app.as_weak(), None);
     if let Some(node) = social_node.as_ref() {
         spawn_friend_presence_checks(
             initial_friends,

@@ -45,7 +45,7 @@ iroh.workspace = true
 # tools/webrtc-audio-probe already use for the same reason.
 tokio = { workspace = true, features = ["time", "net"] }
 # HTTP client shared by the live third-party integrations in this crate —
-# including AniList, Jikan, Last.fm, and Stremio. See the root Cargo.toml's
+# including AniList, Last.fm, and Stremio. See the root Cargo.toml's
 # `reqwest` entry for the common feature-selection rationale.
 reqwest.workspace = true
 # Letterboxd exposes a documented public RSS feed rather than an open review

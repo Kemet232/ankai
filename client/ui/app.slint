@@ -35,7 +35,6 @@ import { HomeDashboard, AnimeRef, RecentPostRef, FriendRef, ResumeRef } from "ho
 import { TitleDetail, StremioEpisodeRef } from "title-detail.slint";
 import { AddonManager, AddonCard } from "addon-manager.slint";
 import { PlayerOverlay, PlayerTrackRef } from "player-overlay.slint";
-import { AnimeDiscovery, JikanAnimeRef } from "anime-discovery.slint";
 import { Board, BoardRowRef, FilterOption, StremioMediaRef } from "board.slint";
 import { LetterboxdEntryRef } from "letterboxd-feed.slint";
 import { LoadingIdol } from "loading-idol.slint";
@@ -952,16 +951,6 @@ export component AppWindow inherits Window {
     callback retry-board-row(string);
     callback open-deep-link(string);
 
-    // Zero-config anime metadata and ratings, fetched from Jikan's public
-    // read-only catalog. No MAL account, credentials, forum data, or write
-    // access is used anywhere in this surface.
-    in-out property <string> jikan-query: "";
-    in-out property <[JikanAnimeRef]> jikan-results: [];
-    in-out property <string> jikan-state: "loading";
-    in-out property <string> jikan-error: "";
-    callback search-jikan(string);
-    callback retry-jikan();
-    callback open-jikan-anime(int);
     in-out property <string> nyaa-query: "";
     in-out property <[NyaaReleaseRef]> nyaa-results: [];
     in-out property <string> nyaa-state: "idle";
@@ -1303,7 +1292,21 @@ export component AppWindow inherits Window {
                     icon: i == 0 ? "H" : i == 1 ? "D" : i == 2 ? "P" : i == 3 ? "M" : i == 4 ? "C" : i == 5 ? "R" : "S";
                     active: root.selected-index == i;
                     compact: root.compact-shell;
-                    activated => { root.selected-index = i; }
+                    activated => {
+                        // Discover doubles as the full-screen "now playing"
+                        // surface while a video plays, so re-clicking it
+                        // (selected-index already == watch-index — a plain
+                        // assignment below is a no-op Slint never re-fires
+                        // `changed` for) would otherwise be the only nav
+                        // click with no visible effect, stranding anyone who
+                        // wants back to Board/search while playback's controls
+                        // have auto-hidden. Route it through the exact same
+                        // close-player teardown a real close does.
+                        if (i == root.watch-index && root.selected-index == root.watch-index && root.player-active) {
+                            root.close-player();
+                        }
+                        root.selected-index = i;
+                    }
                 }
             }
         }
@@ -2561,17 +2564,6 @@ export component AppWindow inherits Window {
                         color: Theme.text-secondary;
                         font-size: 12px;
                         wrap: word-wrap;
-                    }
-
-                    AnimeDiscovery {
-                        height: 460px;
-                        query <=> root.jikan-query;
-                        results: root.jikan-results;
-                        state: root.jikan-state;
-                        error-message: root.jikan-error;
-                        search(query) => { root.search-jikan(query); }
-                        retry => { root.retry-jikan(); }
-                        open(id) => { root.open-jikan-anime(id); }
                     }
 
                     HorizontalLayout {
