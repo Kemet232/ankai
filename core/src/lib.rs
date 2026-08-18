@@ -23,7 +23,6 @@ pub mod lastfm;
 pub mod letterboxd;
 pub mod messaging;
 pub mod mls_provider;
-pub mod nyaa;
 pub mod p2p;
 pub mod playback_progress;
 pub mod protocol;

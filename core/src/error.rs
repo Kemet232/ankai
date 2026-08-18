@@ -14,8 +14,6 @@ pub enum Error {
     Letterboxd(String),
     #[error("network error: {0}")]
     Net(String),
-    #[error("nyaa error: {0}")]
-    Nyaa(String),
     #[error("stremio error: {0}")]
     Stremio(String),
 }
