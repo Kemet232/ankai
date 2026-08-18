@@ -312,6 +312,20 @@ fn top_stream_is_playable(streams: &[ankai_core::stremio::Stream]) -> bool {
     })
 }
 
+/// Whether `open_meta_by_id` should treat the bare title/series id as a
+/// valid unit to fetch, rank, and (if the top pick is playable) auto-play
+/// streams for. True only when the meta that was just loaded has no real
+/// per-episode video list — a movie, or an addon that genuinely doesn't
+/// expose per-episode videos for this series. Per the Stremio protocol,
+/// episodic content's streams belong under specific episode video ids
+/// (`tt1234:1:2`), not the bare series id — `on_open_stremio_episode`
+/// fetches those correctly once the user picks an episode. Extracted as a
+/// pure function so this branch is unit-testable without a live addon or a
+/// running Slint app.
+fn should_use_title_level_streams(episode_count: usize) -> bool {
+    episode_count == 0
+}
+
 /// Ranks merged search results by textual closeness to the query so the
 /// title a user actually meant is what appears first (and lands in the
 /// primary card position), rather than whichever addon/catalog happened to
@@ -1145,7 +1159,6 @@ fn open_meta_by_id(
     let app_weak = app.as_weak();
     let image_handle = runtime.clone();
     runtime.spawn(async move {
-        let mut streams = Vec::new();
         let mut errors = Vec::new();
         let mut selected_meta = None;
         for addon in &addons {
@@ -1156,19 +1169,32 @@ fn open_meta_by_id(
                     Err(err) => errors.push(format!("{} metadata: {err}", addon.name)),
                 }
             }
-            if !addon.manifest.supports_resource("stream", &media_type, &id) {
-                continue;
-            }
-            match addon.client.streams(&media_type, &id).await {
-                Ok(mut addon_streams) => {
-                    for stream in &mut addon_streams {
-                        if stream.name.is_none() {
-                            stream.name = Some(addon.name.clone());
-                        }
-                    }
-                    streams.extend(addon_streams);
+        }
+        // Per the Stremio protocol, episodic content's streams live under
+        // specific episode video ids (`tt1234:1:2`), not the bare
+        // title/series id — `on_open_stremio_episode` fetches those
+        // correctly once an episode is picked. So the title-level fetch
+        // below (and the auto-play it feeds) only makes sense when there's
+        // no real episode list to pick from instead: a movie, or an addon
+        // that genuinely doesn't expose per-episode videos for this series.
+        let episode_count = selected_meta.as_ref().map_or(0, |meta| meta.videos.len());
+        let mut streams = Vec::new();
+        if should_use_title_level_streams(episode_count) {
+            for addon in &addons {
+                if !addon.manifest.supports_resource("stream", &media_type, &id) {
+                    continue;
                 }
-                Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                match addon.client.streams(&media_type, &id).await {
+                    Ok(mut addon_streams) => {
+                        for stream in &mut addon_streams {
+                            if stream.name.is_none() {
+                                stream.name = Some(addon.name.clone());
+                            }
+                        }
+                        streams.extend(addon_streams);
+                    }
+                    Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                }
             }
         }
         let _ = slint::invoke_from_event_loop(move || {
@@ -1200,7 +1226,16 @@ fn open_meta_by_id(
             } else {
                 STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
             }
-            if streams.is_empty() && !errors.is_empty() {
+            if !should_use_title_level_streams(episode_count) {
+                // Real episodes exist — leave the title-level stream list
+                // empty rather than acting on it (there isn't one; the fetch
+                // above was skipped). The user picks an episode next, which
+                // triggers `on_open_stremio_episode`'s own correctly-scoped
+                // per-episode fetch+autoplay.
+                STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
+                app.set_stremio_stream_names(slint::ModelRc::default());
+                app.set_stremio_status("Select an episode below to see its streams.".into());
+            } else if streams.is_empty() && !errors.is_empty() {
                 app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
             } else {
                 rank_streams_for_playability(&mut streams);
@@ -5305,7 +5340,10 @@ mod request_generation_tests {
 
 #[cfg(test)]
 mod stream_ranking_tests {
-    use super::{rank_streams_for_playability, stream_quality_tier, top_stream_is_playable};
+    use super::{
+        rank_streams_for_playability, should_use_title_level_streams, stream_quality_tier,
+        top_stream_is_playable,
+    };
     use ankai_core::stremio::Stream;
 
     fn direct(name: &str) -> Stream {
@@ -5374,5 +5412,44 @@ mod stream_ranking_tests {
         assert!(!top_stream_is_playable(&unplayable));
 
         assert!(!top_stream_is_playable(&[]));
+    }
+
+    /// `open_meta_by_id`'s title-level fetch/rank/autoplay path (real logic
+    /// lives in `main.rs`, gated on `should_use_title_level_streams`) must
+    /// only fire when the opened meta has no real episode list — otherwise
+    /// it's a protocol-incorrect fetch against the bare series id that can
+    /// autoplay the wrong stream before the user has even picked an
+    /// episode. `on_open_stremio_episode` is the correct per-episode path
+    /// once an episode is chosen and is unaffected either way.
+    #[test]
+    fn series_with_episodes_does_not_use_title_level_streams() {
+        // A series-typed meta with a non-empty episode list: title-level
+        // streams must not be fetched/ranked/autoplayed, regardless of what
+        // (if anything) the addon would have returned for the bare id.
+        assert!(!should_use_title_level_streams(12));
+        assert!(!should_use_title_level_streams(1));
+    }
+
+    #[test]
+    fn movie_or_episode_less_series_uses_title_level_streams() {
+        // A movie (or a series addon that genuinely exposes zero episode
+        // videos) has no per-episode id to fall back to, so the bare-id
+        // fetch is the only thing to try, and a Direct top pick should
+        // still drive autoplay exactly as before.
+        assert!(should_use_title_level_streams(0));
+
+        let mut streams = vec![direct("Provider\n1080p")];
+        rank_streams_for_playability(&mut streams);
+        let autoplay = should_use_title_level_streams(0) && top_stream_is_playable(&streams);
+        assert!(autoplay, "movie with a Direct stream should autoplay");
+
+        let mut series_streams = vec![direct("Provider\n1080p")];
+        rank_streams_for_playability(&mut series_streams);
+        let series_autoplay =
+            should_use_title_level_streams(6) && top_stream_is_playable(&series_streams);
+        assert!(
+            !series_autoplay,
+            "series with episodes must not autoplay from the title-level fetch"
+        );
     }
 }

@@ -2707,16 +2707,25 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
 
-                    HorizontalLayout {
+                    // Search itself lives only in the always-visible TopCommandBar
+                    // (see `global-search`/`global-search-query` on `root`, wired to
+                    // `on_global_search` in main.rs, which sets `stremio-search-query`
+                    // and invokes `search-stremio` for us) — this page used to have
+                    // its own separate LineEdit here, which meant two different boxes
+                    // both claimed to be "the" search. The only capability that box
+                    // had which the top bar doesn't is a way to leave an active search
+                    // and go back to browsing catalogs, so that's all that remains
+                    // here, shown only while a search is actually active.
+                    if root.board-search-active: HorizontalLayout {
                         spacing: 8px;
                         alignment: start;
-                        LineEdit {
-                            horizontal-stretch: 1;
-                            text <=> root.stremio-search-query;
-                            placeholder-text: "Search movies, series, anime…";
-                            accepted => { root.search-stremio(root.stremio-search-query); }
+                        Button {
+                            text: "Clear search";
+                            clicked => {
+                                root.search-stremio("");
+                                root.global-search-query = "";
+                            }
                         }
-                        Button { text: "Search"; clicked => { root.search-stremio(root.stremio-search-query); } }
                     }
 
                     if root.installed-addons.length == 0: Text {
