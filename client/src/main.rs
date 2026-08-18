@@ -4683,6 +4683,18 @@ fn main() -> Result<(), slint::PlatformError> {
                     .unwrap_or_else(|| "Continue watching".into())
                     .into(),
             );
+            // Unlike every other real playback trigger (activate-stremio-
+            // stream's play-stream, deep-linked video opens), Home's
+            // Continue Watching card starts playback while selected-index
+            // is still home-index — this call site was the one place that
+            // never switched to the Watch page. HomeDashboard's own render
+            // condition previously didn't account for that either, so Home's
+            // opaque cards kept rendering underneath the player overlay for
+            // this flow specifically, reading as a broken translucent
+            // overlay. Switch pages here too (matching the resume-needs-
+            // resolving fallback branch above) as defense in depth alongside
+            // the render-condition fix in app.slint.
+            app.set_selected_index(app.get_watch_index());
             app.set_player_active(true);
             app.set_player_has_media(true);
             app.set_player_video_ready(false);
