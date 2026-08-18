@@ -1,6 +1,6 @@
 # 9. Account system
 
-Status: Proposed
+Status: Accepted (2026-08-18, session 24)
 
 Date: 2026-08-18
 
