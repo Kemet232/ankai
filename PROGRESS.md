@@ -874,6 +874,36 @@ the numbered list below as current.
    first), frame-level E2E encryption through an SFU — all still
    unstarted, same as before.
 
+**New candidates from the human, explicitly flagged "for next time" (not done
+this session — deferred, not forgotten):**
+
+8. **Merge the duplicate Nyaa search box.** `NyaaReleases` (the "Upload
+   comments for `<title>`" panel under a title's stream row) already gets its
+   query auto-populated from the open title (`nyaa-query` is set from
+   `meta.name` when a title opens — see the title-open flow in
+   `client/src/main.rs`), but it also exposes its own independently editable
+   `LineEdit` + Search/Refresh button (`client/ui/nyaa-releases.slint`,
+   `query <=> root.query`) that lets it drift from what's actually open —
+   "there's 2 [searches] for some reason." The human wants one: whatever
+   title is already selected/opened should be the only source of truth, no
+   second manually-editable search field.
+9. **Real comment section: per-title/release, visible to everyone, with
+   upvote/downvote and per-comment user attribution.** This is *not* scoped
+   yet and is a genuinely architecture-level decision, not a quick UI
+   fix — same bar as ADR-0008/0009. "Visible by every[one]" means this can't
+   be device-local state like Communities' forum posts; it needs real shared
+   storage (a server, matching the `server/directory`/`server/accounts`
+   pattern) and a moderation story (spam/abuse, rate limits, deletion/report
+   path — this project's standing trust-and-safety gaps list, item 9 in the
+   critical-audit section above, already flags exactly this class of feature
+   as needing attribution/abuse-policy work before shipping). It also likely
+   wants stable per-user identity to attribute votes/comments to, which
+   points at ADR-0009 (still Proposed, not Accepted) rather than the current
+   device-scoped-only identity model. Scope this properly (which surface —
+   per-Nyaa-release? per-title generally? — storage/hosting, auth, abuse
+   controls) before building, the same way ADR-0008/0009 were designed before
+   their reference implementations were written.
+
 Not a locked decision — say which direction (or several, in parallel again
 if that's still the preferred mode), or propose something else.
 
