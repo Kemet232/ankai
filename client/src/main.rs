@@ -38,8 +38,16 @@ use std::rc::Rc;
 
 use slint::Model;
 
-const CINEMETA_MANIFEST_URL: &str = "https://v3-cinemeta.strem.io/manifest.json";
 const ANIME_KITSU_MANIFEST_URL: &str = "https://anime-kitsu.strem.fun/manifest.json";
+
+/// Cinemeta's real-world responses (e.g. a `null` catalog body instead of an
+/// empty array) repeatedly broke search for ANKAI's anime/gaming focus, and
+/// the human decided to drop it entirely rather than keep patching around
+/// it — see the removal commit for the failing error text. This URL is kept
+/// only so a leftover install from an older session (back when Cinemeta was
+/// bundled) gets actively cleaned up on startup; it is not a built-in
+/// addon anymore and nothing here re-adds or protects it.
+const LEGACY_CINEMETA_MANIFEST_URL: &str = "https://v3-cinemeta.strem.io/manifest.json";
 
 /// This device's `Db`/`AnkaiMlsProvider` handles, looked up by the P2P
 /// receive loop's UI-thread callback (see [`MESSAGING_HANDLES`]) rather
@@ -559,10 +567,7 @@ fn refresh_addon_manager(
                             ("unknown", "Not checked in this session".to_owned())
                         }
                     };
-                    let is_builtin = matches!(
-                        addon.manifest_url.as_str(),
-                        CINEMETA_MANIFEST_URL | ANIME_KITSU_MANIFEST_URL
-                    );
+                    let is_builtin = addon.manifest_url.as_str() == ANIME_KITSU_MANIFEST_URL;
                     AddonCard {
                         id: addon.manifest_url.clone().into(),
                         name: if is_builtin {
@@ -4876,10 +4881,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
-            if matches!(
-                manifest_url.as_str(),
-                CINEMETA_MANIFEST_URL | ANIME_KITSU_MANIFEST_URL
-            ) {
+            if manifest_url.as_str() == ANIME_KITSU_MANIFEST_URL {
                 app.set_shell_notice("Bundled providers can be disabled, but not removed.".into());
                 return;
             }
@@ -4902,15 +4904,39 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Restore every enabled installed addon. Cinemeta and Anime Kitsu are
-    // bundled zero-configuration catalog/metadata providers; custom addons
-    // remain ordered alongside them and configured URL paths are preserved.
+    // One-time cleanup: earlier sessions bundled Cinemeta by default, so a
+    // registry from before this change may still have it installed. It is
+    // no longer a bundled/protected built-in, so drop any leftover install
+    // (and its cached catalog pages) before restoring addons below — a
+    // stale enabled row would otherwise still get auto-loaded and hit the
+    // same Cinemeta parse failures this removal exists to stop. A user can
+    // still add Cinemeta back manually like any other custom addon.
+    match ankai_core::addons::remove(&db, LEGACY_CINEMETA_MANIFEST_URL) {
+        Ok(true) => {
+            BOARD_MEMORY_CACHE.with(|cache| cache.clear_for_addon(LEGACY_CINEMETA_MANIFEST_URL));
+            if let Err(error) =
+                ankai_core::catalog_cache::clear_for_addon(&db, LEGACY_CINEMETA_MANIFEST_URL)
+            {
+                eprintln!(
+                    "ankai-client: failed to clear catalog cache for retired Cinemeta addon: {error}"
+                );
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("ankai-client: failed to clean up retired Cinemeta addon: {error}");
+        }
+    }
+
+    // Restore every enabled installed addon. Anime Kitsu is the bundled
+    // zero-configuration catalog/metadata provider; custom addons remain
+    // ordered alongside it and configured URL paths are preserved.
     let installed_addons = ankai_core::addons::list(&db).unwrap_or_else(|error| {
         app.set_stremio_status(format!("Couldn't read installed addons: {error}").into());
         Vec::new()
     });
     refresh_addon_manager(&app, &db, p2p_runtime.handle());
-    let missing_builtins = [CINEMETA_MANIFEST_URL, ANIME_KITSU_MANIFEST_URL]
+    let missing_builtins = [ANIME_KITSU_MANIFEST_URL]
         .into_iter()
         .filter(|manifest_url| {
             !installed_addons
@@ -4926,7 +4952,7 @@ fn main() -> Result<(), slint::PlatformError> {
         app.invoke_load_stremio_addon(addon.manifest_url.into());
     }
     if !missing_builtins.is_empty() {
-        app.set_stremio_status("Starting bundled Cinemeta and Anime Kitsu…".into());
+        app.set_stremio_status("Starting bundled Anime Kitsu…".into());
     } else if !has_enabled_addon {
         // The registry may contain only disabled providers. Discover remains
         // honest and empty until the user enables one in the manager.
