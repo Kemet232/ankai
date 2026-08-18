@@ -130,7 +130,6 @@ thread_local! {
     static ADDON_MANAGER_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static HOME_ANIME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static WATCHLIST_GENERATION: RequestGeneration = const { RequestGeneration::new() };
-    static NYAA_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static LETTERBOXD_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static RESUME_GENERATION: RequestGeneration = const { RequestGeneration::new() };
     static STREMIO_ADDON_LOAD_SEQUENCE: RequestGeneration = const { RequestGeneration::new() };
@@ -1090,7 +1089,6 @@ fn open_meta_by_id(
     app.set_stremio_selected_cast("".into());
     app.set_stremio_selected_has_poster(false);
     app.set_stremio_episodes(slint::ModelRc::default());
-    app.set_nyaa_query("".into());
     app.set_stremio_status("Loading title…".into());
     app.set_stremio_loading(true);
 
@@ -1133,7 +1131,6 @@ fn open_meta_by_id(
             app.set_stremio_loading(false);
             if let Some(meta) = selected_meta.as_ref() {
                 show_stremio_meta(&app, meta, &image_handle);
-                app.invoke_search_nyaa(meta.name.clone().into());
                 PENDING_PLAYBACK_METADATA.with(|metadata| {
                     let mut metadata = metadata.borrow_mut();
                     metadata.title = Some(meta.name.clone());
@@ -1891,68 +1888,6 @@ fn spawn_anime_refresh(handle: tokio::runtime::Handle, app_weak: slint::Weak<App
                     app.set_popular_anime_status(
                         format!("Couldn't load popular anime: {err}").into(),
                     );
-                }
-            }
-        });
-    });
-}
-
-fn spawn_nyaa_search(
-    handle: tokio::runtime::Handle,
-    app_weak: slint::Weak<AppWindow>,
-    query: String,
-) {
-    let generation = NYAA_GENERATION.with(RequestGeneration::issue);
-    if let Some(app) = app_weak.upgrade() {
-        app.set_nyaa_state("loading".into());
-        app.set_nyaa_status("Searching live anime upload records…".into());
-    }
-    handle.spawn(async move {
-        let result = match ankai_core::nyaa::NyaaClient::new() {
-            Ok(client) => client.search_anime(query.trim()).await,
-            Err(error) => Err(error),
-        };
-        let _ = slint::invoke_from_event_loop(move || {
-            if !NYAA_GENERATION.with(|state| state.is_current(generation)) {
-                return;
-            }
-            let Some(app) = app_weak.upgrade() else {
-                return;
-            };
-            match result {
-                Ok(releases) => {
-                    let rows = releases
-                        .into_iter()
-                        .take(30)
-                        .map(|release| NyaaReleaseRef {
-                            title: release.title.into(),
-                            uploader: "Nyaa RSS".into(),
-                            published: release.published_at.into(),
-                            size: release.size.into(),
-                            seeders: i32::try_from(release.seeders).unwrap_or(i32::MAX),
-                            leechers: i32::try_from(release.leechers).unwrap_or(i32::MAX),
-                            downloads: i32::try_from(release.downloads).unwrap_or(i32::MAX),
-                            comments: i32::try_from(release.comments).unwrap_or(i32::MAX),
-                            trusted: release.trusted,
-                            remake: release.remake,
-                            release_url: release.comments_page_url.into(),
-                        })
-                        .collect::<Vec<_>>();
-                    let count = rows.len();
-                    app.set_nyaa_results(slint::ModelRc::from(Rc::new(slint::VecModel::from(
-                        rows,
-                    ))));
-                    app.set_nyaa_state("ready".into());
-                    app.set_nyaa_status(
-                        format!(
-                            "{count} per-upload results · comment links open the exact release"
-                        )
-                        .into(),
-                    );
-                }
-                Err(error) => {
-                    app.set_nyaa_state("error".into());
-                    app.set_nyaa_status(error.to_string().into());
                 }
             }
         });
@@ -3960,8 +3895,6 @@ fn main() -> Result<(), slint::PlatformError> {
             });
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_selected_title(selected.name.clone().into());
-                app.set_nyaa_query(selected.name.clone().into());
-                app.invoke_search_nyaa(selected.name.clone().into());
                 app.set_stremio_selected_description(
                     selected.description.clone().unwrap_or_default().into(),
                 );
@@ -4576,9 +4509,7 @@ fn main() -> Result<(), slint::PlatformError> {
             }
             app.set_selected_index(app.get_watch_index());
             app.set_stremio_search_query(query.into());
-            app.set_nyaa_query(query.into());
             app.invoke_search_stremio(query.into());
-            app.invoke_search_nyaa(query.into());
         });
     }
     {
@@ -4586,49 +4517,6 @@ fn main() -> Result<(), slint::PlatformError> {
         app.on_open_profile_menu(move || {
             if let Some(app) = app_weak.upgrade() {
                 app.set_selected_index(app.get_profile_index());
-            }
-        });
-    }
-    {
-        let runtime = p2p_runtime.handle().clone();
-        let app_weak = app.as_weak();
-        app.on_search_nyaa(move |query| {
-            let query = query.trim().to_owned();
-            if query.is_empty() {
-                // Clearing the field is itself the latest intent; invalidate
-                // any slower non-empty request already in flight.
-                NYAA_GENERATION.with(RequestGeneration::issue);
-                if let Some(app) = app_weak.upgrade() {
-                    app.set_nyaa_state("idle".into());
-                    app.set_nyaa_status("Enter an anime title to search releases.".into());
-                }
-                return;
-            }
-            spawn_nyaa_search(runtime.clone(), app_weak.clone(), query);
-        });
-    }
-    {
-        let runtime = p2p_runtime.handle().clone();
-        let app_weak = app.as_weak();
-        app.on_retry_nyaa(move || {
-            let Some(app) = app_weak.upgrade() else {
-                return;
-            };
-            let query = app.get_nyaa_query().to_string();
-            if !query.trim().is_empty() {
-                spawn_nyaa_search(runtime.clone(), app.as_weak(), query);
-            }
-        });
-    }
-    {
-        let app_weak = app.as_weak();
-        app.on_open_nyaa_comments(move |url| {
-            if let Err(error) = open_external_url(&url) {
-                if let Some(app) = app_weak.upgrade() {
-                    app.set_shell_notice(
-                        format!("Couldn't open this Nyaa release: {error}").into(),
-                    );
-                }
             }
         });
     }

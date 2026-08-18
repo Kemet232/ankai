@@ -51,9 +51,7 @@ proof below is the remaining manual P1 gate.
   memory only to map a selected rating result back to its title; none of their
   other fields is displayed or persisted.
 - **Truthful placeholders — fixed.** Local-only Hangouts and unavailable chat
-  explicitly say they are local-only (`client/ui/app.slint:2321`), while the
-  Nyaa surface explicitly describes per-upload comment links instead of claiming
-  to fetch comment bodies.
+  explicitly say they are local-only (`client/ui/app.slint:2321`).
 - **Player input semantics — substantially fixed.** The full player supplies
   focusable play/seek/volume/track controls, Enter/Space activation, arrow-key
   seeking/volume, Escape close, labels, slider values, and accessible actions
@@ -106,14 +104,11 @@ proof below is the remaining manual P1 gate.
   shrink inside the 560 px compact-shell case; their secondary controls already
   collapse behind width breakpoints.
 - **Stale async UI results — fixed.** Independently replaceable Stremio search,
-  detail, media art, addon state, Home, watchlist, Jikan, Nyaa, Letterboxd, and
+  detail, media art, addon state, Home, watchlist, Letterboxd, and
   resume surfaces now issue generation tokens and discard completions that no
   longer own the displayed model (`client/src/main.rs:107`, `:132`). Image
   callbacks also verify the generation plus stable item id/URL before updating
   a row. Obsolete network work is not yet aborted; that efficiency item is P2.
-- **Nyaa feed bounds — fixed.** Nyaa has a 15-second timeout, 2 MiB streamed-body
-  ceiling, result/title/query bounds, and exact HTTPS host/path validation
-  (`core/src/nyaa.rs`).
 - **Startup degradation — fixed.** The client has no fatal startup `expect`
   paths. DB/keychain/runtime failures return actionable platform errors, while
   MLS/P2P/invite failures disable only peer controls with an in-app explanation;
@@ -152,7 +147,7 @@ with the release. Failure of that job is a release blocker.
 - Long backend error strings are shown directly. Keep full detail behind a
   disclosure/copy action and show a short, actionable message by default; redact
   configured addon URL path/query secrets.
-- Nyaa and Letterboxd open links through a generic platform helper. Keep their
+- Letterboxd opens links through a generic platform helper. Keep its
   already validated exact URLs, and add defense-in-depth host checks immediately
   before spawning the browser; avoid Windows shell parsing for URLs.
 

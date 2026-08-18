@@ -53,7 +53,6 @@ production_ui=(
     client/ui/home-dashboard.slint
     client/ui/hangout-player-surface.slint
     client/ui/letterboxd-feed.slint
-    client/ui/nyaa-releases.slint
     client/ui/player-overlay.slint
     client/ui/shell-components.slint
     client/ui/title-detail.slint
@@ -262,9 +261,6 @@ check_state_surface "addon manager" client/ui/addon-manager.slint \
 check_state_surface "Letterboxd feed" client/ui/letterboxd-feed.slint \
     'root\.state == "loading"' 'root\.state == "error"' \
     'root\.entries\.length == 0' 'callback retry\(\)'
-check_state_surface "Nyaa releases" client/ui/nyaa-releases.slint \
-    'root\.state == "loading"' 'root\.state == "error"' \
-    'root\.results\.length == 0' 'callback retry\(\)'
 check_state_surface "embedded player" client/ui/player-overlay.slint \
     'root\.is-loading' 'root\.error-message != ""' \
     '!root\.has-media|root\.has-media' 'callback retry-requested\(\)'
@@ -329,9 +325,8 @@ fi
 if rg -q 'compact-shell: root\.width < [0-9]+px' "$app_ui" \
     && rg -q 'compact-layout: root\.width < [0-9]+px' client/ui/home-dashboard.slint \
     && rg -q 'root\.width >= [0-9]+px' client/ui/player-overlay.slint \
-    && rg -q 'root\.width >= [0-9]+px' client/ui/hangout-player-surface.slint \
-    && rg -q 'root\.width < [0-9]+px' client/ui/nyaa-releases.slint; then
-    pass "shell, Home, player, Hangout, and Nyaa declare compact breakpoints"
+    && rg -q 'root\.width >= [0-9]+px' client/ui/hangout-player-surface.slint; then
+    pass "shell, Home, player, and Hangout declare compact breakpoints"
 else
     warn "one or more major surfaces have no explicit compact breakpoint"
 fi

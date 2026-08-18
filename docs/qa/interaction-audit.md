@@ -25,7 +25,7 @@ warnings. Strict mode promotes warnings to failures for release-candidate CI.
 - Visible action/status strings do not advertise known placeholder destinations.
   Disabled local-only Hangout chat is accepted because its state and copy are
   truthful.
-- Anime discovery, addon management, Letterboxd, Nyaa, and the embedded player
+- Anime discovery, addon management, Letterboxd, and the embedded player
   expose loading, error, empty/unavailable, and retry states.
 - The player shortcut contract is Space play/pause, Left/Right seek, Up/Down
   volume, M mute, F fullscreen, and Escape close menu, exit fullscreen, or close

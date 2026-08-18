@@ -39,7 +39,6 @@ import { Board, BoardRowRef, FilterOption, StremioMediaRef } from "board.slint";
 import { LetterboxdEntryRef } from "letterboxd-feed.slint";
 import { LoadingIdol } from "loading-idol.slint";
 import { HangoutPlayerSurface } from "hangout-player-surface.slint";
-import { NyaaReleases, NyaaReleaseRef } from "nyaa-releases.slint";
 
 // A minimal (id, name) pair for a community, used by the Profile pane's
 // Top 8 picker (see ankai_core::top8's module doc comment for scope). Kept
@@ -950,14 +949,6 @@ export component AppWindow inherits Window {
     callback load-more-board-row(string);
     callback retry-board-row(string);
     callback open-deep-link(string);
-
-    in-out property <string> nyaa-query: "";
-    in-out property <[NyaaReleaseRef]> nyaa-results: [];
-    in-out property <string> nyaa-state: "idle";
-    in-out property <string> nyaa-status: "";
-    callback search-nyaa(string);
-    callback retry-nyaa();
-    callback open-nyaa-comments(string);
 
     // Backed by core::db's settings table (see PROGRESS.md's Phase 1 "settings
     // screen/persistence" step) — main.rs loads the saved value into this
@@ -2633,19 +2624,6 @@ export component AppWindow inherits Window {
                         }
                         choose-episode(index) => { root.open-stremio-episode(index); }
                         play-stream(index) => { root.activate-stremio-stream(index); }
-                    }
-
-                    if root.stremio-selected-title != "": NyaaReleases {
-                        width: parent.width;
-                        height: 560px;
-                        query <=> root.nyaa-query;
-                        title: "Upload comments for " + root.stremio-selected-title;
-                        results: root.nyaa-results;
-                        state: root.nyaa-state;
-                        status: root.nyaa-status;
-                        search(query) => { root.search-nyaa(query); }
-                        retry => { root.retry-nyaa(); }
-                        open-comments(url) => { root.open-nyaa-comments(url); }
                     }
 
                 }
