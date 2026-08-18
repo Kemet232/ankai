@@ -1374,8 +1374,19 @@ export component AppWindow inherits Window {
             // last session and the human has since dropped the idea
             // entirely — see PROGRESS.md). Letterboxd uses only one member's
             // public RSS diary and never claims to be a global review feed.
+            //
+            // Gated on `!root.player-active` (matching the Discover/Board
+            // page's own gate a little further below) so playback launched
+            // directly from a Home card — e.g. Continue Watching's
+            // resume-playback, which does not switch `selected-index` away
+            // from Home — can never leave this dashboard's opaque thumbnail
+            // rows and cards co-rendered underneath the (partly transparent,
+            // once video is ready) PlayerOverlay. That double-render was the
+            // real cause of the "translucent minimized" bug report: Home's
+            // content was never hidden, not that the overlay was drawn
+            // wrong.
             // -----------------------------------------------------------
-            if root.selected-index == root.home-index: HomeDashboard {
+            if root.selected-index == root.home-index && !root.player-active: HomeDashboard {
                 width: parent.width;
                 y: 72px;
                 height: parent.height - 72px;

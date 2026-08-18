@@ -248,18 +248,68 @@ fn stremio_stream_kind(stream: &ankai_core::stremio::Stream) -> &'static str {
     }
 }
 
+/// Coarse resolution tier parsed from a stream's advertised `name`/`title`,
+/// best (0) to worst/unknown (5). Real Stremio-ecosystem addons (Torrentio
+/// and friends) pack this into free-text release-name-style labels — e.g.
+/// "Torrentio\n1080p HEVC" or "[YTS] Show.S01E02.2160p.WEB-DL" — so this is
+/// deliberately a plain substring scan for the handful of tokens that
+/// actually show up in practice, not a general release-name parser. Same
+/// "simple and predictable over clever-but-opaque" precedent as
+/// `rank_search_results_by_relevance` below.
+fn stream_quality_tier(stream: &ankai_core::stremio::Stream) -> u8 {
+    let text = format!(
+        "{} {}",
+        stream.name.as_deref().unwrap_or(""),
+        stream.title.as_deref().unwrap_or("")
+    )
+    .to_lowercase();
+    if text.contains("2160p") || text.contains("4k") || text.contains("uhd") {
+        0
+    } else if text.contains("1080p") {
+        1
+    } else if text.contains("720p") {
+        2
+    } else if text.contains("480p") {
+        3
+    } else if text.contains("360p") {
+        4
+    } else {
+        5
+    }
+}
+
 /// Stable-sorts so a stream this build can actually start playing on click
 /// (`StreamSource::Direct` — see `Stream::source`'s doc comment) always comes
 /// before torrent/YouTube/NZB/archive/external streams, which are honestly
-/// labelled but not resolvable yet. The first/primary "PLAY FROM" button
-/// should be something that works, not just whichever addon answered first.
+/// labelled but not resolvable yet, and — among Direct streams — ranks
+/// higher resolutions first via `stream_quality_tier` above. The first/
+/// primary "PLAY FROM" button (and the automatic best-stream playback this
+/// ranking now also drives — see the `invoke_activate_stremio_stream(0)`
+/// call sites) should be something that both works and is the best quality
+/// on offer, not just whichever addon answered first.
 fn rank_streams_for_playability(streams: &mut [ankai_core::stremio::Stream]) {
     streams.sort_by_key(|stream| {
-        !matches!(
+        let not_direct = !matches!(
+            stream.source(),
+            Ok(ankai_core::stremio::StreamSource::Direct(_))
+        );
+        (not_direct, stream_quality_tier(stream))
+    });
+}
+
+/// True when the highest-ranked stream (index 0 after `rank_streams_for_
+/// playability`) is one this build can actually start playing immediately.
+/// Drives the auto-play call sites: if the top pick isn't `Direct` (only
+/// torrent/YouTube/NZB/etc. came back), autoplay is skipped and the
+/// existing honest "no playable stream"/"a torrent resolver is required"
+/// messaging is left to do its job instead of silently no-oping.
+fn top_stream_is_playable(streams: &[ankai_core::stremio::Stream]) -> bool {
+    streams.first().is_some_and(|stream| {
+        matches!(
             stream.source(),
             Ok(ankai_core::stremio::StreamSource::Direct(_))
         )
-    });
+    })
 }
 
 /// Ranks merged search results by textual closeness to the query so the
@@ -1154,6 +1204,7 @@ fn open_meta_by_id(
                 app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
             } else {
                 rank_streams_for_playability(&mut streams);
+                let autoplay = top_stream_is_playable(&streams);
                 let labels = streams
                     .iter()
                     .map(|stream| {
@@ -1175,6 +1226,16 @@ fn open_meta_by_id(
                     labels,
                 ))));
                 app.set_stremio_status(format!("Found {count} streams.").into());
+                // Play the best-ranked stream automatically — the user
+                // shouldn't have to pick from "PLAY FROM" for the common
+                // case; that row stays populated below as a manual fallback
+                // (e.g. after closing the player) if this pick is wrong.
+                // Skipped when a `video` deep link is about to replace this
+                // meta-level stream list with the actual episode's streams
+                // just below, so this doesn't race/misplay the wrong item.
+                if autoplay && !PENDING_DEEP_LINK_VIDEO.with(|slot| slot.borrow().is_some()) {
+                    app.invoke_activate_stremio_stream(0);
+                }
             }
             // A `video` deep link names a specific episode; auto-select it
             // now that STREMIO_EPISODES is populated, same as clicking it.
@@ -4085,6 +4146,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
                         rank_streams_for_playability(&mut streams);
+                        let autoplay = top_stream_is_playable(&streams);
                         let labels = streams
                             .iter()
                             .map(|stream| {
@@ -4106,6 +4168,15 @@ fn main() -> Result<(), slint::PlatformError> {
                             slint::VecModel::from(labels),
                         )));
                         app.set_stremio_status(format!("Found {count} streams.").into());
+                        // Play the best-ranked stream automatically — see
+                        // the matching comment in `open_meta_by_id` above.
+                        // Series usually have no root-level playable
+                        // streams (real episode streams come from clicking
+                        // an episode below, handled separately), so this
+                        // mainly fires for movies.
+                        if autoplay {
+                            app.invoke_activate_stremio_stream(0);
+                        }
                     }
                 });
             });
@@ -4202,6 +4273,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
                     app.set_stremio_loading(false);
                     rank_streams_for_playability(&mut streams);
+                    let autoplay = top_stream_is_playable(&streams);
                     let labels = streams
                         .iter()
                         .map(|stream| {
@@ -4227,6 +4299,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     } else {
                         format!("Found {count} episode streams.").into()
                     });
+                    // Play the best-ranked stream automatically — see the
+                    // matching comment in `open_meta_by_id` above. This is
+                    // the most common real trigger (clicking an episode).
+                    if autoplay {
+                        app.invoke_activate_stremio_stream(0);
+                    }
                 });
             });
         });
@@ -4678,6 +4756,18 @@ fn main() -> Result<(), slint::PlatformError> {
                     .unwrap_or_else(|| "Continue watching".into())
                     .into(),
             );
+            // Unlike every other real playback trigger (activate-stremio-
+            // stream's play-stream, deep-linked video opens), Home's
+            // Continue Watching card starts playback while selected-index
+            // is still home-index — this call site was the one place that
+            // never switched to the Watch page. HomeDashboard's own render
+            // condition previously didn't account for that either, so Home's
+            // opaque cards kept rendering underneath the player overlay for
+            // this flow specifically, reading as a broken translucent
+            // overlay. Switch pages here too (matching the resume-needs-
+            // resolving fallback branch above) as defense in depth alongside
+            // the render-condition fix in app.slint.
+            app.set_selected_index(app.get_watch_index());
             app.set_player_active(true);
             app.set_player_has_media(true);
             app.set_player_video_ready(false);
@@ -5210,5 +5300,79 @@ mod request_generation_tests {
 
         assert_eq!(generation.issue(), 1);
         assert!(generation.is_current(1));
+    }
+}
+
+#[cfg(test)]
+mod stream_ranking_tests {
+    use super::{rank_streams_for_playability, stream_quality_tier, top_stream_is_playable};
+    use ankai_core::stremio::Stream;
+
+    fn direct(name: &str) -> Stream {
+        Stream {
+            url: Some("https://cdn.example.com/stream.mp4".into()),
+            name: Some(name.into()),
+            ..Stream::default()
+        }
+    }
+
+    fn torrent(name: &str) -> Stream {
+        Stream {
+            info_hash: Some("a".repeat(40)),
+            name: Some(name.into()),
+            ..Stream::default()
+        }
+    }
+
+    #[test]
+    fn quality_tier_recognizes_common_resolution_tokens() {
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n2160p HEVC")), 0);
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n4K WEB-DL")), 0);
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n1080p")), 1);
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n720p")), 2);
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n480p")), 3);
+        assert_eq!(stream_quality_tier(&direct("Torrentio\n360p")), 4);
+        assert_eq!(stream_quality_tier(&direct("Unlabeled source")), 5);
+    }
+
+    #[test]
+    fn direct_streams_always_rank_before_unplayable_ones_regardless_of_quality() {
+        let mut streams = vec![torrent("Torrentio\n2160p HEVC"), direct("Provider\n480p")];
+        rank_streams_for_playability(&mut streams);
+        assert_eq!(streams[0].name.as_deref(), Some("Provider\n480p"));
+    }
+
+    #[test]
+    fn among_direct_streams_highest_resolution_is_ranked_first() {
+        let mut streams = vec![
+            direct("Provider\n480p"),
+            direct("Provider\n1080p"),
+            direct("Provider\n720p"),
+            direct("Provider\n2160p"),
+        ];
+        rank_streams_for_playability(&mut streams);
+        let order: Vec<_> = streams.iter().map(|s| s.name.clone().unwrap()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "Provider\n2160p",
+                "Provider\n1080p",
+                "Provider\n720p",
+                "Provider\n480p",
+            ]
+        );
+    }
+
+    #[test]
+    fn top_stream_is_playable_true_only_when_best_ranked_pick_is_direct() {
+        let mut playable = vec![direct("Provider\n1080p")];
+        rank_streams_for_playability(&mut playable);
+        assert!(top_stream_is_playable(&playable));
+
+        let mut unplayable = vec![torrent("Torrentio\n2160p")];
+        rank_streams_for_playability(&mut unplayable);
+        assert!(!top_stream_is_playable(&unplayable));
+
+        assert!(!top_stream_is_playable(&[]));
     }
 }
