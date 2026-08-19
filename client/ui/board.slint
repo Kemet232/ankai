@@ -323,6 +323,14 @@ export component Board inherits Rectangle {
 
     in-out property <string> deep-link-input: "";
 
+    // TYPE/ADDON/CATALOG/GENRE pills read as clutter above every single
+    // browse row once more than one addon/catalog is installed — collapsed
+    // behind this toggle by default instead of always-visible, matching
+    // TitleDetail's own manual-stream-picker fallback pattern (hide the
+    // rarely-needed control, keep it one click away). Local to this
+    // component: nothing else needs to know whether the filters are open.
+    property <bool> filters-expanded: false;
+
     callback select-type(string);
     callback select-addon(string);
     callback select-catalog(string);
@@ -362,10 +370,34 @@ export component Board inherits Rectangle {
             }
         }
 
-        FilterPillRow { section-label: "TYPE"; options: root.types; selected: root.selected-type; chosen(v) => { root.select-type(v); } }
-        FilterPillRow { section-label: "ADDON"; options: root.addons; selected: root.selected-addon; chosen(v) => { root.select-addon(v); } }
-        FilterPillRow { section-label: "CATALOG"; options: root.catalogs; selected: root.selected-catalog; chosen(v) => { root.select-catalog(v); } }
-        FilterPillRow { section-label: "GENRE"; options: root.genres; selected: root.selected-genre; chosen(v) => { root.select-genre(v); } }
+        if root.types.length > 1 || root.addons.length > 1 || root.catalogs.length > 1 || root.genres.length > 1: HorizontalLayout {
+            alignment: start;
+            filters-toggle := TouchArea {
+                width: filters-toggle-label.preferred-width + 4px;
+                height: 22px;
+                mouse-cursor: pointer;
+                clicked => { root.filters-expanded = !root.filters-expanded; }
+                filters-toggle-label := Text {
+                    text: (root.filters-expanded ? "▾ " : "▸ ") + "Filters"
+                        + (root.selected-type != "" || root.selected-addon != "" || root.selected-catalog != "" || root.selected-genre != "" ? " (active)" : "");
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                accessible-role: button;
+                accessible-label: root.filters-expanded ? "Hide filters" : "Show filters";
+                accessible-action-default => { root.filters-expanded = !root.filters-expanded; }
+            }
+        }
+
+        if root.filters-expanded: VerticalLayout {
+            spacing: 4px;
+            FilterPillRow { section-label: "TYPE"; options: root.types; selected: root.selected-type; chosen(v) => { root.select-type(v); } }
+            FilterPillRow { section-label: "ADDON"; options: root.addons; selected: root.selected-addon; chosen(v) => { root.select-addon(v); } }
+            FilterPillRow { section-label: "CATALOG"; options: root.catalogs; selected: root.selected-catalog; chosen(v) => { root.select-catalog(v); } }
+            FilterPillRow { section-label: "GENRE"; options: root.genres; selected: root.selected-genre; chosen(v) => { root.select-genre(v); } }
+        }
 
         if root.search-active: Rectangle {
             height: 252px;
