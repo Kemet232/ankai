@@ -110,6 +110,17 @@ thread_local! {
     static RESUME_PROGRESS: RefCell<Vec<ankai_core::playback_progress::PlaybackProgress>> = const { RefCell::new(Vec::new()) };
     static VIDEO_PLAYER: RefCell<Option<playback::Player>> = const { RefCell::new(None) };
     static VIDEO_SURFACE: RefCell<Option<playback::BoundedVideoSurface>> = const { RefCell::new(None) };
+    // Set by a playback trigger (activate-stream, retry, resume) when
+    // `VIDEO_PLAYER` isn't constructed yet. `ensure_video_player` only builds
+    // the real libmpv context (and its ~10 always-alive Lua/codec threads,
+    // the idle-CPU cost documented in PROGRESS.md) lazily, from inside the
+    // rendering notifier where the GL context is guaranteed current — so a
+    // trigger that finds no player yet queues the URL here instead of
+    // loading it directly, and the very next `BeforeRendering` frame (Watch
+    // is the only path that ever sets `player-active`, and that Slint
+    // property drives both the 16ms redraw timer and this queue's drain)
+    // finishes construction and loads it.
+    static PENDING_PLAYER_LOAD: RefCell<Option<String>> = const { RefCell::new(None) };
     static LAST_PLAYBACK_URL: RefCell<Option<String>> = const { RefCell::new(None) };
     static STREMIO_SELECTED_CONTEXT: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
     static PENDING_PLAYBACK_KEY: RefCell<Option<ankai_core::playback_progress::PlaybackKey>> = const { RefCell::new(None) };
@@ -1308,6 +1319,29 @@ fn playback_time_label(seconds: f64) -> String {
     }
 }
 
+/// Build the real libmpv player context on first use, if it doesn't exist
+/// yet. Must only be called from inside the rendering notifier
+/// (`RenderingSetup`/`BeforeRendering`), which is the only place the OpenGL
+/// context Slint gave `VIDEO_SURFACE` is guaranteed current — `Player::new`
+/// itself doesn't touch GL, but `BoundedVideoSurface::setup_player` does
+/// (it creates mpv's render context against the currently bound context).
+fn ensure_video_player() -> playback::PlayerResult<()> {
+    let already_built = VIDEO_PLAYER.with(|slot| slot.borrow().is_some());
+    if already_built {
+        return Ok(());
+    }
+    let mut player = playback::Player::new()?;
+    VIDEO_SURFACE.with(|slot| {
+        let slot = slot.borrow();
+        let surface = slot
+            .as_ref()
+            .ok_or_else(|| playback::PlayerError::OpenGl("video surface is unavailable".into()))?;
+        surface.setup_player(&mut player)
+    })?;
+    VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
+    Ok(())
+}
+
 fn sync_player_state(app: &AppWindow, state: &playback::PlayerState) {
     use playback::{PlaybackPhase, TrackKind};
 
@@ -2489,28 +2523,54 @@ fn main() -> Result<(), slint::PlatformError> {
                         slint::RenderingState::RenderingSetup,
                         slint::GraphicsAPI::NativeOpenGL { .. },
                     ) => {
-                        let result =
-                            playback::BoundedVideoSurface::new(graphics_api).and_then(|surface| {
-                                let mut player = playback::Player::new()?;
-                                surface.setup_player(&mut player)?;
+                        // Only the bounded GL surface is built eagerly here —
+                        // it needs this one-shot `graphics_api` handle, which
+                        // isn't available anywhere else. The real libmpv
+                        // player context (mpv_initialize's Lua/codec thread
+                        // pool — the actual idle-CPU cost) is deliberately
+                        // NOT built here; `ensure_video_player` constructs it
+                        // lazily on first real playback instead, from the
+                        // `BeforeRendering` arm below.
+                        match playback::BoundedVideoSurface::new(graphics_api) {
+                            Ok(surface) => {
+                                VIDEO_SURFACE.with(|slot| *slot.borrow_mut() = Some(surface));
                                 if let Ok(url) = std::env::var("ANKAI_PLAYBACK_TEST_URL") {
-                                    player.load(&url)?;
+                                    PENDING_PLAYER_LOAD.with(|slot| *slot.borrow_mut() = Some(url));
                                     app.set_player_title("Embedded playback test".into());
                                     app.set_player_active(true);
+                                    app.window().request_redraw();
                                 }
-                                VIDEO_PLAYER.with(|slot| *slot.borrow_mut() = Some(player));
-                                VIDEO_SURFACE.with(|slot| *slot.borrow_mut() = Some(surface));
-                                Ok(())
-                            });
-                        if let Err(error) = result {
-                            app.set_player_error(error.to_string().into());
-                            app.set_stremio_status(format!("Player unavailable: {error}").into());
+                            }
+                            Err(error) => {
+                                app.set_player_error(error.to_string().into());
+                                app.set_stremio_status(
+                                    format!("Player unavailable: {error}").into(),
+                                );
+                            }
                         }
                     }
                     (
                         slint::RenderingState::BeforeRendering,
                         slint::GraphicsAPI::NativeOpenGL { .. },
                     ) if app.get_player_active() => {
+                        if let Err(error) = ensure_video_player() {
+                            app.set_player_loading(false);
+                            app.set_player_error(error.to_string().into());
+                            app.set_stremio_status(format!("Player unavailable: {error}").into());
+                        } else if let Some(url) =
+                            PENDING_PLAYER_LOAD.with(|slot| slot.borrow_mut().take())
+                        {
+                            let load_result = VIDEO_PLAYER.with(|slot| {
+                                slot.borrow_mut()
+                                    .as_mut()
+                                    .expect("ensure_video_player populated this")
+                                    .load(&url)
+                            });
+                            if let Err(error) = load_result {
+                                app.set_player_loading(false);
+                                app.set_player_error(error.to_string().into());
+                            }
+                        }
                         let result = VIDEO_PLAYER.with(|player_slot| {
                             VIDEO_SURFACE.with(|surface_slot| {
                                 let mut player_slot = player_slot.borrow_mut();
@@ -4357,24 +4417,38 @@ fn main() -> Result<(), slint::PlatformError> {
                 let streams = streams.borrow();
                 match streams.get(index as usize).map(|stream| stream.source()) {
                     Some(Ok(ankai_core::stremio::StreamSource::Direct(url))) => {
-                        VIDEO_PLAYER.with(|slot| {
-                            let mut slot = slot.borrow_mut();
-                            let Some(player) = slot.as_mut() else {
-                                return (
-                                    "Error: embedded video renderer is unavailable.".into(),
-                                    false,
-                                );
-                            };
-                            LAST_PLAYBACK_URL
-                                .with(|last_url| *last_url.borrow_mut() = Some(url.to_owned()));
-                            PENDING_PLAYBACK_METADATA.with(|metadata| {
-                                metadata.borrow_mut().stream_url = Some(url.to_owned());
-                            });
-                            match player.load(url) {
-                                Ok(()) => ("Playing in ANKAI with libmpv.".into(), true),
-                                Err(err) => (format!("Error: {err}"), false),
-                            }
-                        })
+                        LAST_PLAYBACK_URL
+                            .with(|last_url| *last_url.borrow_mut() = Some(url.to_owned()));
+                        PENDING_PLAYBACK_METADATA.with(|metadata| {
+                            metadata.borrow_mut().stream_url = Some(url.to_owned());
+                        });
+                        // The libmpv context may not exist yet — it's built
+                        // lazily on first real playback (see
+                        // `ensure_video_player`). If it's already up (every
+                        // playback after the first one this session), load
+                        // directly and report the real outcome, same as
+                        // before. Otherwise queue the URL for the rendering
+                        // notifier's `BeforeRendering` arm, which builds the
+                        // player and loads it on the very next frame — safe
+                        // to report optimistically here since `load` itself
+                        // is just an async `loadfile` command even in the
+                        // already-built case; real failures still surface
+                        // through `player-error` either way.
+                        let already_built = VIDEO_PLAYER.with(|slot| slot.borrow().is_some());
+                        if already_built {
+                            VIDEO_PLAYER.with(|slot| {
+                                let mut slot = slot.borrow_mut();
+                                let player = slot.as_mut().expect("checked above");
+                                match player.load(url) {
+                                    Ok(()) => ("Playing in ANKAI with libmpv.".into(), true),
+                                    Err(err) => (format!("Error: {err}"), false),
+                                }
+                            })
+                        } else {
+                            PENDING_PLAYER_LOAD
+                                .with(|slot| *slot.borrow_mut() = Some(url.to_owned()));
+                            ("Playing in ANKAI with libmpv.".into(), true)
+                        }
                     }
                     Some(Ok(ankai_core::stremio::StreamSource::BitTorrent { .. })) => (
                         "Torrent stream selected; a torrent resolver is required before playback."
@@ -4701,21 +4775,37 @@ fn main() -> Result<(), slint::PlatformError> {
         let app_weak = app.as_weak();
         app.on_player_retry(move || {
             let url = LAST_PLAYBACK_URL.with(|last_url| last_url.borrow().clone());
-            let result = VIDEO_PLAYER.with(|slot| {
-                let mut slot = slot.borrow_mut();
-                match (slot.as_mut(), url.as_deref()) {
-                    (Some(player), Some(url)) => {
-                        player.load(url)?;
-                        Ok::<_, playback::PlayerError>(Some(player.state().clone()))
-                    }
-                    _ => Ok(None),
+            let Some(url) = url else {
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_player_error("No previous stream to retry.".into());
                 }
-            });
-            if let Some(app) = app_weak.upgrade() {
-                match result {
-                    Ok(Some(state)) => sync_player_state(&app, &state),
-                    Ok(None) => app.set_player_error("No previous stream to retry.".into()),
-                    Err(error) => app.set_player_error(error.to_string().into()),
+                return;
+            };
+            // Same lazy-player handoff as activate-stremio-stream: if the
+            // player already exists, retry synchronously as before;
+            // otherwise (e.g. the earlier attempt never got past
+            // construction) queue it and let the rendering notifier retry
+            // building the player and loading it on the next frame.
+            let already_built = VIDEO_PLAYER.with(|slot| slot.borrow().is_some());
+            if already_built {
+                let result = VIDEO_PLAYER.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let player = slot.as_mut().expect("checked above");
+                    player.load(&url)?;
+                    Ok::<_, playback::PlayerError>(player.state().clone())
+                });
+                if let Some(app) = app_weak.upgrade() {
+                    match result {
+                        Ok(state) => sync_player_state(&app, &state),
+                        Err(error) => app.set_player_error(error.to_string().into()),
+                    }
+                }
+            } else {
+                PENDING_PLAYER_LOAD.with(|slot| *slot.borrow_mut() = Some(url));
+                if let Some(app) = app_weak.upgrade() {
+                    app.set_player_error("".into());
+                    app.set_player_loading(true);
+                    app.window().request_redraw();
                 }
             }
         });
@@ -4765,19 +4855,30 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 return;
             };
-            let loaded = VIDEO_PLAYER.with(|slot| {
-                slot.borrow_mut()
-                    .as_mut()
-                    .ok_or_else(|| "embedded video renderer is unavailable".to_string())?
-                    .load(&url)
-                    .map_err(|error| error.to_string())
-            });
             let Some(app) = app_weak.upgrade() else {
                 return;
             };
-            if let Err(error) = loaded {
-                app.set_shell_notice(format!("Couldn't resume playback: {error}").into());
-                return;
+            // Same lazy-player handoff as activate-stremio-stream: Home's
+            // Continue Watching card can well be the very first playback
+            // trigger clicked in a session, before the libmpv context has
+            // ever been built. If it already exists, load and report a real
+            // failure synchronously as before; otherwise queue the URL for
+            // the rendering notifier to build the player and load it.
+            let already_built = VIDEO_PLAYER.with(|slot| slot.borrow().is_some());
+            if already_built {
+                let loaded = VIDEO_PLAYER.with(|slot| {
+                    slot.borrow_mut()
+                        .as_mut()
+                        .expect("checked above")
+                        .load(&url)
+                        .map_err(|error| error.to_string())
+                });
+                if let Err(error) = loaded {
+                    app.set_shell_notice(format!("Couldn't resume playback: {error}").into());
+                    return;
+                }
+            } else {
+                PENDING_PLAYER_LOAD.with(|slot| *slot.borrow_mut() = Some(url.clone()));
             }
             let metadata = ankai_core::playback_progress::PlaybackMetadata {
                 title: entry.title.clone(),
