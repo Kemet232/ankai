@@ -799,7 +799,12 @@ export component AppWindow inherits Window {
     min-height: 360px;
     preferred-width: 960px;
     preferred-height: 640px;
-    background: root.player-active && !root.player-bounded-mode ? transparent : Theme.bg-void;
+    // No longer needs to turn transparent during playback: that was only
+    // required so a raw full-window libmpv paint (behind Slint's own
+    // rendering) could show through. Video is now always delivered as a
+    // real, opaque, in-tree `Image` (see `player-bounded-mode` below), so
+    // the window background can stay solid unconditionally.
+    background: Theme.bg-void;
     in-out property <bool> player-active: false;
     in-out property <string> player-title: "";
     in-out property <bool> player-has-media: false;
@@ -823,12 +828,24 @@ export component AppWindow inherits Window {
     in-out property <string> player-error: "";
     in-out property <[PlayerTrackRef]> player-audio-tracks: [];
     in-out property <[PlayerTrackRef]> player-subtitle-tracks: [];
-    // A Hangout normally constrains video to its room surface. Fullscreen
-    // promotes that same player to the window-wide cinema overlay so the
-    // sidebar and room chrome do not remain visible around the picture.
-    out property <bool> player-bounded-mode: root.selected-index == root.hangouts-index
-        && root.selected-hangout-name != ""
-        && !root.player-fullscreen;
+    // Whether libmpv frames are delivered via the bounded FBO/texture path
+    // (an ordinary Slint `Image`, embedded in the real component tree and
+    // composited by Slint's own scene graph) rather than painted directly
+    // onto the window's default framebuffer, bypassing Slint entirely. This
+    // used to be true only for the small windowed Hangout room player,
+    // which meant every other case (Watch, and any Hangout promoted to
+    // fullscreen) fell back to the raw-paint path — the root cause of video
+    // appearing "overlaid" on top of stale Home/sidebar content instead of
+    // genuinely replacing it, since the raw path required a stack of manual
+    // `!player-active`-style exclusions elsewhere to fake the occlusion a
+    // real in-tree element gets for free. Bounded rendering is now used
+    // unconditionally whenever any video is active — Watch, Hangouts,
+    // windowed or fullscreen — so the embedded-`Image` path is the only
+    // path. This property is purely about *how frames are rendered*; it no
+    // longer implies anything about which chrome should be visible — that's
+    // governed directly by `player-fullscreen` / `selected-index` /
+    // `selected-hangout-name` below.
+    out property <bool> player-bounded-mode: root.player-active;
     in-out property <length> player-video-surface-width: 0px;
     in-out property <length> player-video-surface-height: 0px;
     callback toggle-player-pause();
@@ -1250,7 +1267,13 @@ export component AppWindow inherits Window {
         height: parent.height;
         source: @image-url("assets/ankai-night-city.png");
         image-fit: cover;
-        visible: !root.player-active || root.player-bounded-mode;
+        // Always visible now: this sits at the very bottom of the window's
+        // z-order (declared before the sidebar/content-pane HorizontalLayout
+        // below), so whenever a video is active the always-opaque bounded
+        // PlayerOverlay/HangoutPlayerSurface painting on top of it already
+        // fully occludes it — no separate exclusion needed. It used to be
+        // force-hidden during raw full-window playback so it wouldn't paint
+        // over that unbounded frame; that path no longer exists.
     }
 
     Rectangle {
@@ -1342,7 +1365,12 @@ export component AppWindow inherits Window {
         // ---- Content pane: swapped based on selected nav item ----
         Rectangle {
             horizontal-stretch: 1;
-            background: root.player-active && !root.player-bounded-mode ? transparent : Theme.bg-surface.with-alpha(0.72);
+            // Always the normal glass tint now (same as the Hangouts pane
+            // already relied on): the always-opaque bounded PlayerOverlay
+            // paints on top of it and fully covers this pane whenever a
+            // video is active, so there is no longer a need to force this
+            // transparent to avoid tinting a raw full-window video paint.
+            background: Theme.bg-surface.with-alpha(0.72);
 
             if root.selected-index != root.settings-index && root.selected-index != root.profile-index && root.selected-index != root.communities-index && root.selected-index != root.messages-index && root.selected-index != root.hangouts-index && root.selected-index != root.home-index && root.selected-index != root.watch-index: Text {
                 x: 32px;
@@ -1380,11 +1408,15 @@ export component AppWindow inherits Window {
             // directly from a Home card — e.g. Continue Watching's
             // resume-playback, which does not switch `selected-index` away
             // from Home — can never leave this dashboard's opaque thumbnail
-            // rows and cards co-rendered underneath the (partly transparent,
-            // once video is ready) PlayerOverlay. That double-render was the
-            // real cause of the "translucent minimized" bug report: Home's
-            // content was never hidden, not that the overlay was drawn
-            // wrong.
+            // rows and cards instantiated at all underneath the player. That
+            // double-instantiation was the real cause of the original
+            // "translucent minimized" bug report: Home's content was never
+            // hidden, not that the overlay was drawn wrong. Kept even now
+            // that PlayerOverlay is a real always-opaque in-tree element
+            // (which would naturally occlude Home by z-order alone once
+            // both are active) because this is also what stops Home from
+            // being laid out/painted at all while a video plays — a real,
+            // independent perf reason to keep this gate, not just occlusion.
             // -----------------------------------------------------------
             if root.selected-index == root.home-index && !root.player-active: HomeDashboard {
                 width: parent.width;
@@ -2631,7 +2663,14 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.selected-index == root.hangouts-index && root.selected-hangout-name != "": hangout-player := HangoutPlayerSurface {
+            // Fullscreen promotes playback to the window-wide cinema overlay
+            // below (see that `if`'s condition), so the room surface (with
+            // its own embedded, windowed-sized PlayerOverlay) must unmount
+            // while fullscreen — otherwise both would be live and rendering
+            // video at once. Unmounting/remounting is driven by the same
+            // `player-fullscreen` property the cinema overlay's condition
+            // uses, so the two are never simultaneously true.
+            if root.selected-index == root.hangouts-index && root.selected-hangout-name != "" && !root.player-fullscreen: hangout-player := HangoutPlayerSurface {
                 x: 22px;
                 y: 88px;
                 width: parent.width - 44px;
@@ -2788,14 +2827,32 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.player-active && !root.player-bounded-mode: PlayerOverlay {
+            // The window-wide cinema overlay: shown for Watch playback (any
+            // time a video is active outside the Hangouts tab), and for a
+            // Hangout promoted to fullscreen (its room surface unmounts
+            // itself above in that case — see the comment on `hangout-player`
+            // — so this and that are never both live at once). A non-
+            // fullscreen Hangout is rendered by its own embedded overlay in
+            // `hangout-player` above instead, so this stays unmounted then.
+            if root.player-active && (root.selected-index != root.hangouts-index || root.player-fullscreen): watch-player := PlayerOverlay {
                 x: 0px;
-                y: 0px;
+                // Full-bleed only in fullscreen. Windowed playback now keeps
+                // TopCommandBar visible above it (see that `if`'s condition),
+                // so it must sit below the bar instead of underneath it —
+                // same 72px offset every other pane already uses — or its
+                // own top-chrome title bar would visually collide with the
+                // command bar's. Mirrors how the windowed Hangout room
+                // surface already insets itself the same way.
+                y: root.player-fullscreen ? 0px : 72px;
                 width: parent.width;
-                height: parent.height;
+                height: root.player-fullscreen ? parent.height : parent.height - 72px;
                 media-title: root.player-title;
                 has-media: root.player-has-media;
                 video-ready: root.player-video-ready;
+                video-frame: root.player-video-frame;
+                video-frame-ready: root.player-video-frame-ready;
+                changed video-surface-width => { root.player-video-surface-width = self.video-surface-width; }
+                changed video-surface-height => { root.player-video-surface-height = self.video-surface-height; }
                 fallback-art: root.stremio-selected-poster;
                 has-fallback-art: root.stremio-selected-has-poster;
                 is-playing: root.player-playing;
@@ -3028,7 +3085,15 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if !root.player-active || root.player-bounded-mode: TopCommandBar {
+            // Hidden only during actual fullscreen cinema playback, matching
+            // the sidebar's own `player-fullscreen`-keyed condition above —
+            // previously this was keyed off `player-bounded-mode`, which
+            // (before that property meant "any video, rendered via the
+            // bounded path") happened to also hide this bar for *any* Watch
+            // playback, windowed or not, since Watch never used to set
+            // bounded mode. Windowed video should keep the surrounding
+            // chrome, same as windowed Hangouts already did.
+            if !(root.player-active && root.player-fullscreen): TopCommandBar {
                 x: 18px;
                 y: 12px;
                 width: parent.width - 36px;

@@ -558,11 +558,16 @@ export component PlayerOverlay inherits Rectangle {
     preferred-height: 540px;
     clip: true;
     border-radius: 20px;
-    // The current host renders libmpv into Slint's default framebuffer before
-    // drawing this chrome. Once video is ready, keep the root transparent so
-    // that frame remains visible through the clipped well. `render_to_fbo`
-    // remains available for a future texture-backed child surface.
-    background: root.video-ready ? transparent : Theme.bg-void;
+    // The host always renders libmpv into a texture-backed, app-owned FBO
+    // (via `render_to_fbo`) and hands it to `video-well`'s child `Image`
+    // below as `video-frame` — a real, opaque, self-contained element in
+    // Slint's own scene graph, not a raw paint the window needs to show
+    // through. There is no longer any reason for this root background to go
+    // transparent: `video-well` (below) always fully covers this rectangle
+    // regardless of state, so this background is only ever visible at the
+    // rounded corners `clip` cuts away from `video-well`. Kept as a solid
+    // backdrop color in every state instead of conditionally transparent.
+    background: Theme.bg-void;
     border-width: 1px;
     border-color: Theme.silver.with-alpha(0.22);
     drop-shadow-color: Theme.bg-void.with-alpha(0.76);
@@ -657,7 +662,18 @@ export component PlayerOverlay inherits Rectangle {
         height: parent.height;
         clip: true;
         border-radius: root.border-radius;
-        background: root.video-ready ? transparent : #02030A;
+        // Always a solid backdrop, not conditional on `video-ready`. This
+        // shows through as letterbox bars whenever `image-fit: contain`
+        // below doesn't fill the well on one axis, and as the loading/
+        // fallback-art backdrop before the first frame arrives — including
+        // the gap where `video-ready` has gone true (the player has media)
+        // but `video-frame-ready` hasn't yet (no texture this frame, e.g.
+        // right at start or across a resize). That gap used to fall through
+        // to transparent so a raw full-window libmpv paint could still show;
+        // now nothing paints behind this well at all, so transparent would
+        // just reveal whatever happens to be behind this component in the
+        // tree instead — a solid backdrop is correct in every state.
+        background: #02030A;
 
         if root.video-frame-ready: Image {
             source: root.video-frame;
