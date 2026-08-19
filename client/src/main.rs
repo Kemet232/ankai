@@ -331,16 +331,17 @@ fn top_stream_is_playable(streams: &[ankai_core::stremio::Stream]) -> bool {
     })
 }
 
-/// Whether `open_meta_by_id` should treat the bare title/series id as a
-/// valid unit to fetch, rank, and (if the top pick is playable) auto-play
-/// streams for. True only when the meta that was just loaded has no real
-/// per-episode video list — a movie, or an addon that genuinely doesn't
-/// expose per-episode videos for this series. Per the Stremio protocol,
-/// episodic content's streams belong under specific episode video ids
-/// (`tt1234:1:2`), not the bare series id — `on_open_stremio_episode`
-/// fetches those correctly once the user picks an episode. Extracted as a
-/// pure function so this branch is unit-testable without a live addon or a
-/// running Slint app.
+/// Whether a title-open handler (`open_meta_by_id`'s deep-link path, or
+/// `on_open_stremio_media`'s normal click-a-catalog-card path) should treat
+/// the bare title/series id as a valid unit to fetch, rank, and (if the top
+/// pick is playable) auto-play streams for. True only when the meta that was
+/// just loaded has no real per-episode video list — a movie, or an addon
+/// that genuinely doesn't expose per-episode videos for this series. Per the
+/// Stremio protocol, episodic content's streams belong under specific
+/// episode video ids (`tt1234:1:2`), not the bare series id —
+/// `on_open_stremio_episode` fetches those correctly once the user picks an
+/// episode. Extracted as a pure function so this branch is unit-testable
+/// without a live addon or a running Slint app.
 fn should_use_title_level_streams(episode_count: usize) -> bool {
     episode_count == 0
 }
@@ -1171,6 +1172,7 @@ fn open_meta_by_id(
     app.set_stremio_episodes(slint::ModelRc::default());
     app.set_stremio_status("Loading title…".into());
     app.set_stremio_loading(true);
+    app.set_stremio_manual_picker_visible(false);
 
     let app_weak = app.as_weak();
     let image_handle = runtime.clone();
@@ -1250,12 +1252,16 @@ fn open_meta_by_id(
                 // per-episode fetch+autoplay.
                 STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
                 app.set_stremio_stream_names(slint::ModelRc::default());
+                app.set_stremio_manual_picker_visible(false);
                 app.set_stremio_status("Select an episode below to see its streams.".into());
             } else if streams.is_empty() && !errors.is_empty() {
+                app.set_stremio_manual_picker_visible(true);
                 app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
             } else {
                 rank_streams_for_playability(&mut streams);
                 let autoplay = top_stream_is_playable(&streams);
+                let redirecting_to_episode =
+                    PENDING_DEEP_LINK_VIDEO.with(|slot| slot.borrow().is_some());
                 let labels = streams
                     .iter()
                     .map(|stream| {
@@ -1278,14 +1284,18 @@ fn open_meta_by_id(
                 ))));
                 app.set_stremio_status(format!("Found {count} streams.").into());
                 // Play the best-ranked stream automatically — the user
-                // shouldn't have to pick from "PLAY FROM" for the common
-                // case; that row stays populated below as a manual fallback
-                // (e.g. after closing the player) if this pick is wrong.
-                // Skipped when a `video` deep link is about to replace this
-                // meta-level stream list with the actual episode's streams
-                // just below, so this doesn't race/misplay the wrong item.
-                if autoplay && !PENDING_DEEP_LINK_VIDEO.with(|slot| slot.borrow().is_some()) {
-                    app.invoke_activate_stremio_stream(0);
+                // shouldn't have to pick from a manual list for the common
+                // case; the fallback picker only becomes visible if autoplay
+                // didn't happen. Skipped when a `video` deep link is about to
+                // replace this meta-level stream list with the actual
+                // episode's streams just below, so this doesn't race/misplay
+                // the wrong item (and the picker stays hidden either way,
+                // since the episode fetch below owns that decision instead).
+                if !redirecting_to_episode {
+                    app.set_stremio_manual_picker_visible(!autoplay);
+                    if autoplay {
+                        app.invoke_activate_stremio_stream(0);
+                    }
                 }
             }
             // A `video` deep link names a specific episode; auto-select it
@@ -4184,13 +4194,13 @@ fn main() -> Result<(), slint::PlatformError> {
                     app.set_stremio_selected_poster(card.poster);
                     app.set_stremio_selected_has_poster(card.has_poster);
                 }
-                app.set_stremio_status("Loading streams…".into());
+                app.set_stremio_status("Loading title…".into());
                 app.set_stremio_loading(true);
+                app.set_stremio_manual_picker_visible(false);
             }
             let app_weak = app_weak.clone();
             let image_handle = runtime.clone();
             runtime.spawn(async move {
-                let mut streams = Vec::new();
                 let mut errors = Vec::new();
                 let mut selected_meta = None;
                 for addon in &addons {
@@ -4206,27 +4216,40 @@ fn main() -> Result<(), slint::PlatformError> {
                             Err(err) => errors.push(format!("{} metadata: {err}", addon.name)),
                         }
                     }
-                    if !addon.manifest.supports_resource(
-                        "stream",
-                        &selected.media_type,
-                        &selected.id,
-                    ) {
-                        continue;
-                    }
-                    match addon
-                        .client
-                        .streams(&selected.media_type, &selected.id)
-                        .await
-                    {
-                        Ok(mut addon_streams) => {
-                            for stream in &mut addon_streams {
-                                if stream.name.is_none() {
-                                    stream.name = Some(addon.name.clone());
-                                }
-                            }
-                            streams.extend(addon_streams);
+                }
+                // Per the Stremio protocol, episodic content's streams live
+                // under specific episode video ids, not the bare
+                // title/series id — mirrors `open_meta_by_id`'s identical
+                // gating (see its comment). Skipping the fetch here for a
+                // series also means this panel doesn't populate a
+                // (contextually wrong) stream list before the user has even
+                // picked an episode.
+                let episode_count = selected_meta.as_ref().map_or(0, |meta| meta.videos.len());
+                let mut streams = Vec::new();
+                if should_use_title_level_streams(episode_count) {
+                    for addon in &addons {
+                        if !addon.manifest.supports_resource(
+                            "stream",
+                            &selected.media_type,
+                            &selected.id,
+                        ) {
+                            continue;
                         }
-                        Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                        match addon
+                            .client
+                            .streams(&selected.media_type, &selected.id)
+                            .await
+                        {
+                            Ok(mut addon_streams) => {
+                                for stream in &mut addon_streams {
+                                    if stream.name.is_none() {
+                                        stream.name = Some(addon.name.clone());
+                                    }
+                                }
+                                streams.extend(addon_streams);
+                            }
+                            Err(err) => errors.push(format!("{}: {err}", addon.name)),
+                        }
                     }
                 }
                 let _ = slint::invoke_from_event_loop(move || {
@@ -4242,7 +4265,18 @@ fn main() -> Result<(), slint::PlatformError> {
                     } else {
                         STREMIO_EPISODES.with(|slot| slot.borrow_mut().clear());
                     }
-                    if streams.is_empty() && !errors.is_empty() {
+                    if !should_use_title_level_streams(episode_count) {
+                        // Real episodes exist — the user picks one next,
+                        // which triggers `on_open_stremio_episode`'s own
+                        // correctly-scoped per-episode fetch+autoplay.
+                        STREMIO_STREAMS.with(|slot| slot.borrow_mut().clear());
+                        app.set_stremio_stream_names(slint::ModelRc::default());
+                        app.set_stremio_manual_picker_visible(false);
+                        app.set_stremio_status(
+                            "Select an episode below to see its streams.".into(),
+                        );
+                    } else if streams.is_empty() && !errors.is_empty() {
+                        app.set_stremio_manual_picker_visible(true);
                         app.set_stremio_status(format!("Error: {}", errors.join(" | ")).into());
                     } else {
                         rank_streams_for_playability(&mut streams);
@@ -4270,10 +4304,9 @@ fn main() -> Result<(), slint::PlatformError> {
                         app.set_stremio_status(format!("Found {count} streams.").into());
                         // Play the best-ranked stream automatically — see
                         // the matching comment in `open_meta_by_id` above.
-                        // Series usually have no root-level playable
-                        // streams (real episode streams come from clicking
-                        // an episode below, handled separately), so this
-                        // mainly fires for movies.
+                        // The manual "PLAYBACK OPTIONS" fallback only
+                        // becomes visible if autoplay didn't happen.
+                        app.set_stremio_manual_picker_visible(!autoplay);
                         if autoplay {
                             app.invoke_activate_stremio_stream(0);
                         }
@@ -4327,6 +4360,7 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_loading(true);
                 app.set_stremio_stream_names(slint::ModelRc::default());
+                app.set_stremio_manual_picker_visible(false);
                 app.set_stremio_status(
                     format!(
                         "Loading streams for {}…",
@@ -4402,6 +4436,9 @@ fn main() -> Result<(), slint::PlatformError> {
                     // Play the best-ranked stream automatically — see the
                     // matching comment in `open_meta_by_id` above. This is
                     // the most common real trigger (clicking an episode).
+                    // The manual "PLAYBACK OPTIONS" fallback only becomes
+                    // visible if autoplay didn't happen.
+                    app.set_stremio_manual_picker_visible(!autoplay);
                     if autoplay {
                         app.invoke_activate_stremio_stream(0);
                     }
@@ -4462,6 +4499,14 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(app) = app_weak.upgrade() {
                 app.set_stremio_status(message.clone().into());
                 if !playing {
+                    // Un-hide the manual fallback picker: this fires both
+                    // for a user's own manual click on a non-playable entry
+                    // and for an autoplay attempt that failed at the actual
+                    // `player.load()` call (e.g. a stream that looked Direct
+                    // but the player itself rejected) — either way, the
+                    // panel stays visible (playback never started) and the
+                    // user needs another option to try.
+                    app.set_stremio_manual_picker_visible(true);
                     // The status line above sits near the top of the detail
                     // panel, well above the "PLAY FROM" row a user just
                     // clicked in — easy to scroll past and never see. Mirror

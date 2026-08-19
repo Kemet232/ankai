@@ -919,6 +919,14 @@ export component AppWindow inherits Window {
     in-out property <bool> stremio-loading: false;
     in-out property <[StremioMediaRef]> stremio-media: [];
     in-out property <[string]> stremio-stream-names: [];
+    // Autoplay (see client/src/main.rs's rank_streams_for_playability /
+    // top_stream_is_playable) now handles the common case, so the manual
+    // "PLAY FROM" stream-picker row on TitleDetail is hidden by default and
+    // only shown as a fallback when autoplay didn't happen — no Direct
+    // stream came back, or the one autoplay tried to activate failed (e.g.
+    // a torrent-only stream with no resolver yet). Reset to false whenever
+    // a fresh title/episode fetch starts.
+    in-out property <bool> stremio-manual-picker-visible: false;
     in-out property <string> stremio-selected-title: "";
     in-out property <string> stremio-selected-meta-line: "";
     in-out property <string> stremio-selected-description: "";
@@ -2774,12 +2782,14 @@ export component AppWindow inherits Window {
                         has-poster: root.stremio-selected-has-poster;
                         episodes: root.stremio-episodes;
                         streams: root.stremio-stream-names;
+                        show-stream-picker: root.stremio-manual-picker-visible;
                         loading: root.stremio-loading;
                         status: root.stremio-status;
                         close => {
                             root.stremio-selected-title = "";
                             root.stremio-stream-names = [];
                             root.stremio-episodes = [];
+                            root.stremio-manual-picker-visible = false;
                         }
                         choose-episode(index) => { root.open-stremio-episode(index); }
                         play-stream(index) => { root.activate-stremio-stream(index); }
