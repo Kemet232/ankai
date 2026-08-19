@@ -2588,32 +2588,37 @@ fn main() -> Result<(), slint::PlatformError> {
                                 let Some(player) = player_slot.as_mut() else {
                                     return Ok::<_, playback::PlayerError>(false);
                                 };
-                                if app.get_player_bounded_mode() {
-                                    let Some(surface) = surface_slot.as_mut() else {
-                                        return Err(playback::PlayerError::OpenGl(
-                                            "bounded video surface is unavailable".into(),
-                                        ));
-                                    };
-                                    match surface.ensure_size(
-                                        app.get_player_video_surface_width(),
-                                        app.get_player_video_surface_height(),
-                                        app.window().scale_factor(),
-                                    )? {
-                                        playback::VideoSurfaceUpdate::Unchanged => {}
-                                        playback::VideoSurfaceUpdate::Replace { image, .. } => {
-                                            app.set_player_video_frame(image);
-                                            app.set_player_video_frame_ready(true);
-                                        }
-                                        playback::VideoSurfaceUpdate::Clear => {
-                                            app.set_player_video_frame(slint::Image::default());
-                                            app.set_player_video_frame_ready(false);
-                                        }
+                                // Bounded (FBO/texture-backed) rendering is
+                                // now the only path: `player-bounded-mode`
+                                // in app.slint is unconditionally true
+                                // whenever `player-active` is, which is
+                                // already this match arm's guard. The old
+                                // `else` branch (`player.render(width,
+                                // height)`, painting libmpv directly onto
+                                // the window's default framebuffer behind
+                                // Slint's own rendering) is gone — that was
+                                // the raw-paint path this session replaced.
+                                let Some(surface) = surface_slot.as_mut() else {
+                                    return Err(playback::PlayerError::OpenGl(
+                                        "bounded video surface is unavailable".into(),
+                                    ));
+                                };
+                                match surface.ensure_size(
+                                    app.get_player_video_surface_width(),
+                                    app.get_player_video_surface_height(),
+                                    app.window().scale_factor(),
+                                )? {
+                                    playback::VideoSurfaceUpdate::Unchanged => {}
+                                    playback::VideoSurfaceUpdate::Replace { image, .. } => {
+                                        app.set_player_video_frame(image);
+                                        app.set_player_video_frame_ready(true);
                                     }
-                                    surface.render_player(player)?;
-                                } else {
-                                    let size = app.window().size();
-                                    player.render(size.width as i32, size.height as i32)?;
+                                    playback::VideoSurfaceUpdate::Clear => {
+                                        app.set_player_video_frame(slint::Image::default());
+                                        app.set_player_video_frame_ready(false);
+                                    }
                                 }
+                                surface.render_player(player)?;
                                 Ok(player.state().has_media)
                             })
                         });

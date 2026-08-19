@@ -568,6 +568,16 @@ impl Player {
     }
 
     /// Render into the currently bound/default framebuffer.
+    ///
+    /// No longer called: the UI-side raw full-window paint path this backed
+    /// (`main.rs`'s rendering notifier used to call this whenever
+    /// `player-bounded-mode` was false) was replaced with bounded
+    /// (`render_to_fbo`) rendering unconditionally, so real video is always
+    /// a normal Slint `Image` in the component tree instead of a frame
+    /// painted directly onto the window behind Slint's own rendering. Kept
+    /// (not deleted) since it's correct, tiny, and still a real capability
+    /// of this FFI wrapper — only the one call site that used it is gone.
+    #[allow(dead_code)]
     pub fn render(&mut self, width: i32, height: i32) -> PlayerResult<()> {
         self.render_to_fbo(0, width, height, 0, true)
     }
