@@ -71,6 +71,11 @@ export component TitleDetail inherits Rectangle {
     in property <bool> has-poster: false;
     in property <[StremioEpisodeRef]> episodes: [];
     in property <[string]> streams: [];
+    // The best-ranked stream now autoplays automatically (see
+    // client/src/main.rs), so this panel reads mainly as info — synopsis,
+    // cast, details, episodes. The manual stream picker below is a
+    // fallback, shown by the caller only when autoplay didn't happen.
+    in property <bool> show-stream-picker: false;
     in property <bool> loading: false;
     in property <string> status: "";
     callback close();
@@ -233,15 +238,21 @@ export component TitleDetail inherits Rectangle {
             }
         }
 
-        VerticalLayout {
+        // Hidden by default: the top-ranked stream autoplays automatically,
+        // so most visits to this panel never need a manual pick. This
+        // fallback row only appears (via `show-stream-picker`, set by the
+        // caller) when autoplay didn't happen — no playable stream came
+        // back, or the one it tried failed (e.g. a torrent-only source with
+        // no resolver yet).
+        if root.show-stream-picker && !root.loading: VerticalLayout {
             spacing: 7px;
-            Text { text: "PLAY FROM"; color: Theme.text-secondary; font-size: 9px; font-weight: 800; letter-spacing: 1.1px; }
-            if !root.loading && root.streams.length == 0: Text {
+            Text { text: "PLAYBACK OPTIONS"; color: Theme.text-secondary; font-size: 9px; font-weight: 800; letter-spacing: 1.1px; }
+            if root.streams.length == 0: Text {
                 text: "No playable stream was returned. Try another enabled provider.";
                 color: Theme.text-secondary;
                 font-size: 11px;
             }
-            ScrollView {
+            if root.streams.length > 0: ScrollView {
                 height: 48px;
                 vertical-scrollbar-policy: always-off;
                 horizontal-scrollbar-policy: as-needed;
