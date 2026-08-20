@@ -193,6 +193,13 @@ rendered as a raw overlay", and "Title-detail panel clutter" rows in the
 Current phase table above for what landed. All merged onto `main`; full
 workspace build/test/clippy/fmt verified clean on the merged tree.
 
+**Confirmed by the human at the end of session 25: real problems remain**
+in the running app after this session's merges — reported as "still
+problems," no specifics given yet ("I'll let you know tomorrow"). Do not
+assume the player-embedded-UI fix (or anything else from this session) is
+fully working until the human describes what's still wrong. Start the
+next session by asking what they saw, rather than re-verifying blind.
+
 **Next up: a human test pass of the player-embedded-UI fix specifically.**
 Static verification (full build/test/clippy/fmt, plus a careful read of
 the diff) is solid, but live click-through verification in this session
