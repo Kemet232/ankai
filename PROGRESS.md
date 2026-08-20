@@ -4,7 +4,7 @@
 > Read this file top to bottom, then skim `docs/adr/*.md` for decisions already locked in.
 > That's enough to resume without re-reading the full product spec.
 
-Last updated: 2026-08-18 (session 24)
+Last updated: 2026-08-20 (session 25)
 
 ## What ANKAI is
 
@@ -99,7 +99,9 @@ parties, theme assets) goes peer-to-peer wherever safe.
 | Duplicate search boxes | **fixed (session 24 follow-up)** — Discover had its own independently-editable search `LineEdit` alongside the always-visible `TopCommandBar`'s global search, both driving the same `stremio-search-query`/`search-stremio` pipeline. Removed the duplicate field; the top bar is now the single search entry point. The one capability the old field uniquely had — leaving an active search and returning to browsing catalogs — is preserved as a "Clear search" button shown only while a search is active | `client/ui/app.slint` |
 | Series autoplay using the wrong (bare title) id | **fixed (session 24 follow-up)** — `open_meta_by_id` fetched title-level streams via the bare series id for *both* movies and series, then auto-played the top result — protocol-incorrect for episodic content (Stremio streams for a series belong under specific episode video ids) and could autoplay something wrong before the user had picked an episode. Gated behind a new `should_use_title_level_streams(episode_count)` check: series with a real episode list now skip the title-level fetch/autoplay entirely and wait for `on_open_stremio_episode`'s already-correct per-episode path | `client/src/main.rs` |
 | Cinemeta | **removed entirely (session 24 follow-up)** — human's explicit call after hitting a real Cinemeta catalog-parse error ("invalid type: null, expected a sequence"): drop it rather than debug around it. Anime Kitsu is now the sole bundled/default catalog+search source; Cinemeta is no longer a protected built-in (a user can still add it back manually like any custom addon). Includes a one-time startup migration that removes any leftover Cinemeta install (and its cached catalog pages) from a registry created before this change. Also removed `is_official_cinemeta_redirect`, the narrow cross-origin redirect exception that existed only for Cinemeta's real-world 307 delegation — addon redirects are now same-origin-only, full stop, tightening the general policy now that nothing needs the exception | `client/src/main.rs`, `client/ui/app.slint`, `client/ui/addon-manager.slint`, `core/src/stremio.rs` |
-| Idle CPU / "app is slow" investigation | **measured, not fixed (session 24 follow-up)** — human reported the running app felt slow. Real measurements on this machine: a plain **debug** build idled at ~15-37% CPU on a fully static Discover screen (no player active); a **release** build idled lower but still non-trivially, fluctuating ~3-20% (not the clean "just use release" story hoped for). Live `sample` profiling found no application-code hot loop — dominant top-of-stack was legitimate blocking waits (`psynch_cvwait`/`workq_kernreturn`/kernel event waits). Root cause identified with high confidence: `client/src/main.rs`'s `set_rendering_notifier` `RenderingSetup` handler (~line 2483) unconditionally constructs the full libmpv player context — including its complete default Lua scripting environment (console/stats/ytdl_hook/positioning/select/commands/context_menu — 7 interpreter threads) plus its codec worker-thread pool — at app startup, regardless of whether the Watch tab is ever opened. That's roughly 10 always-alive threads doing periodic idle wakeups for the app's entire session even when nothing is ever played. **Not fixed this session** — deferring `Player::new()`'s construction from eager startup to first real playback is a real, moderately-invasive change to the same hand-verified GL/FBO bridge `docs/adr/...`/session 19's playback work calls out as delicate, and was deliberately left as a scoped, ready-to-implement follow-up (exact call site identified) rather than rushed under time pressure in the same session as three other concurrent fixes | `client/src/main.rs` (~line 2483-2508), `client/src/playback.rs` |
+| Idle CPU / "app is slow" investigation | **fixed (session 25)** — `ensure_video_player()` now builds the real libmpv context (mpv_create + mpv_initialize, the ~10-thread Lua/codec pool that was the actual idle-CPU cost) lazily, from the rendering notifier's `BeforeRendering` arm, only once a playback trigger (activate-stream, retry, resume) queues a URL via a new `PENDING_PLAYER_LOAD` slot — not unconditionally at `RenderingSetup`/app startup. Only the bounded GL surface (which needs `RenderingSetup`'s one-shot `graphics_api` handle) still builds eagerly. Triggers that find an already-built player (every playback after the first) still load synchronously as before. Verified on a real build: idle thread count drops from ~37-40 to ~15 at startup, jumps to ~36 on first real playback, confirmed via the app's own accessibility tree (real "Playing" state, position advancing, full transport controls) | `client/src/main.rs` |
+| Player rendered as a raw overlay, not a real UI element | **fixed (session 25)** — human-reported, screenshotted bug: a playing video's Home dashboard/sidebar/search-bar chrome could still show through or co-render around it. Root cause: `player-bounded-mode` (app.slint) was `true` only for the small windowed Hangout room player; Watch (the everyday "click episode, autoplay" path) and any fullscreen Hangout instead painted libmpv directly onto the window's default framebuffer, bypassing Slint's scene graph — which required the window background to go transparent during playback plus manual `!player-active` exclusions scattered across `HomeDashboard`, the background wallpaper, the sidebar tint, and `TopCommandBar` to fake correct occlusion. `player-bounded-mode` is now unconditionally `root.player-active`: every video, Watch or Hangouts, windowed or fullscreen, renders through the existing bounded FBO/texture path into a real Slint `Image` inside `PlayerOverlay`'s `video-well` — an ordinary opaque tree element that occludes by z-order like any other, same as Hangouts already proved works. The raw full-window `player.render()` path (and the now-dead `Player::render()` method) is gone; `TopCommandBar` now correctly stays visible during windowed playback instead of hiding for any Watch playback at all. Verified: full workspace build/test/clippy/fmt clean; live click-through verification was attempted but hit this machine's known window/process-targeting unreliability (compounded by other same-named test processes running concurrently this session) rather than being cleanly completed — worth a human test pass | `client/ui/app.slint`, `client/ui/player-overlay.slint`, `client/src/main.rs`, `client/src/playback.rs` |
+| Title-detail panel clutter / series-stream leak | **fixed (session 25)** — the always-visible "PLAY FROM" manual stream-picker row (redundant now that autoplay picks the best stream) is hidden by default, only reappearing as a genuine fallback when autoplay doesn't find a `Direct` stream or the auto-activated stream fails. While tracing autoplay, found `on_open_stremio_media` (Discover's real "click a show card" path, as opposed to `open_meta_by_id`'s deep-link-only path) never had session 24's `should_use_title_level_streams` gating — meaning clicking a series from Discover could still fetch/autoplay wrong title-level streams instead of waiting for an episode pick. Fixed by applying the same gating there. Also added a collapsible "Filters" toggle for Discover's TYPE/ADDON/CATALOG/GENRE pill rows (collapsed by default, shows "(active)" when non-default) per direct human feedback mid-session | `client/ui/title-detail.slint`, `client/ui/board.slint`, `client/src/main.rs` |
 | libmpv playback | **Phase 4 renderer and controls complete** (session 19) — typed events/state and complete cinema controls plus a real Retina-aware OpenGL texture/FBO bridge imported into Slint's bounded player well. GL state is restored around mpv, resized textures retire safely after frame presentation, first successful rendered media gates video-ready, renderer errors stay in the overlay, buffered duration is not fabricated, and close exits fullscreen. The no-install packaging pipeline now fails closed on LGPL attestation/dependency closure and probes the packaged loader; real signed/notarized per-OS artifacts remain a release gate | `client/src/playback.rs`, `client/ui/player-overlay.slint`, `client/src/main.rs`, `scripts/bundle-libmpv.sh`, `scripts/verify-libmpv-bundle.sh`, `docs/releasing-libmpv.md` |
 | Hangout cinema surface | **Phase 6 bounded rendering integrated; networking sync still incomplete** (session 19) — saved Hangouts render the active libmpv frame inside the clipped room player rather than behind the whole window, with the full transport/track/error UI. Rooms remain truthfully local-only with no fake participants/messages and unavailable chat disabled; real membership/invites/synchronization/voice remain future work | `client/ui/hangout-player-surface.slint`, `client/ui/app.slint`, `client/src/playback.rs`, `client/src/main.rs` |
 | Animated loading experience | **upgraded and motion-safe** (session 19) — original full-proportion violet/pink virtual-idol asset performs an eight-step dance phrase with honest indeterminate status and screen-reader text. A persisted Reduce Motion setting now propagates through the shared Theme: every animated Slint surface uses zero-duration transitions and stops choreography while retaining visible state | `client/ui/assets/ankai-loading-idol.png`, `client/ui/loading-idol.slint`, `client/ui/theme.slint`, `client/ui/app.slint` |
@@ -184,24 +186,34 @@ loops that make users return are still discontinuous.
 
 ## Immediate next steps (in order)
 
-**Next up (explicitly deferred by the human at the end of session 24's
-follow-up round, "hold it for tomorrow"): implement and thoroughly test
-lazy libmpv initialization.** See the "Idle CPU / 'app is slow'
-investigation" row in the Current phase table above for the full
-diagnosis with real measurements — short version: `client/src/main.rs`'s
-`set_rendering_notifier` `RenderingSetup` handler (~line 2483-2508)
-unconditionally constructs the full libmpv player context (7 Lua
-interpreter threads + codec thread pool) at app startup regardless of
-whether Watch is ever opened, costing real idle CPU for the whole
-session. The fix is conceptually simple — keep `BoundedVideoSurface`
-creation where it is (needs the `graphics_api` handle, only available in
-this one-shot callback) but defer `playback::Player::new()` itself to
-the first real playback request — but it touches the same hand-tuned
-GL/FBO video-texture bridge from session 19 that deserves real testing
-(build, launch, actually play a video, confirm resume/fullscreen/close
-still all work, re-measure idle CPU with it deferred), not a rushed
-patch. Do this first, as a focused single-track session, before picking
-up anything else new.
+**Session 25 (2026-08-20) closed out the lazy-libmpv-init task deferred at
+the end of session 24, then kept going with three more tracks the human
+drove live while watching the running app** — see the "Idle CPU", "Player
+rendered as a raw overlay", and "Title-detail panel clutter" rows in the
+Current phase table above for what landed. All merged onto `main`; full
+workspace build/test/clippy/fmt verified clean on the merged tree.
+
+**Next up: a human test pass of the player-embedded-UI fix specifically.**
+Static verification (full build/test/clippy/fmt, plus a careful read of
+the diff) is solid, but live click-through verification in this session
+kept hitting this machine's known window/process-targeting unreliability
+(see the note further down about `osascript`/`screencapture` — worse than
+before because three worktrees' worth of same-named `client` test
+processes were running concurrently this session, so `tell process
+"client"` was genuinely ambiguous, not just flaky). Before trusting this
+fix fully: `pkill -f target/release/client` to guarantee a single clean
+instance, then actually play something — click an episode, confirm Home/
+sidebar/search-bar never show through in any state (loading, playing,
+paused, fullscreen, windowed, closed), and check the Hangouts room player
+still works both windowed-in-room and promoted to fullscreen.
+
+One investigation this session turned out to be a false alarm worth
+knowing about: a live-reported "blank Discover page" (no heading, no
+search bar, nothing but background art) could not be reproduced on a
+clean, unmodified `main` under controlled (single-process, PID-scoped)
+conditions — strong evidence it was itself a wrong-window artifact from
+the same concurrent-same-named-process hazard above, not a real code
+defect. If it recurs, rule out concurrent `client` processes first.
 
 All 5 research ADRs (0002-0006) are Accepted, plus ADR-0007 (open-source
 model: Apache-2.0, LICENSE added). `ankai-core`'s `identity` module has
